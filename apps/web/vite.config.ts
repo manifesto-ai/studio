@@ -50,6 +50,9 @@ export default defineConfig({
       "@manifesto-ai/studio-core": fileURLToPath(
         new URL("../../packages/studio-core/src/index.ts", import.meta.url)
       ),
+      "@manifesto-ai/mel-editor": fileURLToPath(
+        new URL("../../packages/mel-editor/src/index.ts", import.meta.url)
+      ),
       "@manifesto-ai/studio-ui/styles.css": fileURLToPath(
         new URL("../../packages/studio-ui/src/styles.css", import.meta.url)
       ),
@@ -57,5 +60,8 @@ export default defineConfig({
         new URL("../../packages/ui-core/src/styles.css", import.meta.url)
       )
     }
+  },
+  worker: {
+    format: "es"
   }
 });

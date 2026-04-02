@@ -1,4 +1,3 @@
-import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import "./style.css";
@@ -10,8 +9,4 @@ if (!rootElement) {
   throw new Error("App root not found");
 }
 
-createRoot(rootElement).render(
-  <StrictMode>
-    <App />
-  </StrictMode>
-);
+createRoot(rootElement).render(<App />);

@@ -9,11 +9,15 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
     "@manifesto-ai/sdk": "3.3.0",
     "@manifesto-ai/studio-core": "workspace:*",
     "@manifesto-ai/studio-ui": "workspace:*",
     "@manifesto-ai/ui-core": "workspace:*",
+    "@manifesto-ai/mel-editor": "workspace:*",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

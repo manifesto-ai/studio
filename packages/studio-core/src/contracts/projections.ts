@@ -12,6 +12,7 @@ import type {
   OverlayVersionMap
 } from "./graph-ir.js";
 import type { OverlayKind } from "./session.js";
+import type { Snapshot, TraceGraph } from "./inputs.js";
 
 export type ProjectionUnavailable = {
   status: "not-provided";
@@ -194,4 +195,135 @@ export type GovernanceStateProjection =
       bindings: GovernanceBindingProjection[];
       gates: GovernanceGateProjection[];
       findings: Finding[];
+    };
+
+export type ProjectionBucketRange = {
+  label: string;
+  min?: number;
+  max?: number;
+};
+
+export type ProjectionTransformSpec =
+  | {
+      kind: "raw";
+    }
+  | {
+      kind: "boolean";
+    }
+  | {
+      kind: "presence";
+    }
+  | {
+      kind: "enum";
+    }
+  | {
+      kind: "bucket";
+      ranges: ProjectionBucketRange[];
+    };
+
+export type ProjectionObserveSelection =
+  | {
+      kind: "state";
+      path: string;
+      label?: string;
+    }
+  | {
+      kind: "computed";
+      id: string;
+      label?: string;
+    }
+  | {
+      kind: "action";
+      id: string;
+      label?: string;
+    };
+
+export type ProjectionGroupBySelection =
+  | {
+      source: "state";
+      path: string;
+      label?: string;
+      transform: ProjectionTransformSpec;
+    }
+  | {
+      source: "computed";
+      id: string;
+      label?: string;
+      transform: ProjectionTransformSpec;
+    };
+
+export type ProjectionPreset = {
+  id: string;
+  name: string;
+  observe: ProjectionObserveSelection[];
+  groupBy: ProjectionGroupBySelection[];
+  options?: {
+    includeBlocked?: boolean;
+    includeDryRun?: boolean;
+    collapseSelfLoops?: boolean;
+  };
+};
+
+export type ObservationMode = "live" | "dry-run";
+export type ObservationOutcome = "committed" | "blocked" | "failed";
+
+export type ObservationRecord = {
+  id: string;
+  mode: ObservationMode;
+  actionId: string;
+  args: unknown[];
+  outcome: ObservationOutcome;
+  beforeSnapshot: Snapshot;
+  afterSnapshot?: Snapshot;
+  blocker?: ActionBlockerProjection;
+  trace?: TraceGraph;
+  timestamp: number;
+};
+
+export type ProjectionSignatureEntry = {
+  key: string;
+  label: string;
+  rawValue: unknown;
+  value: string;
+};
+
+export type TransitionGraphNode = {
+  id: string;
+  label: string;
+  signature: ProjectionSignatureEntry[];
+  observationCount: number;
+  current: boolean;
+};
+
+export type TransitionGraphEdge = {
+  id: string;
+  source: string;
+  target: string;
+  actionId: string;
+  changedDimensions: string[];
+  recordIds: string[];
+  liveCount: number;
+  dryRunCount: number;
+  blockedCount: number;
+  latestTimestamp: number;
+  selfLoop: boolean;
+};
+
+export type TransitionGraphProjection =
+  | {
+      status: "invalid-preset";
+      presetId: string;
+      presetName: string;
+      message: string;
+      nodes: [];
+      edges: [];
+      currentNodeId?: undefined;
+    }
+  | {
+      status: "ready";
+      presetId: string;
+      presetName: string;
+      currentNodeId?: string;
+      nodes: TransitionGraphNode[];
+      edges: TransitionGraphEdge[];
     };

@@ -1,9 +1,11 @@
+import { memo, useEffect, useMemo, useRef } from "react";
 import {
   Background,
   Controls,
   MiniMap,
   Position,
   ReactFlow,
+  type ReactFlowInstance,
   type Edge,
   type Node,
   type NodeMouseHandler
@@ -53,15 +55,15 @@ function getNodeLabel(node: DomainGraphProjectionNode): string {
 function getNodeColor(kind: DomainGraphProjectionNode["kind"]): string {
   switch (kind) {
     case "action":
-      return "#75ffc2";
+      return "#63dfcf";
     case "computed":
-      return "#ffbf69";
+      return "#91a6ff";
     case "state":
-      return "#8fd8ff";
+      return "#7ad8ff";
     case "patch-target":
-      return "#f7a6ff";
+      return "#d59cff";
     default:
-      return "#dfe9e4";
+      return "#d7e2ef";
   }
 }
 
@@ -101,12 +103,16 @@ function buildFlowGraph(
             label: getNodeLabel(node)
           },
           style: {
-            width: 176,
-            borderRadius: 16,
-            border: node.id === selectedNodeId ? "2px solid rgba(117, 255, 194, 0.88)" : "1px solid rgba(117, 255, 194, 0.16)",
-            background: "rgba(9, 22, 29, 0.9)",
-            color: "#e8f4ef",
-            boxShadow: "0 16px 48px rgba(0, 0, 0, 0.2)"
+            width: 184,
+            borderRadius: 18,
+            border:
+              node.id === selectedNodeId
+                ? "1px solid rgba(99, 223, 207, 0.82)"
+                : "1px solid rgba(122, 164, 222, 0.16)",
+            background:
+              "linear-gradient(180deg, rgba(8, 18, 28, 0.98) 0%, rgba(11, 24, 36, 0.92) 100%)",
+            color: "#eef4fb",
+            boxShadow: "0 18px 42px rgba(0, 0, 0, 0.28)"
           },
           className: `studio-flow-node studio-flow-node--${node.kind}`,
           selected: node.id === selectedNodeId,
@@ -123,12 +129,24 @@ function buildFlowGraph(
     type: "smoothstep",
     animated: false,
     style: {
-      stroke: edge.provenance === "trace" ? "#ffbf69" : "rgba(117, 255, 194, 0.24)",
+      stroke:
+        edge.provenance === "trace"
+          ? "rgba(145, 166, 255, 0.86)"
+          : "rgba(99, 223, 207, 0.24)",
       strokeDasharray: edge.provenance === "static" ? "6 4" : undefined
     },
     labelStyle: {
-      fill: getNodeColor("computed"),
-      fontSize: 11
+      fill: "#dbe7ff",
+      fontSize: 11,
+      fontWeight: 600
+    },
+    labelShowBg: true,
+    labelBgPadding: [8, 4] as [number, number],
+    labelBgBorderRadius: 999,
+    labelBgStyle: {
+      fill: "rgba(5, 16, 24, 0.94)",
+      stroke: "rgba(145, 166, 255, 0.24)",
+      strokeWidth: 1
     }
   }));
 
@@ -141,41 +159,91 @@ export type DomainGraphViewProps = {
   onSelectNode?: (nodeId: string) => void;
 };
 
-export function DomainGraphView({
+function DomainGraphViewComponent({
   projection,
   selectedNodeId,
   onSelectNode
 }: DomainGraphViewProps) {
-  const flowGraph = buildFlowGraph(projection, selectedNodeId);
+  const flowRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
+  const flowGraph = useMemo(
+    () => buildFlowGraph(projection, selectedNodeId),
+    [projection, selectedNodeId]
+  );
+  const graphSignature = useMemo(
+    () =>
+      JSON.stringify({
+        nodes: projection.nodes.map((node) => node.id),
+        edges: projection.edges.map((edge) => [
+          edge.source,
+          edge.target,
+          edge.kind,
+          edge.provenance
+        ])
+      }),
+    [projection]
+  );
+  const showMiniMap = projection.nodeCount > 14;
+
+  useEffect(() => {
+    const flow = flowRef.current;
+
+    if (!flow) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      flow.fitView({
+        duration: 180,
+        padding: 0.18
+      });
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [graphSignature]);
 
   const handleNodeClick: NodeMouseHandler = (_, node) => {
     onSelectNode?.(node.id);
   };
 
   return (
-    <Card className="h-full">
-      <CardHeader>
-        <CardTitle>Domain Graph</CardTitle>
-        <CardDescription>
-          {projection.nodeCount} nodes · {projection.edgeCount} edges
-        </CardDescription>
+    <Card className="flex h-full min-h-0 flex-col">
+      <CardHeader className="pb-3">
+        <CardTitle>Graph</CardTitle>
+        <CardDescription>{projection.nodeCount} · {projection.edgeCount}</CardDescription>
       </CardHeader>
-      <CardContent>
-        <div className="h-[620px] overflow-hidden rounded-xl border border-border/70 bg-background/50">
+      <CardContent className="min-h-0 flex-1">
+        <div className="h-full overflow-hidden rounded-xl border border-border/70 bg-background/50">
           <ReactFlow
+            className="studio-domain-flow"
             edges={flowGraph.edges}
-            fitView
             nodes={flowGraph.nodes}
             nodesConnectable={false}
             nodesDraggable={false}
             onNodeClick={handleNodeClick}
+            onInit={(instance) => {
+              flowRef.current = instance;
+              instance.fitView({
+                duration: 0,
+                padding: 0.18
+              });
+            }}
+            onlyRenderVisibleElements
             proOptions={{ hideAttribution: true }}
           >
-            <Background color="rgba(117, 255, 194, 0.08)" gap={24} />
-            <MiniMap
-              nodeColor={(node) => getNodeColor((node.className?.replace("studio-flow-node studio-flow-node--", "") as DomainGraphProjectionNode["kind"]) ?? "state")}
-              pannable
-            />
+            <Background color="rgba(122, 164, 222, 0.08)" gap={24} />
+            {showMiniMap ? (
+              <MiniMap
+                nodeColor={(node) =>
+                  getNodeColor(
+                    (node.className?.replace(
+                      "studio-flow-node studio-flow-node--",
+                      ""
+                    ) as DomainGraphProjectionNode["kind"]) ?? "state"
+                  )
+                }
+                pannable
+              />
+            ) : null}
             <Controls showInteractive={false} />
           </ReactFlow>
         </div>
@@ -183,3 +251,10 @@ export function DomainGraphView({
     </Card>
   );
 }
+
+export const DomainGraphView = memo(
+  DomainGraphViewComponent,
+  (previous, next) =>
+    previous.projection === next.projection &&
+    previous.selectedNodeId === next.selectedNodeId
+);

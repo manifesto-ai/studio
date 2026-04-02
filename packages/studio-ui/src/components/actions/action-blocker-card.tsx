@@ -15,14 +15,14 @@ export type ActionBlockerCardProps = {
 export function ActionBlockerCard({ projection }: ActionBlockerCardProps) {
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="gap-3">
         <CardTitle>Action Inspector</CardTitle>
         <CardDescription>
           {projection.actionId} · {projection.status}
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {projection.status === "ready" ? (
             <>
               <Badge variant={projection.available ? "success" : "warning"}>
@@ -34,12 +34,19 @@ export function ActionBlockerCard({ projection }: ActionBlockerCardProps) {
             <Badge variant="outline">{projection.status.toUpperCase()}</Badge>
           )}
         </div>
-        <p className="text-sm text-muted-foreground">{projection.summary}</p>
+        <div className="rounded-xl border border-border/70 bg-background/35 p-3">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-primary">
+            Current guard state
+          </p>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            {projection.summary}
+          </p>
+        </div>
         {projection.status === "ready" && projection.blockers.length > 0 ? (
           <div className="grid gap-2">
             {projection.blockers.map((blocker) => (
               <div
-                className="rounded-lg border border-border/70 bg-background/40 px-3 py-2"
+                className="rounded-xl border border-border/70 bg-background/40 px-3 py-3"
                 key={`${blocker.ref.nodeId}:${blocker.subExpression}`}
               >
                 <p className="text-sm font-medium text-foreground">
@@ -60,7 +67,7 @@ export function ActionBlockerCard({ projection }: ActionBlockerCardProps) {
             <ol className="grid gap-2">
               {projection.explanation.path.map((node, index) => (
                 <li
-                  className="rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-sm text-muted-foreground"
+                  className="rounded-xl border border-border/70 bg-background/40 px-3 py-3 text-sm text-muted-foreground"
                   key={`${node.fact}:${index}`}
                 >
                   <span className="font-medium text-foreground">{node.provenance}</span>{" "}

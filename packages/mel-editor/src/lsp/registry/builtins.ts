@@ -1,0 +1,1052 @@
+/**
+ * MEL Builtin Function Registry
+ *
+ * Static data extracted from:
+ * - @manifesto-ai/compiler validator.ts (arity constraints)
+ * - @manifesto-ai/compiler normalizer.ts (function→IR mapping)
+ * - docs/mel/REFERENCE.md (descriptions, examples)
+ */
+
+export interface ParameterInfo {
+  name: string;
+  type: string;
+  description?: string;
+  optional?: boolean;
+}
+
+export interface BuiltinFunction {
+  name: string;
+  category:
+    | "arithmetic"
+    | "comparison"
+    | "logic"
+    | "string"
+    | "null_type"
+    | "array"
+    | "object"
+    | "aggregation"
+    | "conditional";
+  signature: string;
+  parameters: ParameterInfo[];
+  returnType: string;
+  description: string;
+  example: string;
+  snippet: string;
+  minArgs: number;
+  maxArgs: number | null; // null = variadic
+}
+
+const BUILTINS: BuiltinFunction[] = [
+  // ============ Arithmetic ============
+  {
+    name: "add",
+    category: "arithmetic",
+    signature: "(a: number, b: number) => number",
+    parameters: [
+      { name: "a", type: "number" },
+      { name: "b", type: "number" },
+    ],
+    returnType: "number",
+    description: "Addition. Equivalent to `a + b`.",
+    example: "computed subtotal = add(price, quantity)",
+    snippet: "add(${1:a}, ${2:b})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "sub",
+    category: "arithmetic",
+    signature: "(a: number, b: number) => number",
+    parameters: [
+      { name: "a", type: "number" },
+      { name: "b", type: "number" },
+    ],
+    returnType: "number",
+    description: "Subtraction. Equivalent to `a - b`.",
+    example: "computed diff = sub(total, discount)",
+    snippet: "sub(${1:a}, ${2:b})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "mul",
+    category: "arithmetic",
+    signature: "(a: number, b: number) => number",
+    parameters: [
+      { name: "a", type: "number" },
+      { name: "b", type: "number" },
+    ],
+    returnType: "number",
+    description: "Multiplication. Equivalent to `a * b`.",
+    example: "computed subtotal = mul(price, quantity)",
+    snippet: "mul(${1:a}, ${2:b})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "div",
+    category: "arithmetic",
+    signature: "(a: number, b: number) => number | null",
+    parameters: [
+      { name: "a", type: "number", description: "Dividend" },
+      { name: "b", type: "number", description: "Divisor" },
+    ],
+    returnType: "number | null",
+    description: "Division. Returns `null` if divisor is 0.",
+    example: "computed average = div(sum(scores), len(scores))",
+    snippet: "div(${1:a}, ${2:b})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "mod",
+    category: "arithmetic",
+    signature: "(a: number, b: number) => number",
+    parameters: [
+      { name: "a", type: "number" },
+      { name: "b", type: "number" },
+    ],
+    returnType: "number",
+    description: "Modulo remainder. Equivalent to `a % b`.",
+    example: "computed remainder = mod(count, 10)",
+    snippet: "mod(${1:a}, ${2:b})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "neg",
+    category: "arithmetic",
+    signature: "(a: number) => number",
+    parameters: [{ name: "a", type: "number" }],
+    returnType: "number",
+    description: "Negation. Equivalent to `-a`.",
+    example: "computed inverse = neg(value)",
+    snippet: "neg(${1:a})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "abs",
+    category: "arithmetic",
+    signature: "(n: number) => number",
+    parameters: [{ name: "n", type: "number" }],
+    returnType: "number",
+    description: "Absolute value.",
+    example: "computed magnitude = abs(neg(value))",
+    snippet: "abs(${1:n})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "floor",
+    category: "arithmetic",
+    signature: "(n: number) => number",
+    parameters: [{ name: "n", type: "number" }],
+    returnType: "number",
+    description: "Round down to nearest integer.",
+    example: "computed floored = floor(3.7)",
+    snippet: "floor(${1:n})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "ceil",
+    category: "arithmetic",
+    signature: "(n: number) => number",
+    parameters: [{ name: "n", type: "number" }],
+    returnType: "number",
+    description: "Round up to nearest integer.",
+    example: "computed ceiled = ceil(3.2)",
+    snippet: "ceil(${1:n})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "round",
+    category: "arithmetic",
+    signature: "(n: number) => number",
+    parameters: [{ name: "n", type: "number" }],
+    returnType: "number",
+    description: "Round to nearest integer.",
+    example: "computed rounded = round(div(total, 3))",
+    snippet: "round(${1:n})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "sqrt",
+    category: "arithmetic",
+    signature: "(n: number) => number | null",
+    parameters: [{ name: "n", type: "number" }],
+    returnType: "number | null",
+    description: "Square root. Returns `null` if `n` is negative.",
+    example: "computed hypotenuse = sqrt(add(pow(a, 2), pow(b, 2)))",
+    snippet: "sqrt(${1:n})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "pow",
+    category: "arithmetic",
+    signature: "(base: number, exponent: number) => number",
+    parameters: [
+      { name: "base", type: "number" },
+      { name: "exponent", type: "number" },
+    ],
+    returnType: "number",
+    description: "Exponentiation. `pow(2, 10)` = 1024.",
+    example: "computed squared = pow(value, 2)",
+    snippet: "pow(${1:base}, ${2:exponent})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "min",
+    category: "arithmetic",
+    signature: "(...values: number[]) => number",
+    parameters: [{ name: "values", type: "...number" }],
+    returnType: "number",
+    description:
+      "Minimum of values. With 1 arg, aggregates an array (computed only). With 2+, compares values.",
+    example: "computed smaller = min(priceA, priceB)",
+    snippet: "min(${1:a}, ${2:b})",
+    minArgs: 1,
+    maxArgs: null,
+  },
+  {
+    name: "max",
+    category: "arithmetic",
+    signature: "(...values: number[]) => number",
+    parameters: [{ name: "values", type: "...number" }],
+    returnType: "number",
+    description:
+      "Maximum of values. With 1 arg, aggregates an array (computed only). With 2+, compares values.",
+    example: "computed largest = max(x, y, z)",
+    snippet: "max(${1:a}, ${2:b})",
+    minArgs: 1,
+    maxArgs: null,
+  },
+
+  // ============ Comparison ============
+  {
+    name: "eq",
+    category: "comparison",
+    signature: "(a: T, b: T) => boolean",
+    parameters: [
+      { name: "a", type: "T", description: "Primitive value" },
+      { name: "b", type: "T", description: "Primitive value" },
+    ],
+    returnType: "boolean",
+    description:
+      "Equality. Primitives only: null, boolean, number, string. Cannot compare arrays or objects.",
+    example: 'computed isComplete = eq(status, "done")',
+    snippet: "eq(${1:a}, ${2:b})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "neq",
+    category: "comparison",
+    signature: "(a: T, b: T) => boolean",
+    parameters: [
+      { name: "a", type: "T" },
+      { name: "b", type: "T" },
+    ],
+    returnType: "boolean",
+    description: "Inequality. Primitives only.",
+    example: 'computed isActive = neq(status, "idle")',
+    snippet: "neq(${1:a}, ${2:b})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "gt",
+    category: "comparison",
+    signature: "(a: number, b: number) => boolean",
+    parameters: [
+      { name: "a", type: "number" },
+      { name: "b", type: "number" },
+    ],
+    returnType: "boolean",
+    description: "Greater than.",
+    example: "computed hasItems = gt(len(items), 0)",
+    snippet: "gt(${1:a}, ${2:b})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "gte",
+    category: "comparison",
+    signature: "(a: number, b: number) => boolean",
+    parameters: [
+      { name: "a", type: "number" },
+      { name: "b", type: "number" },
+    ],
+    returnType: "boolean",
+    description: "Greater than or equal.",
+    example: "computed inRange = gte(value, minValue)",
+    snippet: "gte(${1:a}, ${2:b})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "lt",
+    category: "comparison",
+    signature: "(a: number, b: number) => boolean",
+    parameters: [
+      { name: "a", type: "number" },
+      { name: "b", type: "number" },
+    ],
+    returnType: "boolean",
+    description: "Less than.",
+    example: "computed isLow = lt(count, threshold)",
+    snippet: "lt(${1:a}, ${2:b})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "lte",
+    category: "comparison",
+    signature: "(a: number, b: number) => boolean",
+    parameters: [
+      { name: "a", type: "number" },
+      { name: "b", type: "number" },
+    ],
+    returnType: "boolean",
+    description: "Less than or equal.",
+    example: "computed inRange = and(gte(value, min), lte(value, max))",
+    snippet: "lte(${1:a}, ${2:b})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+
+  // ============ Logic ============
+  {
+    name: "and",
+    category: "logic",
+    signature: "(...args: boolean[]) => boolean",
+    parameters: [{ name: "args", type: "...boolean" }],
+    returnType: "boolean",
+    description: "Logical AND. All arguments must be boolean. Variadic.",
+    example:
+      'computed canSubmit = and(isNotNull(email), neq(trim(email), ""))',
+    snippet: "and(${1:a}, ${2:b})",
+    minArgs: 1,
+    maxArgs: null,
+  },
+  {
+    name: "or",
+    category: "logic",
+    signature: "(...args: boolean[]) => boolean",
+    parameters: [{ name: "args", type: "...boolean" }],
+    returnType: "boolean",
+    description: "Logical OR. All arguments must be boolean. Variadic.",
+    example:
+      'computed isInactive = or(eq(status, "idle"), eq(status, "error"))',
+    snippet: "or(${1:a}, ${2:b})",
+    minArgs: 1,
+    maxArgs: null,
+  },
+  {
+    name: "not",
+    category: "logic",
+    signature: "(a: boolean) => boolean",
+    parameters: [{ name: "a", type: "boolean" }],
+    returnType: "boolean",
+    description: "Logical NOT.",
+    example: "computed isActive = not(isInactive)",
+    snippet: "not(${1:a})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "cond",
+    category: "conditional",
+    signature: "(condition: boolean, then: T, else: T) => T",
+    parameters: [
+      { name: "condition", type: "boolean" },
+      { name: "then", type: "T", description: "Value if true" },
+      { name: "else", type: "T", description: "Value if false" },
+    ],
+    returnType: "T",
+    description:
+      'Conditional. Returns `then` if condition is true, otherwise `else`. Ternary `x ? a : b` is sugar for `cond(x, a, b)`. Alias: `if`.',
+    example: 'computed label = cond(gt(count, 0), "Has items", "Empty")',
+    snippet: "cond(${1:condition}, ${2:then}, ${3:else})",
+    minArgs: 3,
+    maxArgs: 3,
+  },
+  {
+    name: "if",
+    category: "conditional",
+    signature: "(condition: boolean, then: T, else: T) => T",
+    parameters: [
+      { name: "condition", type: "boolean" },
+      { name: "then", type: "T", description: "Value if true" },
+      { name: "else", type: "T", description: "Value if false" },
+    ],
+    returnType: "T",
+    description: "Conditional. Alias for `cond`.",
+    example: 'computed label = if(gt(count, 0), "Has items", "Empty")',
+    snippet: "if(${1:condition}, ${2:then}, ${3:else})",
+    minArgs: 3,
+    maxArgs: 3,
+  },
+
+  // ============ String ============
+  {
+    name: "concat",
+    category: "string",
+    signature: "(...args: string[]) => string",
+    parameters: [{ name: "args", type: "...string" }],
+    returnType: "string",
+    description: "Join strings. Variadic.",
+    example: 'computed fullName = concat(firstName, " ", lastName)',
+    snippet: "concat(${1:a}, ${2:b})",
+    minArgs: 1,
+    maxArgs: null,
+  },
+  {
+    name: "trim",
+    category: "string",
+    signature: "(s: string) => string",
+    parameters: [{ name: "s", type: "string" }],
+    returnType: "string",
+    description: "Remove leading and trailing whitespace.",
+    example: "computed normalized = trim(input)",
+    snippet: "trim(${1:s})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "lower",
+    category: "string",
+    signature: "(s: string) => string",
+    parameters: [{ name: "s", type: "string" }],
+    returnType: "string",
+    description: "Convert to lowercase. Alias: `toLowerCase`.",
+    example: "computed normalized = lower(trim(input))",
+    snippet: "lower(${1:s})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "upper",
+    category: "string",
+    signature: "(s: string) => string",
+    parameters: [{ name: "s", type: "string" }],
+    returnType: "string",
+    description: "Convert to uppercase. Alias: `toUpperCase`.",
+    example: "computed shout = upper(name)",
+    snippet: "upper(${1:s})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "strlen",
+    category: "string",
+    signature: "(s: string) => number",
+    parameters: [{ name: "s", type: "string" }],
+    returnType: "number",
+    description: "String length in characters. Alias: `strLen`.",
+    example: "computed nameLen = strlen(name)",
+    snippet: "strlen(${1:s})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "substring",
+    category: "string",
+    signature: "(s: string, start: number, end?: number) => string",
+    parameters: [
+      { name: "s", type: "string" },
+      { name: "start", type: "number" },
+      { name: "end", type: "number", optional: true },
+    ],
+    returnType: "string",
+    description:
+      "Extract substring from `start` to `end` (exclusive). Alias: `substr`.",
+    example: "computed initial = substring(name, 0, 1)",
+    snippet: "substring(${1:s}, ${2:start}, ${3:end})",
+    minArgs: 2,
+    maxArgs: 3,
+  },
+  {
+    name: "toString",
+    category: "string",
+    signature: "(x: number | boolean | null) => string",
+    parameters: [{ name: "x", type: "number | boolean | null" }],
+    returnType: "string",
+    description: "Convert to string.",
+    example: 'computed label = concat("Count: ", toString(count))',
+    snippet: "toString(${1:x})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "startsWith",
+    category: "string",
+    signature: "(s: string, prefix: string) => boolean",
+    parameters: [
+      { name: "s", type: "string" },
+      { name: "prefix", type: "string" },
+    ],
+    returnType: "boolean",
+    description: "Returns true if `s` starts with `prefix`.",
+    example: 'computed isAdmin = startsWith(role, "admin_")',
+    snippet: "startsWith(${1:s}, ${2:prefix})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "endsWith",
+    category: "string",
+    signature: "(s: string, suffix: string) => boolean",
+    parameters: [
+      { name: "s", type: "string" },
+      { name: "suffix", type: "string" },
+    ],
+    returnType: "boolean",
+    description: "Returns true if `s` ends with `suffix`.",
+    example: 'computed isJson = endsWith(filename, ".json")',
+    snippet: "endsWith(${1:s}, ${2:suffix})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "strIncludes",
+    category: "string",
+    signature: "(s: string, sub: string) => boolean",
+    parameters: [
+      { name: "s", type: "string" },
+      { name: "sub", type: "string" },
+    ],
+    returnType: "boolean",
+    description: "Returns true if `s` contains `sub`.",
+    example: 'computed isEmail = strIncludes(email, "@")',
+    snippet: 'strIncludes(${1:s}, ${2:sub})',
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "indexOf",
+    category: "string",
+    signature: "(s: string, sub: string) => number",
+    parameters: [
+      { name: "s", type: "string" },
+      { name: "sub", type: "string" },
+    ],
+    returnType: "number",
+    description:
+      "Index of first occurrence of `sub` in `s`. Returns -1 if not found.",
+    example: 'computed atPos = indexOf(email, "@")',
+    snippet: "indexOf(${1:s}, ${2:sub})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "replace",
+    category: "string",
+    signature: "(s: string, from: string, to: string) => string",
+    parameters: [
+      { name: "s", type: "string" },
+      { name: "from", type: "string" },
+      { name: "to", type: "string" },
+    ],
+    returnType: "string",
+    description: "Replace first occurrence of `from` with `to`.",
+    example: 'computed cleaned = replace(text, "old", "new")',
+    snippet: "replace(${1:s}, ${2:from}, ${3:to})",
+    minArgs: 2,
+    maxArgs: 3,
+  },
+  {
+    name: "split",
+    category: "string",
+    signature: "(s: string, delimiter: string) => Array<string>",
+    parameters: [
+      { name: "s", type: "string" },
+      { name: "delimiter", type: "string" },
+    ],
+    returnType: "Array<string>",
+    description: "Split `s` by `delimiter`. Returns an array of strings.",
+    example: 'computed parts = split(email, "@")',
+    snippet: "split(${1:s}, ${2:delimiter})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+
+  // ============ Null and Type ============
+  {
+    name: "isNull",
+    category: "null_type",
+    signature: "(x: T) => boolean",
+    parameters: [{ name: "x", type: "T" }],
+    returnType: "boolean",
+    description: "Returns `true` if `x` is `null`.",
+    example: "computed isEmpty = isNull(selectedId)",
+    snippet: "isNull(${1:x})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "isNotNull",
+    category: "null_type",
+    signature: "(x: T) => boolean",
+    parameters: [{ name: "x", type: "T" }],
+    returnType: "boolean",
+    description: "Returns `true` if `x` is not `null`.",
+    example: "computed isSelected = isNotNull(selectedId)",
+    snippet: "isNotNull(${1:x})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "coalesce",
+    category: "null_type",
+    signature: "(...args: T[]) => T",
+    parameters: [{ name: "args", type: "...T" }],
+    returnType: "T",
+    description:
+      "Returns the first non-null argument. Variadic. Note: `coalesce(0, 1)` returns `0` (not truthy check).",
+    example: 'computed displayName = coalesce(user.name, "Anonymous")',
+    snippet: "coalesce(${1:a}, ${2:b})",
+    minArgs: 1,
+    maxArgs: null,
+  },
+  {
+    name: "typeof",
+    category: "null_type",
+    signature: "(x: any) => string",
+    parameters: [{ name: "x", type: "any" }],
+    returnType: "string",
+    description:
+      'Returns type as string: "string", "number", "boolean", "null", "object", "array".',
+    example: 'computed isString = eq(typeof(value), "string")',
+    snippet: "typeof(${1:x})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "toNumber",
+    category: "null_type",
+    signature: "(x: string | boolean | null) => number",
+    parameters: [{ name: "x", type: "string | boolean | null" }],
+    returnType: "number",
+    description: "Convert to number.",
+    example: "computed num = toNumber(strValue)",
+    snippet: "toNumber(${1:x})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "toBoolean",
+    category: "null_type",
+    signature: "(x: any) => boolean",
+    parameters: [{ name: "x", type: "any" }],
+    returnType: "boolean",
+    description: "Convert to boolean.",
+    example: "computed flag = toBoolean(value)",
+    snippet: "toBoolean(${1:x})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+
+  // ============ Array and Collection ============
+  {
+    name: "len",
+    category: "array",
+    signature: "(arr: Array<T>) => number",
+    parameters: [{ name: "arr", type: "Array<T>" }],
+    returnType: "number",
+    description:
+      "Array length. Array-only — use `keys()` for records, then `len()`.",
+    example: "computed count = len(items)",
+    snippet: "len(${1:arr})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "at",
+    category: "array",
+    signature: "(collection: Array<T> | Record<K,V>, index: number | K) => T | V | null",
+    parameters: [
+      { name: "collection", type: "Array<T> | Record<K,V>" },
+      { name: "index", type: "number | K" },
+    ],
+    returnType: "T | V | null",
+    description:
+      "Element at index (arrays) or value for key (records). Returns `null` if not found. Sugar: `arr[i]` / `rec[k]`.",
+    example: "computed selected = at(tasks, selectedId)",
+    snippet: "at(${1:collection}, ${2:index})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "first",
+    category: "array",
+    signature: "(arr: Array<T>) => T | null",
+    parameters: [{ name: "arr", type: "Array<T>" }],
+    returnType: "T | null",
+    description: "First element. Returns `null` if empty.",
+    example: "computed firstItem = first(items)",
+    snippet: "first(${1:arr})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "last",
+    category: "array",
+    signature: "(arr: Array<T>) => T | null",
+    parameters: [{ name: "arr", type: "Array<T>" }],
+    returnType: "T | null",
+    description: "Last element. Returns `null` if empty.",
+    example: "computed lastItem = last(items)",
+    snippet: "last(${1:arr})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "slice",
+    category: "array",
+    signature: "(arr: Array<T>, start: number, end?: number) => Array<T>",
+    parameters: [
+      { name: "arr", type: "Array<T>" },
+      { name: "start", type: "number" },
+      { name: "end", type: "number", optional: true },
+    ],
+    returnType: "Array<T>",
+    description: "Subarray from `start` to `end` (exclusive).",
+    example: "computed page = slice(items, 0, 10)",
+    snippet: "slice(${1:arr}, ${2:start}, ${3:end})",
+    minArgs: 2,
+    maxArgs: 3,
+  },
+  {
+    name: "append",
+    category: "array",
+    signature: "(arr: Array<T>, ...items: T[]) => Array<T>",
+    parameters: [
+      { name: "arr", type: "Array<T>" },
+      { name: "items", type: "...T" },
+    ],
+    returnType: "Array<T>",
+    description: "Returns new array with items appended. Does not mutate.",
+    example: "computed withNew = append(items, newItem)",
+    snippet: "append(${1:arr}, ${2:item})",
+    minArgs: 1,
+    maxArgs: null,
+  },
+  {
+    name: "includes",
+    category: "array",
+    signature: "(arr: Array<T>, item: T) => boolean",
+    parameters: [
+      { name: "arr", type: "Array<T>" },
+      { name: "item", type: "T" },
+    ],
+    returnType: "boolean",
+    description: "Returns `true` if `arr` contains `item`.",
+    example: "computed isSelected = includes(selectedIds, id)",
+    snippet: "includes(${1:arr}, ${2:item})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "filter",
+    category: "array",
+    signature: "(arr: Array<T>, predicate: boolean expr) => Array<T>",
+    parameters: [
+      { name: "arr", type: "Array<T>" },
+      {
+        name: "predicate",
+        type: "boolean expr",
+        description: "Boolean expression using $item",
+      },
+    ],
+    returnType: "Array<T>",
+    description: "Filter elements where predicate is true. Use `$item`.",
+    example: "computed active = filter(items, eq($item.active, true))",
+    snippet: "filter(${1:arr}, ${2:predicate})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "map",
+    category: "array",
+    signature: "(arr: Array<T>, mapper: expr) => Array<U>",
+    parameters: [
+      { name: "arr", type: "Array<T>" },
+      { name: "mapper", type: "expr", description: "Expression using $item" },
+    ],
+    returnType: "Array<U>",
+    description: "Transform each element. Use `$item`.",
+    example: "computed names = map(users, $item.name)",
+    snippet: "map(${1:arr}, ${2:mapper})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "find",
+    category: "array",
+    signature: "(arr: Array<T>, predicate: boolean expr) => T | null",
+    parameters: [
+      { name: "arr", type: "Array<T>" },
+      {
+        name: "predicate",
+        type: "boolean expr",
+        description: "Boolean expression using $item",
+      },
+    ],
+    returnType: "T | null",
+    description: "Find first element matching predicate. Use `$item`.",
+    example: "computed firstActive = find(items, eq($item.active, true))",
+    snippet: "find(${1:arr}, ${2:predicate})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "every",
+    category: "array",
+    signature: "(arr: Array<T>, predicate: boolean expr) => boolean",
+    parameters: [
+      { name: "arr", type: "Array<T>" },
+      { name: "predicate", type: "boolean expr" },
+    ],
+    returnType: "boolean",
+    description: "True if all elements match predicate. Use `$item`.",
+    example: "computed allDone = every(tasks, eq($item.done, true))",
+    snippet: "every(${1:arr}, ${2:predicate})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "some",
+    category: "array",
+    signature: "(arr: Array<T>, predicate: boolean expr) => boolean",
+    parameters: [
+      { name: "arr", type: "Array<T>" },
+      { name: "predicate", type: "boolean expr" },
+    ],
+    returnType: "boolean",
+    description: "True if any element matches predicate. Use `$item`.",
+    example: 'computed anyFailed = some(tasks, eq($item.status, "error"))',
+    snippet: "some(${1:arr}, ${2:predicate})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "reverse",
+    category: "array",
+    signature: "(arr: Array<T>) => Array<T>",
+    parameters: [{ name: "arr", type: "Array<T>" }],
+    returnType: "Array<T>",
+    description: "Returns reversed array. Does not mutate.",
+    example: "computed reversed = reverse(items)",
+    snippet: "reverse(${1:arr})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "unique",
+    category: "array",
+    signature: "(arr: Array<T>) => Array<T>",
+    parameters: [{ name: "arr", type: "Array<T>" }],
+    returnType: "Array<T>",
+    description: "Returns array with duplicates removed.",
+    example: "computed uniqueIds = unique(allIds)",
+    snippet: "unique(${1:arr})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "flat",
+    category: "array",
+    signature: "(arr: Array<Array<T>>) => Array<T>",
+    parameters: [{ name: "arr", type: "Array<Array<T>>" }],
+    returnType: "Array<T>",
+    description: "Flattens one level of nesting.",
+    example: "computed allMembers = flat(teamMemberArrays)",
+    snippet: "flat(${1:arr})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+
+  // ============ Object ============
+  {
+    name: "keys",
+    category: "object",
+    signature: "(obj: Object) => Array<string>",
+    parameters: [{ name: "obj", type: "Object" }],
+    returnType: "Array<string>",
+    description:
+      "Object keys. Returns `[]` for null or non-objects.",
+    example: "computed taskIds = keys(tasks)",
+    snippet: "keys(${1:obj})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "values",
+    category: "object",
+    signature: "(obj: Object) => Array<unknown>",
+    parameters: [{ name: "obj", type: "Object" }],
+    returnType: "Array<unknown>",
+    description: "Object values in key order. Returns `[]` for null or non-objects.",
+    example: "computed taskList = values(tasks)",
+    snippet: "values(${1:obj})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "entries",
+    category: "object",
+    signature: "(obj: Object) => Array<[string, unknown]>",
+    parameters: [{ name: "obj", type: "Object" }],
+    returnType: "Array<[string, unknown]>",
+    description:
+      "Key-value pairs in key order. Returns `[]` for null or non-objects.",
+    example: "computed taskPairs = entries(tasks)",
+    snippet: "entries(${1:obj})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+  {
+    name: "merge",
+    category: "object",
+    signature: "(...objects: Object[]) => Object",
+    parameters: [{ name: "objects", type: "...Object" }],
+    returnType: "Object",
+    description:
+      "Shallow merge. Later objects override earlier keys. Variadic.",
+    example: 'computed withDefaults = merge(config, { theme: "light" })',
+    snippet: "merge(${1:a}, ${2:b})",
+    minArgs: 1,
+    maxArgs: null,
+  },
+  {
+    name: "field",
+    category: "object",
+    signature: '(obj: Object, property: string) => unknown',
+    parameters: [
+      { name: "obj", type: "Object" },
+      { name: "property", type: "string" },
+    ],
+    returnType: "unknown",
+    description:
+      "Access a property on an object. `a.b` compiles to `field(a, \"b\")`.",
+    example: "computed title = field(at(tasks, id), \"title\")",
+    snippet: 'field(${1:obj}, ${2:property})',
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "hasKey",
+    category: "object",
+    signature: "(obj: Object, key: string) => boolean",
+    parameters: [
+      { name: "obj", type: "Object" },
+      { name: "key", type: "string" },
+    ],
+    returnType: "boolean",
+    description: "Returns true if the object contains the given key.",
+    example: 'computed exists = hasKey(tasks, "task-1")',
+    snippet: "hasKey(${1:obj}, ${2:key})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "pick",
+    category: "object",
+    signature: "(obj: Object, keys: Array<string>) => Object",
+    parameters: [
+      { name: "obj", type: "Object" },
+      { name: "keys", type: "Array<string>" },
+    ],
+    returnType: "Object",
+    description: "Returns a new object with only the specified keys.",
+    example: 'computed subset = pick(user, ["name", "email"])',
+    snippet: "pick(${1:obj}, ${2:keys})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "omit",
+    category: "object",
+    signature: "(obj: Object, keys: Array<string>) => Object",
+    parameters: [
+      { name: "obj", type: "Object" },
+      { name: "keys", type: "Array<string>" },
+    ],
+    returnType: "Object",
+    description: "Returns a new object without the specified keys.",
+    example: 'computed safe = omit(user, ["password"])',
+    snippet: "omit(${1:obj}, ${2:keys})",
+    minArgs: 2,
+    maxArgs: 2,
+  },
+  {
+    name: "fromEntries",
+    category: "object",
+    signature: "(entries: Array<[string, T]>) => Record<string, T>",
+    parameters: [{ name: "entries", type: "Array<[string, T]>" }],
+    returnType: "Record<string, T>",
+    description: "Creates an object from key-value pairs.",
+    example: "computed obj = fromEntries(pairs)",
+    snippet: "fromEntries(${1:entries})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+
+  // ============ Aggregation ============
+  {
+    name: "sum",
+    category: "aggregation",
+    signature: "(arr: Array<number>) => number",
+    parameters: [{ name: "arr", type: "Array<number>" }],
+    returnType: "number",
+    description:
+      "Sum array elements. Computed-only — cannot be used in action guards.",
+    example: "computed total = sum(prices)",
+    snippet: "sum(${1:arr})",
+    minArgs: 1,
+    maxArgs: 1,
+  },
+];
+
+// Alias mappings: alias → canonical name
+const ALIASES: Record<string, string> = {
+  toLowerCase: "lower",
+  toUpperCase: "upper",
+  strLen: "strlen",
+  length: "len",
+  substr: "substring",
+};
+
+/** Map of all builtin functions by name */
+export const BUILTIN_FUNCTIONS: Map<string, BuiltinFunction> = new Map();
+
+// Populate from definitions
+for (const fn of BUILTINS) {
+  BUILTIN_FUNCTIONS.set(fn.name, fn);
+}
+
+// Populate aliases pointing to the same definition
+for (const [alias, canonical] of Object.entries(ALIASES)) {
+  const fn = BUILTIN_FUNCTIONS.get(canonical);
+  if (fn) {
+    BUILTIN_FUNCTIONS.set(alias, { ...fn, name: alias });
+  }
+}
+
+/** Get a builtin function by name */
+export function getBuiltinFunction(
+  name: string
+): BuiltinFunction | undefined {
+  return BUILTIN_FUNCTIONS.get(name);
+}
+
+/** Get all builtin functions (excluding aliases) */
+export function getAllBuiltinFunctions(): BuiltinFunction[] {
+  return BUILTINS;
+}

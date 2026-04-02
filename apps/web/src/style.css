@@ -6,7 +6,10 @@
 @source "../../../packages/studio-ui/src";
 
 @layer base {
+  html,
+  body,
   #app {
-    min-height: 100vh;
+    height: 100vh;
+    overflow: hidden;
   }
 }

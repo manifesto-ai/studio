@@ -20,7 +20,8 @@
       "@manifesto-ai/ui-core": ["packages/ui-core/src/index.ts"],
       "@manifesto-ai/ui-core/*": ["packages/ui-core/src/*"],
       "@manifesto-ai/studio-ui": ["packages/studio-ui/src/index.ts"],
-      "@manifesto-ai/studio-ui/*": ["packages/studio-ui/src/*"]
+      "@manifesto-ai/studio-ui/*": ["packages/studio-ui/src/*"],
+      "@manifesto-ai/mel-editor": ["packages/mel-editor/src/index.ts"]
     }
   }
 }

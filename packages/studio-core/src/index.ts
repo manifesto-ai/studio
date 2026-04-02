@@ -67,9 +67,21 @@ export type {
   LineageBranchProjection,
   LineageStateProjection,
   LineageWorldProjection,
+  ObservationMode,
+  ObservationOutcome,
+  ObservationRecord,
+  ProjectionBucketRange,
+  ProjectionGroupBySelection,
+  ProjectionObserveSelection,
+  ProjectionPreset,
+  ProjectionSignatureEntry,
+  ProjectionTransformSpec,
   ProjectionUnavailable,
   SnapshotFieldInspection,
   SnapshotInspectorProjection,
+  TransitionGraphEdge,
+  TransitionGraphNode,
+  TransitionGraphProjection,
   TraceReplayProjection,
   TraceReplayStep
 } from "./contracts/projections.js";
@@ -89,3 +101,7 @@ export type {
   VersionCompatibility
 } from "./contracts/versioning.js";
 export { createStudioSession } from "./session/create-studio-session.js";
+export {
+  projectTransitionGraph,
+  summarizeProjectionSignature
+} from "./projection/transition-graph-projection.js";
