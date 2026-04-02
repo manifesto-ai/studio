@@ -1,0 +1,121 @@
+{
+  "status": "ready",
+  "summary": {
+    "total": 2,
+    "bySeverity": {
+      "error": 1,
+      "warn": 1,
+      "info": 0
+    },
+    "byKind": {
+      "missing-producer": 1,
+      "dead-state": 1
+    }
+  },
+  "findings": [
+    {
+      "kind": "missing-producer",
+      "subject": {
+        "nodeId": "state:draft",
+        "path": "state.draft"
+      },
+      "message": "State field \"draft\" has no patch producer.",
+      "evidence": [
+        {
+          "ref": {
+            "nodeId": "state:draft",
+            "path": "state.draft"
+          },
+          "role": "state"
+        }
+      ],
+      "id": "missing-producer:state:draft:state-draft:state:state:draft:state-draft",
+      "severity": "error",
+      "confidence": "exact",
+      "causeChain": {
+        "observation": {
+          "ref": {
+            "nodeId": "state:draft",
+            "path": "state.draft"
+          },
+          "fact": "State field \"draft\" has no patch producer.",
+          "provenance": "static",
+          "isRoot": false
+        },
+        "path": [
+          {
+            "ref": {
+              "nodeId": "state:draft",
+              "path": "state.draft"
+            },
+            "fact": "state: state.draft",
+            "provenance": "static",
+            "isRoot": true
+          }
+        ],
+        "root": {
+          "ref": {
+            "nodeId": "state:draft",
+            "path": "state.draft"
+          },
+          "fact": "state: state.draft",
+          "provenance": "static",
+          "isRoot": true
+        },
+        "summary": "State field \"draft\" has no patch producer."
+      }
+    },
+    {
+      "kind": "dead-state",
+      "subject": {
+        "nodeId": "state:lastSubmittedAt",
+        "path": "state.lastSubmittedAt"
+      },
+      "message": "State field \"lastSubmittedAt\" is not referenced by computed fields or action guards.",
+      "evidence": [
+        {
+          "ref": {
+            "nodeId": "state:lastSubmittedAt",
+            "path": "state.lastSubmittedAt"
+          },
+          "role": "state"
+        }
+      ],
+      "id": "dead-state:state:lastSubmittedAt:state-lastSubmittedAt:state:state:lastSubmittedAt:state-lastSubmittedAt",
+      "severity": "warn",
+      "confidence": "exact",
+      "causeChain": {
+        "observation": {
+          "ref": {
+            "nodeId": "state:lastSubmittedAt",
+            "path": "state.lastSubmittedAt"
+          },
+          "fact": "State field \"lastSubmittedAt\" is not referenced by computed fields or action guards.",
+          "provenance": "static",
+          "isRoot": false
+        },
+        "path": [
+          {
+            "ref": {
+              "nodeId": "state:lastSubmittedAt",
+              "path": "state.lastSubmittedAt"
+            },
+            "fact": "state: state.lastSubmittedAt",
+            "provenance": "static",
+            "isRoot": true
+          }
+        ],
+        "root": {
+          "ref": {
+            "nodeId": "state:lastSubmittedAt",
+            "path": "state.lastSubmittedAt"
+          },
+          "fact": "state: state.lastSubmittedAt",
+          "provenance": "static",
+          "isRoot": true
+        },
+        "summary": "State field \"lastSubmittedAt\" is not referenced by computed fields or action guards."
+      }
+    }
+  ]
+}

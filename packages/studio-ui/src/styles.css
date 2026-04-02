@@ -1,0 +1,14 @@
+@import "@xyflow/react/dist/style.css";
+
+.react-flow__attribution {
+  display: none;
+}
+
+.studio-flow-node {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.studio-flow-node .react-flow__node-default {
+  border-radius: 16px;
+}

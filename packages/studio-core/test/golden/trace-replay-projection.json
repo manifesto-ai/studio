@@ -1,0 +1,93 @@
+{
+  "status": "ready",
+  "intentType": "submit",
+  "baseVersion": 1,
+  "resultVersion": 2,
+  "duration": 5,
+  "terminatedBy": "complete",
+  "steps": [
+    {
+      "traceNodeId": "root",
+      "kind": "flow",
+      "sourcePath": "actions.submit.flow",
+      "timestamp": 1,
+      "output": {
+        "status": "complete"
+      },
+      "childCount": 0
+    },
+    {
+      "traceNodeId": "effect1",
+      "kind": "effect",
+      "sourcePath": "actions.submit.flow.steps.0",
+      "timestamp": 2,
+      "output": {
+        "requirementId": "req-1"
+      },
+      "childCount": 0
+    },
+    {
+      "traceNodeId": "patch1",
+      "kind": "patch",
+      "sourcePath": "actions.submit.flow.steps.1",
+      "timestamp": 3,
+      "output": {
+        "previous": 123,
+        "next": 123
+      },
+      "childCount": 0
+    },
+    {
+      "traceNodeId": "branch1",
+      "kind": "branch",
+      "sourcePath": "actions.submit.flow.steps.2",
+      "timestamp": 4,
+      "output": {
+        "taken": false
+      },
+      "childCount": 0
+    }
+  ],
+  "findings": [
+    {
+      "kind": "unused-branch",
+      "subject": {
+        "nodeId": "trace:branch1",
+        "path": "actions.submit.flow.steps.2"
+      },
+      "message": "Trace branch at \"actions.submit.flow.steps.2\" was evaluated but not taken.",
+      "evidence": [
+        {
+          "ref": {
+            "nodeId": "trace:branch1",
+            "path": "actions.submit.flow.steps.2"
+          },
+          "role": "trace-branch"
+        }
+      ],
+      "id": "unused-branch:trace:branch1:actions-submit-flow-steps-2:trace-branch:trace:branch1:actions-submit-flow-steps-2",
+      "severity": "info",
+      "confidence": "exact"
+    },
+    {
+      "kind": "redundant-patch",
+      "subject": {
+        "nodeId": "trace:patch1",
+        "path": "actions.submit.flow.steps.1"
+      },
+      "message": "Patch at \"actions.submit.flow.steps.1\" writes the same value it already held.",
+      "evidence": [
+        {
+          "ref": {
+            "nodeId": "trace:patch1",
+            "path": "actions.submit.flow.steps.1"
+          },
+          "role": "trace-patch"
+        }
+      ],
+      "id": "redundant-patch:trace:patch1:actions-submit-flow-steps-1:trace-patch:trace:patch1:actions-submit-flow-steps-1",
+      "severity": "info",
+      "confidence": "exact"
+    }
+  ]
+}

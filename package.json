@@ -1,0 +1,21 @@
+{
+  "name": "@manifesto-ai/studio",
+  "private": true,
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "dev": "turbo dev --filter=@manifesto-ai/studio-web",
+    "dev:web": "turbo dev --filter=@manifesto-ai/studio-web",
+    "dev:mcp": "turbo dev --filter=@manifesto-ai/studio-mcp",
+    "build": "turbo build",
+    "typecheck": "turbo typecheck",
+    "test": "turbo test",
+    "mel:lsp": "mel-lsp --stdio",
+    "studio:cli": "node ./packages/studio-cli/dist/cli.js",
+    "studio:mcp": "node ./packages/studio-mcp/dist/cli.js",
+    "studio:mcp:http": "node ./packages/studio-mcp/dist/cli.js --transport http"
+  },
+  "devDependencies": {
+    "@manifesto-ai/mel-lsp": "1.0.2",
+    "turbo": "^2.0.0"
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "status": "ready",
+  "proposals": [
+    {
+      "id": "proposal-1",
+      "branchId": "main",
+      "stage": "ingress",
+      "actorId": "alice",
+      "createdAt": 1709827200000
+    }
+  ],
+  "bindings": [],
+  "gates": [
+    {
+      "branchId": "main",
+      "locked": true,
+      "currentProposalId": "proposal-1",
+      "epoch": 2
+    }
+  ],
+  "findings": [
+    {
+      "kind": "proposal-stale",
+      "subject": {
+        "nodeId": "gov:proposal:proposal-1",
+        "path": "governance.proposals.proposal-1"
+      },
+      "message": "Governance proposal \"proposal-1\" has remained in ingress beyond the stale window.",
+      "evidence": [
+        {
+          "ref": {
+            "nodeId": "gov:proposal:proposal-1",
+            "path": "governance.proposals.proposal-1"
+          },
+          "role": "proposal"
+        }
+      ],
+      "id": "proposal-stale:gov:proposal:proposal-1:governance-proposals-proposal-1:proposal:gov:proposal:proposal-1:governance-proposals-proposal-1",
+      "severity": "warn",
+      "confidence": "exact"
+    },
+    {
+      "kind": "gate-locked",
+      "subject": {
+        "nodeId": "gov:gate:main",
+        "path": "governance.gates.main"
+      },
+      "message": "Governance gate for branch \"main\" is currently locked.",
+      "evidence": [
+        {
+          "ref": {
+            "nodeId": "gov:gate:main",
+            "path": "governance.gates.main"
+          },
+          "role": "gate"
+        }
+      ],
+      "id": "gate-locked:gov:gate:main:governance-gates-main:gate:gov:gate:main:governance-gates-main",
+      "severity": "info",
+      "confidence": "exact"
+    },
+    {
+      "kind": "actor-unbound",
+      "subject": {
+        "nodeId": "gov:proposal:proposal-1",
+        "path": "governance.proposals.proposal-1"
+      },
+      "message": "Actor \"alice\" has no governance binding for proposal \"proposal-1\".",
+      "evidence": [
+        {
+          "ref": {
+            "nodeId": "gov:proposal:proposal-1",
+            "path": "governance.proposals.proposal-1"
+          },
+          "role": "proposal"
+        }
+      ],
+      "id": "actor-unbound:gov:proposal:proposal-1:governance-proposals-proposal-1:proposal:gov:proposal:proposal-1:governance-proposals-proposal-1",
+      "severity": "warn",
+      "confidence": "exact"
+    }
+  ]
+}

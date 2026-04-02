@@ -1,0 +1,225 @@
+domain CoinSapiens {
+
+  // ─── types ───────────────────────────────────────────
+
+  type Position = {
+    positionType: "long" | "short" | "none",
+    entryPrice: number,
+    size: number,
+    unrealizedPnl: number
+  }
+
+  // ─── state ───────────────────────────────────────────
+
+  state {
+    // survival
+    balance: number = 0
+    rent: number = 500
+    daysUntilRent: number = 30
+
+    // market perception
+    lastPrice: number = 0
+    hasReceivedPrice: boolean = false
+    priceHistory: Array<number> = []
+    marketMood: "fear" | "greed" | "neutral" | "unknown" = "unknown"
+    lastMarketUpdate: number = 0
+    marketStale: boolean = true
+
+    // position
+    position: Position = {
+      positionType: "none",
+      entryPrice: 0,
+      size: 0,
+      unrealizedPnl: 0
+    }
+
+    // mind
+    stress: number = 0
+    confidence: number = 50
+    mood: "calm" | "anxious" | "excited" | "desperate" | "relieved" = "calm"
+    innerVoice: string = ""
+    lastReflection: number = 0
+
+    // stream
+    isLive: boolean = false
+    viewerCount: number = 0
+    lastUtterance: string = ""
+    silenceDuration: number = 0
+    chatQueue: Array<string> = []
+  }
+
+  // ─── computed ────────────────────────────────────────
+
+  computed survivalPressure = div(
+    mul(sub(rent, balance), 100),
+    mul(rent, max(daysUntilRent, 1))
+  )
+
+  computed canPayRent = gte(balance, rent)
+
+  computed hasMarketData = hasReceivedPrice
+
+  computed hasPosition = neq(position.positionType, "none")
+
+  computed isInProfit = gt(position.unrealizedPnl, 0)
+
+  computed isMarketStale = marketStale
+
+  computed shouldSpeak = and(isLive, gt(silenceDuration, 10000))
+
+  computed isDesperate = and(
+    gt(stress, 80),
+    lt(balance, div(rent, 2))
+  )
+
+  computed canTrade = and(
+    hasMarketData,
+    not(isMarketStale),
+    gt(balance, 0)
+  )
+
+  // ─── actions: market ─────────────────────────────────
+
+  action perceiveMarket(price: number, newMood: "fear" | "greed" | "neutral" | "unknown") {
+    onceIntent {
+      patch lastPrice = price
+      patch hasReceivedPrice = true
+      patch priceHistory = append(priceHistory, price)
+      patch marketMood = newMood
+      patch lastMarketUpdate = $system.time.now
+      patch marketStale = false
+    }
+  }
+
+  action markMarketStale() {
+    onceIntent when not(marketStale) {
+      patch marketStale = true
+    }
+  }
+
+  // ─── actions: trading ────────────────────────────────
+
+  action openPosition(dir: "long" | "short", size: number) {
+    onceIntent when canTrade {
+      patch position = {
+        positionType: dir,
+        entryPrice: lastPrice,
+        size: size,
+        unrealizedPnl: 0
+      }
+      patch balance = sub(balance, size)
+      patch confidence = min(add(confidence, 5), 100)
+      patch innerVoice = concat("Going ", dir, " with ", size, " USDT.")
+    }
+  }
+
+  action closePosition() {
+    onceIntent when hasPosition {
+      patch balance = add(balance, add(position.size, position.unrealizedPnl))
+      patch position = {
+        positionType: "none",
+        entryPrice: 0,
+        size: 0,
+        unrealizedPnl: 0
+      }
+    }
+  }
+
+  action updatePnl(currentPrice: number) {
+    onceIntent when hasPosition {
+      patch position = {
+        positionType: position.positionType,
+        entryPrice: position.entryPrice,
+        size: position.size,
+        unrealizedPnl: cond(
+          eq(position.positionType, "long"),
+          mul(position.size, div(sub(currentPrice, position.entryPrice), position.entryPrice)),
+          mul(position.size, div(sub(position.entryPrice, currentPrice), position.entryPrice))
+        )
+      }
+    }
+  }
+
+  // ─── actions: survival ───────────────────────────────
+
+  action payRent() {
+    onceIntent when canPayRent {
+      patch balance = sub(balance, rent)
+      patch daysUntilRent = 30
+      patch stress = max(sub(stress, 30), 0)
+      patch mood = "relieved"
+      patch innerVoice = "Rent paid. I live another month."
+    }
+  }
+
+  action dayPasses() {
+    onceIntent {
+      patch daysUntilRent = max(sub(daysUntilRent, 1), 0)
+      patch stress = min(
+        add(stress, cond(lt(daysUntilRent, 7), 15, 5)),
+        100
+      )
+    }
+  }
+
+  // ─── actions: mind ───────────────────────────────────
+
+  action reflect() {
+    onceIntent {
+      patch lastReflection = $system.time.now
+      patch innerVoice = concat(
+        "Balance: ", balance, " USDT. ",
+        "Rent in ", daysUntilRent, " days. ",
+        cond(hasPosition,
+          concat("Position: ", position.positionType, ", PnL: ", position.unrealizedPnl),
+          "No open position."
+        ),
+        " Mood: ", mood, "."
+      )
+    }
+  }
+
+  action updateMood(newMood: "calm" | "anxious" | "excited" | "desperate" | "relieved") {
+    onceIntent {
+      patch mood = newMood
+      patch innerVoice = concat("I feel ", newMood, " now.")
+    }
+  }
+
+  // ─── actions: stream ─────────────────────────────────
+
+  action speak(text: string) {
+    onceIntent when shouldSpeak {
+      patch lastUtterance = text
+      patch silenceDuration = 0
+    }
+  }
+
+  action listenChat(message: string) {
+    onceIntent when isLive {
+      patch chatQueue = append(chatQueue, message)
+    }
+  }
+
+  action tickSilence(elapsed: number) {
+    onceIntent when isLive {
+      patch silenceDuration = add(silenceDuration, elapsed)
+    }
+  }
+
+  action goLive() {
+    onceIntent {
+      patch isLive = true
+      patch silenceDuration = 0
+      patch innerVoice = "Going live. Time to show them what survival looks like."
+    }
+  }
+
+  action endStream() {
+    onceIntent when isLive {
+      patch isLive = false
+      patch viewerCount = 0
+      patch innerVoice = "Stream over. Back to the grind."
+    }
+  }
+}

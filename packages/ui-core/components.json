@@ -1,0 +1,21 @@
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "new-york",
+  "rsc": false,
+  "tsx": true,
+  "tailwind": {
+    "config": "",
+    "css": "src/styles.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "iconLibrary": "lucide",
+  "aliases": {
+    "components": "@manifesto-ai/ui-core/components",
+    "hooks": "@manifesto-ai/ui-core/hooks",
+    "lib": "@manifesto-ai/ui-core/lib",
+    "ui": "@manifesto-ai/ui-core/components/ui",
+    "utils": "@manifesto-ai/ui-core/lib/utils"
+  }
+}

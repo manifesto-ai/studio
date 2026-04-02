@@ -1,0 +1,66 @@
+{
+  "status": "ready",
+  "actionId": "submit",
+  "available": false,
+  "blockerSource": "runtime",
+  "blockers": [
+    {
+      "subExpression": "(userId neq null)",
+      "evaluated": false,
+      "ref": {
+        "nodeId": "guard:submit",
+        "path": "actions.submit.available.breakdown.0"
+      }
+    },
+    {
+      "subExpression": "(draft neq \"\")",
+      "evaluated": true,
+      "ref": {
+        "nodeId": "guard:submit",
+        "path": "actions.submit.available.breakdown.1"
+      }
+    }
+  ],
+  "explanation": {
+    "observation": {
+      "ref": {
+        "nodeId": "action:submit",
+        "path": "actions.submit"
+      },
+      "fact": "Action \"submit\" is currently blocked by its availability guard.",
+      "provenance": "static",
+      "isRoot": false
+    },
+    "path": [
+      {
+        "ref": {
+          "nodeId": "action:submit",
+          "path": "actions.submit"
+        },
+        "fact": "action: actions.submit",
+        "provenance": "static",
+        "isRoot": false
+      },
+      {
+        "ref": {
+          "nodeId": "guard:submit",
+          "path": "actions.submit.available"
+        },
+        "fact": "guard: actions.submit.available",
+        "provenance": "static",
+        "isRoot": true
+      }
+    ],
+    "root": {
+      "ref": {
+        "nodeId": "guard:submit",
+        "path": "actions.submit.available"
+      },
+      "fact": "guard: actions.submit.available",
+      "provenance": "static",
+      "isRoot": true
+    },
+    "summary": "Action \"submit\" is currently blocked by its availability guard."
+  },
+  "summary": "Action \"submit\" is currently blocked by its availability guard."
+}
