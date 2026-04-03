@@ -18,11 +18,11 @@ pnpm build
 pnpm typecheck
 pnpm mel:lsp
 pnpm studio:cli help
-pnpm studio:cli analyze apps/web/src/domain/coin-sapiens.mel
-pnpm studio:cli graph apps/web/src/domain/coin-sapiens.mel --format json
-pnpm studio:cli graph apps/web/src/domain/coin-sapiens.mel --format dot
+pnpm studio:cli analyze path/to/domain.mel
+pnpm studio:cli graph path/to/domain.mel --format json
+pnpm studio:cli graph path/to/domain.mel --format dot
 pnpm studio:mcp --help
-pnpm studio:mcp:http -- --host 0.0.0.0 --port 8787 --mel apps/web/src/domain/coin-sapiens.mel
+pnpm studio:mcp:http -- --host 0.0.0.0 --port 8787 --mel path/to/domain.mel
 ```
 
 ## MEL Tooling
@@ -38,3 +38,4 @@ pnpm studio:mcp:http -- --host 0.0.0.0 --port 8787 --mel apps/web/src/domain/coi
 - `studio-cli` supports `analyze`, `check`, `graph`, `explain`, `trace`, `availability`, `snapshot`, `lineage`, and `governance`.
 - `studio-mcp` exposes the PRD MVP tools `explain_action_blocker`, `get_domain_graph`, `find_issues`, `get_action_availability`, `analyze_trace`, `get_lineage_state`, and `get_governance_state`.
 - `studio-mcp` supports both stdio and Streamable HTTP transport. Remote Claude connectors should target a public HTTPS URL ending in `/mcp`.
+- Package-level usage docs live in `packages/studio-cli/README.md` and `packages/studio-mcp/README.md`.
