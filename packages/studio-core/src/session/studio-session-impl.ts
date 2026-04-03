@@ -66,7 +66,10 @@ import { projectTraceReplay } from "../projection/trace-replay-projection.js";
 import { formatIssues } from "../ingest/issues.js";
 import { ingestGovernance } from "../ingest/governance-ingest.js";
 import { ingestLineage } from "../ingest/lineage-ingest.js";
-import { ingestSnapshot } from "../ingest/snapshot-ingest.js";
+import {
+  createInvalidSnapshotOverlayError,
+  ingestSnapshot
+} from "../ingest/snapshot-ingest.js";
 import { ingestTrace } from "../ingest/trace-ingest.js";
 import { buildRuntimeOverlayContext } from "./core-oracle.js";
 
@@ -167,7 +170,12 @@ export class StudioSessionImpl implements StudioSession {
   }
 
   attachSnapshot(snapshot: Snapshot): void {
-    this.snapshot = ingestSnapshot(snapshot);
+    const result = ingestSnapshot(snapshot);
+    if (result.issues.length > 0) {
+      throw createInvalidSnapshotOverlayError(result.issues);
+    }
+
+    this.snapshot = result.value;
     this.invalidate("snapshot");
   }
 

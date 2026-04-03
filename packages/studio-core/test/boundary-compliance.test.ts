@@ -161,7 +161,8 @@ describe("studio-core boundary and compliance", () => {
     };
 
     expect(packageJson.dependencies).toEqual({
-      "@manifesto-ai/core": "2.8.0"
+      "@manifesto-ai/core": "^2.9.0",
+      "@manifesto-ai/sdk": "^3.4.0"
     });
   });
 

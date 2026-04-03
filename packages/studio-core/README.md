@@ -5,11 +5,14 @@ Read-only analysis engine for Manifesto domain models. The package builds a stat
 ## Entry Point
 
 ```ts
+import { createManifesto } from "@manifesto-ai/sdk";
 import { createStudioSession } from "@manifesto-ai/studio-core";
+
+const runtime = createManifesto(schema, effects).activate();
 
 const session = createStudioSession({
   schema,
-  snapshot,
+  snapshot: runtime.getCanonicalSnapshot(),
   trace,
   lineage,
   governance
@@ -31,12 +34,13 @@ Session options:
 ## Session Flow
 
 ```ts
+const runtime = createManifesto(schema, effects).activate();
 const session = createStudioSession({ schema });
 
 const graph = session.getGraph("full");
 const findings = session.getFindings();
 
-session.attachSnapshot(snapshot);
+session.attachSnapshot(runtime.getCanonicalSnapshot());
 const availability = session.getActionAvailability();
 const blocker = session.explainActionBlocker("submit");
 
@@ -84,13 +88,16 @@ All stable projections and findings are JSON-serializable. Golden fixtures for t
 
 ## Input Adaptation
 
+`snapshot` accepts only canonical Manifesto runtime snapshots from `runtime.getCanonicalSnapshot()`.
+
 `lineage` and `governance` accept both canonical studio exports and plain query-like inputs.
 
+- canonical runtime snapshot: `Snapshot` from `runtime.getCanonicalSnapshot()`
 - canonical exports: `LineageExport`, `GovernanceExport`
 - widened input: records, tuple-entry arrays, and value arrays for `worlds`, `attempts`, `proposals`, and `gates`
 - keyed inputs may omit `worldId`, `id`, or `branchId` when the surrounding key already provides it
 
-Inputs are normalized into canonical `Map`-backed export shapes before graph or analyzer code runs.
+Lineage and governance inputs are normalized into canonical `Map`-backed export shapes before graph or analyzer code runs.
 
 ## Overlay Absence
 
@@ -105,8 +112,9 @@ Optional overlays never fail the entire session. Overlay-specific APIs return st
 
 Validation behavior is session-scoped.
 
-- `validationMode: "lenient"` drops malformed optional overlays and degrades to `"not-provided"`
-- `validationMode: "strict"` throws during session creation or overlay attach when an overlay is malformed
+- invalid `snapshot` inputs always throw with guidance to use `runtime.getCanonicalSnapshot()`
+- `validationMode: "lenient"` drops malformed optional `trace`, `lineage`, and `governance` overlays and degrades to `"not-provided"`
+- `validationMode: "strict"` throws during session creation or overlay attach when `trace`, `lineage`, or `governance` is malformed
 
 ## Heuristics
 
@@ -122,5 +130,5 @@ Consumers should treat both findings as investigation prompts, not proof of inva
 ## Compatibility Notes
 
 - Runtime oracle integration uses `@manifesto-ai/core` public APIs only.
-- `@manifesto-ai/compiler`, `@manifesto-ai/sdk`, and `@manifesto-ai/codegen` are installed in this workspace for end-to-end integration work, but `studio-core` has a single production dependency: `@manifesto-ai/core`.
-- `@manifesto-ai/codegen@0.2.1` currently emits a peer warning against newer `@manifesto-ai/core` versions. The warning is non-blocking for the current `studio-core` build and test matrix.
+- `@manifesto-ai/sdk` provides the canonical snapshot type used by the public session contract.
+- `@manifesto-ai/compiler` and `@manifesto-ai/codegen` are installed in this workspace for end-to-end integration work and aligned to the current `@manifesto-ai/core` release line.

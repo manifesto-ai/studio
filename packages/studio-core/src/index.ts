@@ -3,6 +3,7 @@ export type {
   ActorBindingSummary,
   AnalysisBundle,
   BranchSummary,
+  CanonicalSnapshot,
   DomainSchema,
   ExplainResult,
   GateStateSummary,

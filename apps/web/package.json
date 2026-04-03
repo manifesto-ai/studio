@@ -13,7 +13,7 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
-    "@manifesto-ai/sdk": "3.3.0",
+    "@manifesto-ai/sdk": "^3.4.0",
     "@manifesto-ai/studio-core": "workspace:*",
     "@manifesto-ai/studio-ui": "workspace:*",
     "@manifesto-ai/ui-core": "workspace:*",
@@ -26,8 +26,8 @@
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^5.1.0",
-    "@manifesto-ai/codegen": "0.2.1",
-    "@manifesto-ai/compiler": "3.0.0",
+    "@manifesto-ai/codegen": "^0.2.3",
+    "@manifesto-ai/compiler": "^3.1.1",
     "@types/node": "^24.0.0",
     "tailwindcss": "^4.1.12",
     "typescript": "^5.8.0",

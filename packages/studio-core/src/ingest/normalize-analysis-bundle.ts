@@ -13,7 +13,10 @@ import { formatIssues } from "./issues.js";
 import { ingestGovernance } from "./governance-ingest.js";
 import { ingestLineage } from "./lineage-ingest.js";
 import { ingestSchema } from "./schema-ingest.js";
-import { ingestSnapshot } from "./snapshot-ingest.js";
+import {
+  createInvalidSnapshotOverlayError,
+  ingestSnapshot
+} from "./snapshot-ingest.js";
 import { ingestTrace } from "./trace-ingest.js";
 
 export type NormalizedOverlayState<T> = {
@@ -71,13 +74,19 @@ export function normalizeAnalysisBundle(
 ): NormalizedAnalysisBundle {
   const validationMode = options.validationMode ?? "lenient";
   const { schema, schemaHash } = ingestSchema(bundle.schema);
+  const snapshotResult =
+    bundle.snapshot !== undefined ? ingestSnapshot(bundle.snapshot) : undefined;
+
+  if (snapshotResult && snapshotResult.issues.length > 0) {
+    throw createInvalidSnapshotOverlayError(snapshotResult.issues);
+  }
 
   return {
     schema,
     schemaHash,
     snapshot: normalizeProvidedOverlay(
       bundle.snapshot !== undefined,
-      bundle.snapshot ? ingestSnapshot(bundle.snapshot) : absentOverlay<Snapshot>(),
+      snapshotResult ?? absentOverlay<Snapshot>(),
       "snapshot",
       validationMode
     ),

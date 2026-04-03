@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import type { GovernanceInput, LineageInput, TraceGraph } from "../src/index.js";
+import type {
+  GovernanceInput,
+  LineageInput,
+  Snapshot,
+  TraceGraph
+} from "../src/index.js";
 
 import { createStudioSession } from "../src/index.js";
 import { normalizeAnalysisBundle } from "../src/ingest/normalize-analysis-bundle.js";
@@ -59,6 +64,18 @@ const invalidTrace = {
   duration: 5,
   terminatedBy: "complete"
 } as unknown as TraceGraph;
+
+const invalidSnapshot = {
+  meta: {
+    version: "1",
+    timestamp: "2"
+  },
+  data: [],
+  system: {
+    pendingRequirements: {}
+  },
+  computed: []
+} as unknown as Snapshot;
 
 describe("studio-core ingest and session options", () => {
   it("normalizes plain lineage and governance query shapes into canonical exports", () => {
@@ -137,6 +154,39 @@ describe("studio-core ingest and session options", () => {
         }
       )
     ).toThrow(/Invalid trace overlay/);
+  });
+
+  it("throws on invalid snapshots in lenient mode with canonical snapshot guidance", () => {
+    expect(() =>
+      normalizeAnalysisBundle(
+        {
+          schema: sampleSchema,
+          snapshot: invalidSnapshot
+        },
+        {
+          validationMode: "lenient"
+        }
+      )
+    ).toThrow(
+      /studio-core expects a canonical snapshot from Manifesto runtime\.getCanonicalSnapshot\(\)\./
+    );
+
+    expect(() =>
+      createStudioSession({
+        schema: sampleSchema,
+        snapshot: invalidSnapshot
+      })
+    ).toThrow(
+      /studio-core expects a canonical snapshot from Manifesto runtime\.getCanonicalSnapshot\(\)\./
+    );
+  });
+
+  it("throws when attaching an invalid snapshot", () => {
+    const session = createStudioSession({ schema: sampleSchema });
+
+    expect(() => session.attachSnapshot(invalidSnapshot)).toThrow(
+      /studio-core expects a canonical snapshot from Manifesto runtime\.getCanonicalSnapshot\(\)\./
+    );
   });
 
   it("respects custom stale thresholds at session creation", () => {

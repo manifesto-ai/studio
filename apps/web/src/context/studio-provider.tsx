@@ -125,7 +125,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       teardownRef.current?.();
 
       const runtime = createRuntime(result.schema);
-      const snapshot = runtime.getSnapshot() as AppSnapshot;
+      const snapshot = runtime.getCanonicalSnapshot() as AppSnapshot;
       const session = createStudioSession({ schema: result.schema, snapshot });
 
       runtimeRef.current = runtime;
@@ -196,7 +196,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
               args: pending?.args ?? [],
               outcome: "blocked",
               beforeSnapshot:
-                pending?.beforeSnapshot ?? (runtime.getSnapshot() as AppSnapshot),
+                pending?.beforeSnapshot ?? (runtime.getCanonicalSnapshot() as AppSnapshot),
               blocker: pending?.blocker ?? blocker,
               timestamp: pending?.startedAt ?? Date.now()
             },
@@ -224,7 +224,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
                 args: pending?.args ?? [],
                 outcome: "failed",
                 beforeSnapshot:
-                  pending?.beforeSnapshot ?? (runtime.getSnapshot() as AppSnapshot),
+                  pending?.beforeSnapshot ?? (runtime.getCanonicalSnapshot() as AppSnapshot),
                 afterSnapshot: failedSnapshot,
                 blocker: pending?.blocker,
                 timestamp: pending?.startedAt ?? Date.now()
@@ -281,7 +281,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const beforeSnapshot = runtime.getSnapshot() as AppSnapshot;
+      const beforeSnapshot = runtime.getCanonicalSnapshot() as AppSnapshot;
       const actionBlocker = session.explainActionBlocker(actionId);
 
       pendingRef.current = {

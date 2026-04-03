@@ -2,9 +2,9 @@ import {
   createSnapshot,
   hashSchemaSync,
   type DomainSchema,
-  type Snapshot,
   type TraceGraph
 } from "@manifesto-ai/core";
+import type { Snapshot } from "../../src/index.js";
 
 export const FIXED_NOW = 1_710_000_000_000;
 const STALE_TIMESTAMP = FIXED_NOW - 1000 * 60 * 60 * 48;
@@ -95,7 +95,9 @@ export const sampleSchema: DomainSchema = {
   hash: hashSchemaSync(schemaInput)
 };
 
-export function createSampleSnapshot(data?: Partial<Record<string, unknown>>): Snapshot {
+export function createSampleSnapshot(
+  data?: Partial<Record<string, unknown>>
+): Snapshot<Record<string, unknown>> {
   return createSnapshot(
     {
       userId: null,
@@ -108,7 +110,7 @@ export function createSampleSnapshot(data?: Partial<Record<string, unknown>>): S
       now: FIXED_NOW,
       randomSeed: "studio-seed"
     }
-  );
+  ) as Snapshot<Record<string, unknown>>;
 }
 
 export const sampleTrace: TraceGraph = {

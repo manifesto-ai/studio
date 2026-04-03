@@ -1,0 +1,83 @@
+name: publish-packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      npm_tag:
+        description: npm dist-tag to publish under
+        required: true
+        default: latest
+      dry_run:
+        description: Run publish in dry-run mode
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      NPM_CONFIG_PROVENANCE: "true"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test studio-core
+        run: pnpm --filter @manifesto-ai/studio-core test
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Publish packages
+        env:
+          NPM_TAG: ${{ inputs.npm_tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          packages=(
+            "@manifesto-ai/ui-core"
+            "@manifesto-ai/studio-core"
+            "@manifesto-ai/studio-ui"
+            "@manifesto-ai/studio-node"
+            "@manifesto-ai/studio-cli"
+            "@manifesto-ai/studio-mcp"
+            "@manifesto-ai/mel-editor"
+          )
+
+          for pkg in "${packages[@]}"; do
+            version="$(pnpm --filter "${pkg}" exec node -p "require('./package.json').version")"
+
+            if npm view "${pkg}@${version}" version >/dev/null 2>&1; then
+              echo "Skipping ${pkg}@${version}; already published."
+              continue
+            fi
+
+            if [ "${DRY_RUN}" = "true" ]; then
+              pnpm --filter "${pkg}" publish --dry-run --no-git-checks
+            else
+              pnpm --filter "${pkg}" publish --tag "${NPM_TAG}" --no-git-checks
+            fi
+          done

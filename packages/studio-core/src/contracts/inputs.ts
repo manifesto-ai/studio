@@ -1,17 +1,19 @@
 import type {
   DomainSchema,
-  Snapshot,
   TraceGraph
 } from "@manifesto-ai/core";
+import type { CanonicalSnapshot } from "@manifesto-ai/sdk";
 
 export type {
   DomainSchema,
   ExplainResult,
   FieldSpec,
   SemanticPath,
-  Snapshot,
   TraceGraph
 } from "@manifesto-ai/core";
+export type { CanonicalSnapshot } from "@manifesto-ai/sdk";
+
+export type Snapshot<TData = unknown> = CanonicalSnapshot<TData>;
 
 export type KeyedEntries<T> = ReadonlyArray<readonly [string, T]>;
 

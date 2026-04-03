@@ -12,6 +12,9 @@
       "require": "./dist/index.cjs"
     }
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist"
   ],
@@ -21,12 +24,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@manifesto-ai/core": "2.8.0"
+    "@manifesto-ai/core": "^2.9.0",
+    "@manifesto-ai/sdk": "^3.4.0"
   },
   "devDependencies": {
-    "@manifesto-ai/codegen": "0.2.1",
-    "@manifesto-ai/compiler": "3.0.0",
-    "@manifesto-ai/sdk": "3.3.0",
+    "@manifesto-ai/codegen": "^0.2.3",
+    "@manifesto-ai/compiler": "^3.1.1",
     "tsup": "^8.0.0",
     "typescript": "^5.8.0",
     "vitest": "^3.2.4"

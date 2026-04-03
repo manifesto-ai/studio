@@ -7,10 +7,13 @@ import type {
   ProjectionPreset,
   StudioSession
 } from "@manifesto-ai/studio-core";
-import type { ManifestoBaseInstance, Snapshot as RuntimeSnapshot } from "@manifesto-ai/sdk";
+import type {
+  CanonicalSnapshot,
+  ManifestoBaseInstance
+} from "@manifesto-ai/sdk";
 
 export type AppRuntime = ManifestoBaseInstance<any>;
-export type AppSnapshot = RuntimeSnapshot<Record<string, unknown>>;
+export type AppSnapshot = CanonicalSnapshot<Record<string, unknown>>;
 export type CompileStatus = "idle" | "compiling" | "ready" | "error";
 export type StudioMode = "author" | "observe";
 
