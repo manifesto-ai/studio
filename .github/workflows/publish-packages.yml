@@ -41,14 +41,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: pnpm typecheck
+      - name: Typecheck publish targets
+        run: |
+          pnpm --filter @manifesto-ai/studio-core typecheck
+          pnpm --filter @manifesto-ai/studio-node typecheck
+          pnpm --filter @manifesto-ai/studio-cli typecheck
 
       - name: Test studio-core
         run: pnpm --filter @manifesto-ai/studio-core test
 
-      - name: Build packages
-        run: pnpm build
+      - name: Build publish targets
+        run: |
+          pnpm --filter @manifesto-ai/studio-core build
+          pnpm --filter @manifesto-ai/studio-node build
+          pnpm --filter @manifesto-ai/studio-cli build
 
       - name: Publish packages
         env:
@@ -58,13 +64,9 @@ jobs:
           set -euo pipefail
 
           packages=(
-            "@manifesto-ai/ui-core"
             "@manifesto-ai/studio-core"
-            "@manifesto-ai/studio-ui"
             "@manifesto-ai/studio-node"
             "@manifesto-ai/studio-cli"
-            "@manifesto-ai/studio-mcp"
-            "@manifesto-ai/mel-editor"
           )
 
           for pkg in "${packages[@]}"; do
