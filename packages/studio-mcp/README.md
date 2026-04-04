@@ -1,8 +1,14 @@
 # @manifesto-ai/studio-mcp
 
-`@manifesto-ai/studio-mcp` exposes `@manifesto-ai/studio-core` as an MCP server.
+`@manifesto-ai/studio-mcp` exposes `@manifesto-ai/studio-core` as a read-only MCP server.
 
-Use it when you want an MCP client to inspect a Manifesto domain through tools instead of calling Studio APIs directly.
+Use it when an MCP client needs to inspect a Manifesto domain through tools instead of calling Studio APIs directly. If you are just inspecting locally in a shell, start with `@manifesto-ai/studio-cli`.
+
+Most users should start with stdio transport:
+
+```bash
+npx @manifesto-ai/studio-mcp --transport stdio --mel path/to/domain.mel
+```
 
 ## Install
 
@@ -18,7 +24,7 @@ Run without installing:
 npx @manifesto-ai/studio-mcp --transport stdio --mel path/to/domain.mel
 ```
 
-## What it does
+## What It Does
 
 `studio-mcp` can:
 
@@ -27,7 +33,7 @@ npx @manifesto-ai/studio-mcp --transport stdio --mel path/to/domain.mel
 - serve graph, findings, availability, trace, lineage, and governance through MCP tools
 - expose default graph, findings, and schema summaries as MCP resources
 
-## Typical usage
+## Typical Usage
 
 ### Local stdio server
 

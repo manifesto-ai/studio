@@ -1,8 +1,17 @@
 # @manifesto-ai/studio-cli
 
-`@manifesto-ai/studio-cli` is the terminal surface for `@manifesto-ai/studio-core`.
+`@manifesto-ai/studio-cli` is the read-only terminal surface for `@manifesto-ai/studio-core`.
 
-Use it when you want to compile a MEL domain, attach runtime overlays, and inspect Studio projections from a shell script, CI job, or local terminal.
+Use it when you want to compile a MEL domain, attach optional overlays, and inspect Studio projections from a shell script, CI job, or local terminal.
+
+Most users should start with:
+
+```bash
+studio-cli analyze path/to/domain.mel
+studio-cli snapshot path/to/domain.mel --snapshot path/to/canonical-snapshot.json
+```
+
+If you need MCP transport instead of a terminal surface, use `@manifesto-ai/studio-mcp`.
 
 ## Install
 
@@ -18,7 +27,7 @@ Run without installing:
 npx @manifesto-ai/studio-cli --help
 ```
 
-## Runnable example files in this repo
+## Runnable Example Files In This Repo
 
 The package includes runnable example inputs under `packages/studio-cli/examples/`.
 
@@ -187,7 +196,7 @@ Runnable examples:
 - `packages/studio-cli/examples/observations.json`
 - `packages/studio-cli/examples/projection-preset.json`
 
-## Quick start
+## Quick Start
 
 Run findings:
 

@@ -2,6 +2,8 @@
 
 Read-only analysis engine for Manifesto domain models. The package builds a static graph from `DomainSchema`, optionally enriches it with runtime and control-plane overlays, and returns surface-neutral JSON projections for CLI, MCP, and dashboard consumers.
 
+Use `studio-core` when you are embedding Studio into a service or UI. If you only need local inspection, start with `@manifesto-ai/studio-cli`. If you need MCP transport, start with `@manifesto-ai/studio-mcp`.
+
 ## Entry Point
 
 ```ts
@@ -24,6 +26,8 @@ const session = createStudioSession({
 ```
 
 `createStudioSession(bundle, options?)` is the only supported runtime entrypoint.
+
+`studio-core` is read-only. It does not execute effects or mutate runtime state.
 
 Session options:
 
