@@ -1,0 +1,43 @@
+{
+  "id": "runtime-readiness",
+  "name": "Runtime Readiness",
+  "observe": [
+    {
+      "kind": "action",
+      "id": "submit",
+      "label": "Submit"
+    },
+    {
+      "kind": "state",
+      "path": "userId",
+      "label": "User"
+    },
+    {
+      "kind": "state",
+      "path": "draft",
+      "label": "Draft"
+    }
+  ],
+  "groupBy": [
+    {
+      "source": "state",
+      "path": "userId",
+      "label": "Has User",
+      "transform": {
+        "kind": "presence"
+      }
+    },
+    {
+      "source": "state",
+      "path": "draft",
+      "label": "Draft",
+      "transform": {
+        "kind": "presence"
+      }
+    }
+  ],
+  "options": {
+    "includeBlocked": true,
+    "includeDryRun": true
+  }
+}

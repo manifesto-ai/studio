@@ -6,6 +6,7 @@ import type {
   GovernanceStateProjection,
   LineageStateProjection,
   SnapshotInspectorProjection,
+  TransitionGraphProjection,
   TraceReplayProjection
 } from "@manifesto-ai/studio-core";
 import {
@@ -27,6 +28,7 @@ Usage:
   studio-cli snapshot [schemaPath] [options]
   studio-cli lineage [schemaPath] [options]
   studio-cli governance [schemaPath] [options]
+  studio-cli transition-graph [options]
 
 Common inputs:
   --bundle <file>                  Load an analysis bundle JSON file
@@ -36,6 +38,8 @@ Common inputs:
   --trace <file>                   Attach a TraceGraph JSON file
   --lineage <file>                 Attach a lineage export JSON file
   --governance <file>              Attach a governance export JSON file
+  --observations <file>            Attach an ObservationRecord[] JSON file
+  --preset <file>                  Attach a ProjectionPreset JSON file
 
 Session options:
   --validation-mode <lenient|strict>
@@ -57,6 +61,10 @@ Command-specific:
 
   explain
     --action <action-id>           Required when actionId positional is absent
+
+  transition-graph
+    --observations <file>          Required unless --bundle provides observations
+    --preset <file>                Required unless --bundle provides projectionPreset
 `;
 
 class CliUsageError extends Error {}
@@ -165,6 +173,8 @@ function buildFileInput(command: string, args: ParsedArgs): StudioFileInput {
     tracePath: getLastFlag(args.flags, "trace"),
     lineagePath: getLastFlag(args.flags, "lineage"),
     governancePath: getLastFlag(args.flags, "governance"),
+    observationsPath: getLastFlag(args.flags, "observations"),
+    projectionPresetPath: getLastFlag(args.flags, "preset"),
     sessionOptions: {
       validationMode: getLastFlag(args.flags, "validation-mode") as
         | "lenient"
@@ -196,8 +206,24 @@ function buildFileInput(command: string, args: ParsedArgs): StudioFileInput {
       case "explain":
         input.schemaPath = input.schemaPath ?? args.positionals[1];
         break;
+      case "transition-graph":
+        break;
       default:
         break;
+    }
+  }
+
+  if (command === "transition-graph" && !input.bundlePath) {
+    if (!input.observationsPath) {
+      throw new CliUsageError(
+        'transition-graph requires "--observations <file>" unless --bundle is provided.'
+      );
+    }
+
+    if (!input.projectionPresetPath) {
+      throw new CliUsageError(
+        'transition-graph requires "--preset <file>" unless --bundle is provided.'
+      );
     }
   }
 
@@ -252,6 +278,8 @@ function buildOperation(command: string, args: ParsedArgs): StudioOperation {
       return { kind: "lineage" };
     case "governance":
       return { kind: "governance" };
+    case "transition-graph":
+      return { kind: "transition-graph" };
     default:
       throw new CliUsageError(`Unknown command "${command}".`);
   }
@@ -441,6 +469,34 @@ function renderGovernance(projection: GovernanceStateProjection): string {
   ].join("\n");
 }
 
+function renderTransitionGraph(projection: TransitionGraphProjection): string {
+  if (projection.status !== "ready") {
+    return [
+      `Preset: ${projection.presetName} (${projection.presetId})`,
+      projection.message
+    ].join("\n");
+  }
+
+  const lines = [
+    `Preset: ${projection.presetName} (${projection.presetId})`,
+    `Current node: ${projection.currentNodeId ?? "none"}`,
+    `Nodes: ${projection.nodes.length}`,
+    `Edges: ${projection.edges.length}`,
+    "Nodes:",
+    ...projection.nodes.map(
+      (node) =>
+        `  - ${node.label} [id=${node.id}] observations=${node.observationCount} current=${node.current}`
+    ),
+    "Edges:",
+    ...projection.edges.map(
+      (edge) =>
+        `  - ${edge.actionId}: ${edge.source} -> ${edge.target} changed=${edge.changedDimensions.join(", ") || "none"} live=${edge.liveCount} dryRun=${edge.dryRunCount} blocked=${edge.blockedCount}`
+    )
+  ];
+
+  return lines.join("\n");
+}
+
 function renderText(command: string, result: StudioOperationResult): string {
   switch (command) {
     case "analyze":
@@ -460,6 +516,8 @@ function renderText(command: string, result: StudioOperationResult): string {
       return renderLineage(result as LineageStateProjection);
     case "governance":
       return renderGovernance(result as GovernanceStateProjection);
+    case "transition-graph":
+      return renderTransitionGraph(result as TransitionGraphProjection);
     default:
       return JSON.stringify(result, null, 2);
   }

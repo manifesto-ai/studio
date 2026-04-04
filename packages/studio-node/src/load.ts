@@ -6,10 +6,19 @@ import {
 } from "@manifesto-ai/compiler";
 import type {
   AnalysisBundle,
-  DomainSchema
+  CanonicalSnapshot,
+  DomainSchema,
+  ObservationRecord,
+  ProjectionPreset
 } from "@manifesto-ai/studio-core";
 
 import type { StudioBundleFile, StudioFileInput } from "./contracts.js";
+
+export type TransitionGraphInputs = {
+  observations?: ObservationRecord[];
+  projectionPreset?: ProjectionPreset;
+  currentSnapshot?: CanonicalSnapshot;
+};
 
 function resolveInputPath(cwd: string, inputPath: string): string {
   return resolve(cwd, inputPath);
@@ -103,6 +112,31 @@ async function loadBundleFile(bundlePath: string): Promise<AnalysisBundle> {
   };
 }
 
+async function loadTransitionGraphInputsFromBundleFile(
+  bundlePath: string
+): Promise<TransitionGraphInputs> {
+  const bundle = await readJsonFile<StudioBundleFile>(bundlePath);
+  const baseDir = dirname(bundlePath);
+
+  return {
+    observations: await maybeReadJsonFile(
+      baseDir,
+      bundle.observations,
+      bundle.observationsPath
+    ),
+    projectionPreset: await maybeReadJsonFile(
+      baseDir,
+      bundle.projectionPreset,
+      bundle.projectionPresetPath
+    ),
+    currentSnapshot: await maybeReadJsonFile(
+      baseDir,
+      bundle.snapshot,
+      bundle.snapshotPath
+    )
+  };
+}
+
 export async function loadAnalysisBundleFromFiles(
   input: StudioFileInput
 ): Promise<AnalysisBundle> {
@@ -113,11 +147,13 @@ export async function loadAnalysisBundleFromFiles(
     Boolean(input.snapshotPath) ||
     Boolean(input.tracePath) ||
     Boolean(input.lineagePath) ||
-    Boolean(input.governancePath);
+    Boolean(input.governancePath) ||
+    Boolean(input.observationsPath) ||
+    Boolean(input.projectionPresetPath);
 
   if (hasBundlePath && hasPerFileInput) {
     throw new Error(
-      "Use either bundlePath or per-file schema/snapshot/trace/lineage/governance paths, not both."
+      "Use either bundlePath or per-file schema/snapshot/trace/lineage/governance/observations/preset paths, not both."
     );
   }
 
@@ -146,6 +182,45 @@ export async function loadAnalysisBundleFromFiles(
       : undefined,
     governance: input.governancePath
       ? await readJsonFile(resolveInputPath(cwd, input.governancePath))
+      : undefined
+  };
+}
+
+export async function loadTransitionGraphInputsFromFiles(
+  input: StudioFileInput
+): Promise<TransitionGraphInputs> {
+  const cwd = input.cwd ?? process.cwd();
+  const hasBundlePath = Boolean(input.bundlePath);
+  const hasPerFileInput =
+    Boolean(input.schemaPath) ||
+    Boolean(input.snapshotPath) ||
+    Boolean(input.tracePath) ||
+    Boolean(input.lineagePath) ||
+    Boolean(input.governancePath) ||
+    Boolean(input.observationsPath) ||
+    Boolean(input.projectionPresetPath);
+
+  if (hasBundlePath && hasPerFileInput) {
+    throw new Error(
+      "Use either bundlePath or per-file schema/snapshot/trace/lineage/governance/observations/preset paths, not both."
+    );
+  }
+
+  if (input.bundlePath) {
+    return loadTransitionGraphInputsFromBundleFile(
+      resolveInputPath(cwd, input.bundlePath)
+    );
+  }
+
+  return {
+    observations: input.observationsPath
+      ? await readJsonFile(resolveInputPath(cwd, input.observationsPath))
+      : undefined,
+    projectionPreset: input.projectionPresetPath
+      ? await readJsonFile(resolveInputPath(cwd, input.projectionPresetPath))
+      : undefined,
+    currentSnapshot: input.snapshotPath
+      ? await readJsonFile(resolveInputPath(cwd, input.snapshotPath))
       : undefined
   };
 }

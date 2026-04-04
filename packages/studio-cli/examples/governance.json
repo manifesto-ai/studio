@@ -1,0 +1,50 @@
+{
+  "proposals": [
+    {
+      "id": "proposal-1",
+      "branchId": "main",
+      "stage": "ingress",
+      "actorId": "alice",
+      "createdAt": 1709999999000
+    },
+    {
+      "id": "proposal-2",
+      "branchId": "release",
+      "stage": "terminal",
+      "outcome": "approved",
+      "actorId": "lead",
+      "createdAt": 1709999990000,
+      "terminalizedAt": 1710000000000
+    }
+  ],
+  "bindings": [
+    {
+      "actorId": "alice",
+      "authorityId": "reviewer",
+      "permissions": [
+        "proposal:create"
+      ]
+    },
+    {
+      "actorId": "lead",
+      "authorityId": "approver",
+      "permissions": [
+        "proposal:approve"
+      ]
+    }
+  ],
+  "gates": [
+    {
+      "branchId": "main",
+      "locked": true,
+      "currentProposalId": "proposal-1",
+      "epoch": 2
+    },
+    {
+      "branchId": "release",
+      "locked": false,
+      "currentProposalId": "proposal-2",
+      "epoch": 7
+    }
+  ]
+}

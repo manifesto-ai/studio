@@ -21,6 +21,8 @@ pnpm studio:cli help
 pnpm studio:cli analyze path/to/domain.mel
 pnpm studio:cli graph path/to/domain.mel --format json
 pnpm studio:cli graph path/to/domain.mel --format dot
+pnpm studio:cli snapshot path/to/domain.mel --snapshot path/to/canonical-snapshot.json
+pnpm studio:cli transition-graph --observations path/to/observations.json --preset path/to/projection-preset.json
 pnpm studio:mcp --help
 pnpm studio:mcp:http -- --host 0.0.0.0 --port 8787 --mel path/to/domain.mel
 ```
@@ -35,7 +37,9 @@ pnpm studio:mcp:http -- --host 0.0.0.0 --port 8787 --mel path/to/domain.mel
 
 - `studio-cli` and `studio-mcp` both resolve `.mel` or JSON inputs through the shared `@manifesto-ai/studio-node` package.
 - Both surfaces ultimately call the same `createStudioSession(bundle, options?)` flow from `@manifesto-ai/studio-core`.
-- `studio-cli` supports `analyze`, `check`, `graph`, `explain`, `trace`, `availability`, `snapshot`, `lineage`, and `governance`.
+- `studio-cli` supports `analyze`, `check`, `graph`, `explain`, `trace`, `availability`, `snapshot`, `lineage`, `governance`, and `transition-graph`.
 - `studio-mcp` exposes the PRD MVP tools `explain_action_blocker`, `get_domain_graph`, `find_issues`, `get_action_availability`, `analyze_trace`, `get_lineage_state`, and `get_governance_state`.
 - `studio-mcp` supports both stdio and Streamable HTTP transport. Remote Claude connectors should target a public HTTPS URL ending in `/mcp`.
 - Package-level usage docs live in `packages/studio-cli/README.md` and `packages/studio-mcp/README.md`.
+- `packages/studio-cli/README.md` now includes per-command examples and sample output for every CLI surface.
+- Runnable JSON inputs for every `studio-cli` command live in `packages/studio-cli/examples/`.

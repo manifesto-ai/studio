@@ -1,0 +1,57 @@
+{
+  "root": {
+    "id": "root",
+    "kind": "flow",
+    "sourcePath": "actions.submit.flow",
+    "inputs": {},
+    "output": {
+      "status": "complete"
+    },
+    "children": [],
+    "timestamp": 1
+  },
+  "nodes": {
+    "root": {
+      "id": "root",
+      "kind": "flow",
+      "sourcePath": "actions.submit.flow",
+      "inputs": {},
+      "output": {
+        "status": "complete"
+      },
+      "children": [],
+      "timestamp": 1
+    },
+    "effect1": {
+      "id": "effect1",
+      "kind": "effect",
+      "sourcePath": "actions.submit.flow.steps.0",
+      "inputs": {},
+      "output": {
+        "requirementId": "req-1"
+      },
+      "children": [],
+      "timestamp": 2
+    },
+    "patch1": {
+      "id": "patch1",
+      "kind": "patch",
+      "sourcePath": "actions.submit.flow.steps.1",
+      "inputs": {},
+      "output": {
+        "previous": null,
+        "next": 123
+      },
+      "children": [],
+      "timestamp": 3
+    }
+  },
+  "intent": {
+    "type": "submit",
+    "input": {}
+  },
+  "baseVersion": 1,
+  "resultVersion": 2,
+  "duration": 5,
+  "terminatedBy": "complete"
+}

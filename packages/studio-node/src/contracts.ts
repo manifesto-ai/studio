@@ -7,8 +7,11 @@ import type {
   FindingsReportProjection,
   GovernanceStateProjection,
   LineageStateProjection,
+  ObservationRecord,
+  ProjectionPreset,
   SnapshotInspectorProjection,
   StudioSessionOptions,
+  TransitionGraphProjection,
   TraceReplayProjection
 } from "@manifesto-ai/studio-core";
 
@@ -20,6 +23,8 @@ export type StudioFileInput = {
   tracePath?: string;
   lineagePath?: string;
   governancePath?: string;
+  observationsPath?: string;
+  projectionPresetPath?: string;
   sessionOptions?: StudioSessionOptions;
 };
 
@@ -50,6 +55,9 @@ export type StudioOperation =
     }
   | {
       kind: "governance";
+    }
+  | {
+      kind: "transition-graph";
     };
 
 export type StudioOperationResult =
@@ -60,7 +68,8 @@ export type StudioOperationResult =
   | SnapshotInspectorProjection
   | TraceReplayProjection
   | LineageStateProjection
-  | GovernanceStateProjection;
+  | GovernanceStateProjection
+  | TransitionGraphProjection;
 
 export type StudioOperationKind = StudioOperation["kind"];
 
@@ -70,6 +79,10 @@ export type StudioBundleFile = Partial<AnalysisBundle> & {
   tracePath?: string;
   lineagePath?: string;
   governancePath?: string;
+  observations?: ObservationRecord[];
+  observationsPath?: string;
+  projectionPreset?: ProjectionPreset;
+  projectionPresetPath?: string;
 };
 
 export const STUDIO_OPERATION_SPECS = {
@@ -112,6 +125,12 @@ export const STUDIO_OPERATION_SPECS = {
     command: "get_governance_state",
     toolName: "get_governance_state",
     description: "Returns governance proposal, actor, and gate state."
+  },
+  "transition-graph": {
+    command: "transition_graph",
+    toolName: "transition_graph",
+    description:
+      "Projects observation records into a grouped transition graph."
   }
 } as const satisfies Record<
   StudioOperationKind,

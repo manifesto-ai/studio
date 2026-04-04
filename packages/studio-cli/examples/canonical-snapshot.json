@@ -1,0 +1,21 @@
+{
+  "data": {
+    "userId": "user-1",
+    "draft": "hello",
+    "lastSubmittedAt": 123
+  },
+  "computed": {},
+  "system": {
+    "status": "idle",
+    "lastError": null,
+    "pendingRequirements": [],
+    "currentAction": null
+  },
+  "meta": {
+    "version": 0,
+    "timestamp": 1710000000000,
+    "randomSeed": "studio-seed",
+    "schemaHash": "b307e0e4301312154d1d4d261558e7cbdd5600889a97383e5e20684c281b68ac"
+  },
+  "input": null
+}

@@ -1,0 +1,134 @@
+{
+  "id": "demo.studio",
+  "version": "0.1.0",
+  "types": {},
+  "state": {
+    "fields": {
+      "userId": {
+        "type": "string",
+        "required": false,
+        "description": "Current user id"
+      },
+      "draft": {
+        "type": "string",
+        "required": false,
+        "default": ""
+      },
+      "lastSubmittedAt": {
+        "type": "number",
+        "required": false
+      }
+    }
+  },
+  "computed": {
+    "fields": {
+      "hasUser": {
+        "deps": [
+          "userId"
+        ],
+        "expr": {
+          "kind": "neq",
+          "left": {
+            "kind": "get",
+            "path": "userId"
+          },
+          "right": {
+            "kind": "lit",
+            "value": null
+          }
+        },
+        "description": "Whether a user is present."
+      }
+    }
+  },
+  "actions": {
+    "submit": {
+      "description": "Submit the current draft.",
+      "available": {
+        "kind": "and",
+        "args": [
+          {
+            "kind": "neq",
+            "left": {
+              "kind": "get",
+              "path": "userId"
+            },
+            "right": {
+              "kind": "lit",
+              "value": null
+            }
+          },
+          {
+            "kind": "neq",
+            "left": {
+              "kind": "get",
+              "path": "draft"
+            },
+            "right": {
+              "kind": "lit",
+              "value": ""
+            }
+          }
+        ]
+      },
+      "flow": {
+        "kind": "seq",
+        "steps": [
+          {
+            "kind": "effect",
+            "type": "submit",
+            "params": {
+              "userId": {
+                "kind": "get",
+                "path": "userId"
+              },
+              "draft": {
+                "kind": "get",
+                "path": "draft"
+              }
+            }
+          },
+          {
+            "kind": "patch",
+            "op": "set",
+            "path": [
+              {
+                "kind": "prop",
+                "name": "lastSubmittedAt"
+              }
+            ],
+            "value": {
+              "kind": "lit",
+              "value": 123
+            }
+          },
+          {
+            "kind": "halt",
+            "reason": "done"
+          }
+        ]
+      }
+    },
+    "setUser": {
+      "description": "Set the current user.",
+      "flow": {
+        "kind": "patch",
+        "op": "set",
+        "path": [
+          {
+            "kind": "prop",
+            "name": "userId"
+          }
+        ],
+        "value": {
+          "kind": "lit",
+          "value": "user-1"
+        }
+      }
+    }
+  },
+  "meta": {
+    "name": "Studio Demo"
+  },
+  "hash": "b307e0e4301312154d1d4d261558e7cbdd5600889a97383e5e20684c281b68ac"
+}
