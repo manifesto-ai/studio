@@ -363,7 +363,7 @@ function renderAvailability(projection: ActionAvailabilityProjection[]): string 
       }
 
       const state = entry.available ? "available" : "blocked";
-      const blockerSummary = entry.blockers?.length
+      const blockerSummary = !entry.available && entry.blockers?.length
         ? ` (${entry.blockers.length} blocker${entry.blockers.length > 1 ? "s" : ""})`
         : "";
 
