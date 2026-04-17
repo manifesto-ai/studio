@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@manifesto-ai/sdk': link:../core/packages/sdk
-
 importers:
 
   .:
@@ -47,10 +44,10 @@ importers:
         version: 3.7.0(@manifesto-ai/core@2.12.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7))(zod@4.3.6)
       '@manifesto-ai/lineage':
         specifier: ^3.10.3
-        version: 3.10.3(@manifesto-ai/core@2.12.0(zod@4.3.6))
+        version: 3.10.3(@manifesto-ai/core@2.12.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7))(zod@4.3.6)
       '@manifesto-ai/sdk':
-        specifier: link:../../../core/packages/sdk
-        version: link:../../../core/packages/sdk
+        specifier: ^3.15.0
+        version: 3.15.1(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7))(zod@4.3.6)
       better-sqlite3:
         specifier: ^12.5.0
         version: 12.9.0
@@ -263,10 +260,21 @@ packages:
     peerDependencies:
       zod: ^4.3.6
 
+  '@manifesto-ai/host@2.9.0':
+    resolution: {integrity: sha512-dmBqBFhD3IP59M5R3pn7dpm0BfegU5L6N8WzJb9F+m2/N4JPxMfaye7Z+iwO3F0diSy6DwSwK1kt+yWM+oF32w==}
+    peerDependencies:
+      '@manifesto-ai/core': ^2.12.0
+
   '@manifesto-ai/lineage@3.10.3':
     resolution: {integrity: sha512-6Ugi1jvhB0PxbDu19pyKUILQu/q0vGnZ0PcGH/LbCFrB858zIrMwq4BbO6AYEn7804GyDTBvRYNUmf3dRW5FiA==}
     peerDependencies:
       '@manifesto-ai/core': ^2.12.0
+
+  '@manifesto-ai/sdk@3.15.0':
+    resolution: {integrity: sha512-5LhVmZe2yEDA/PNLPTO9xGdwIEYwCvTZQw8P4PYvLh1HIx+p5UBtub3xeJh67ctzmYEsHE3DYNagFiQJDArIVg==}
+
+  '@manifesto-ai/sdk@3.15.1':
+    resolution: {integrity: sha512-revR9wBxgiHs3gAeRrEGs0vIS67VzF/6iyvVDQ132g/Bgj2JX9W1nKulBfAEscgtIVD1NBQesog4QjVAhDtbRg==}
 
   '@manifesto-ai/skills@1.2.0':
     resolution: {integrity: sha512-k4rxZbMInfRhFUW3wkJEb77ZdmOp8tZ7xuKNYq65wQRvfsvxGj8NqL9n4sq3G4Lzb1hmZ2N//zqbEXhwNX1/kg==}
@@ -1299,10 +1307,41 @@ snapshots:
     dependencies:
       zod: 4.3.6
 
-  '@manifesto-ai/lineage@3.10.3(@manifesto-ai/core@2.12.0(zod@4.3.6))':
+  '@manifesto-ai/host@2.9.0(@manifesto-ai/core@2.12.0(zod@4.3.6))':
     dependencies:
       '@manifesto-ai/core': 2.12.0(zod@4.3.6)
-      '@manifesto-ai/sdk': link:../core/packages/sdk
+
+  '@manifesto-ai/lineage@3.10.3(@manifesto-ai/core@2.12.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7))(zod@4.3.6)':
+    dependencies:
+      '@manifesto-ai/core': 2.12.0(zod@4.3.6)
+      '@manifesto-ai/sdk': 3.15.0(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7))(zod@4.3.6)
+    transitivePeerDependencies:
+      - '@anthropic-ai/sdk'
+      - openai
+      - vite
+      - zod
+
+  '@manifesto-ai/sdk@3.15.0(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7))(zod@4.3.6)':
+    dependencies:
+      '@manifesto-ai/compiler': 3.7.0(@manifesto-ai/core@2.12.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7))(zod@4.3.6)
+      '@manifesto-ai/core': 2.12.0(zod@4.3.6)
+      '@manifesto-ai/host': 2.9.0(@manifesto-ai/core@2.12.0(zod@4.3.6))
+    transitivePeerDependencies:
+      - '@anthropic-ai/sdk'
+      - openai
+      - vite
+      - zod
+
+  '@manifesto-ai/sdk@3.15.1(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7))(zod@4.3.6)':
+    dependencies:
+      '@manifesto-ai/compiler': 3.7.0(@manifesto-ai/core@2.12.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7))(zod@4.3.6)
+      '@manifesto-ai/core': 2.12.0(zod@4.3.6)
+      '@manifesto-ai/host': 2.9.0(@manifesto-ai/core@2.12.0(zod@4.3.6))
+    transitivePeerDependencies:
+      - '@anthropic-ai/sdk'
+      - openai
+      - vite
+      - zod
 
   '@manifesto-ai/skills@1.2.0': {}
 

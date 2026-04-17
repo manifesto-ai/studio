@@ -24,9 +24,6 @@
     "vitest": "^4.1.4"
   },
   "pnpm": {
-    "overrides": {
-      "@manifesto-ai/sdk": "link:../core/packages/sdk"
-    },
     "onlyBuiltDependencies": [
       "better-sqlite3"
     ]

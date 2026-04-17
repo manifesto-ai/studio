@@ -1,8 +1,8 @@
 # Studio Editor — Phase 1 Roadmap
 
-> **Status:** Active (kickoff pending — see §0)
+> **Status:** 🚀 **Active — kickoff (2026-04-17)**
 > **Date:** 2026-04-17
-> **Ref:** [phase-1-proposal.md](./phase-1-proposal.md) (draft · to be ratified)
+> **Ref:** [phase-1-proposal.md](./phase-1-proposal.md) (ratified)
 > **Duration:** 4주 본 + 1주 버퍼 (최대 5주)
 > **Phase 0 closure:** 62 tests / 14 files green · Mandatory SC-1~7 + Optional SC-8~10 전부 GO
 
@@ -24,7 +24,8 @@
 - [x] **D3 그래프와 인터렉션 에디터는 첫 공개 필수**로 확정 (proposal §0 TL;DR)
 
 ### 0.3 배포 타깃
-- [x] `studio.manifesto-ai.dev` — 공식 운영 도메인
+- [x] `studio.manifesto-ai.dev` — 공식 운영 도메인 (DNS/관리 권한 확보)
+- [x] **Vercel** 배포 (P1-OQ-7 closed) — DNS + TLS + CI 준비 상태
 - [x] `apps/webapp` — private, `@manifesto-ai/studio-webapp` 스코프
 - [x] 정식 운영 (demo 아님) — 외부 사용자·에이전트 진입점
 
@@ -34,6 +35,8 @@
 - [x] SDK seam narrow — `@manifesto-ai/sdk/provider` 단일 seam 사용 (`/compat/internal` 의존 제거)
 - [x] `check-no-widget-deps.mjs` allowlist 구조로 전환 — 현재 `studio-core`만 감시
 - [x] `pnpm-workspace.yaml`에 `apps/*` 추가
+- [x] **`@manifesto-ai/sdk@3.15.1` publish 확인 → `pnpm.overrides link:` 제거** (link 시절 제거 완료)
+- [x] **UI 러프 와이어프레임 합의** — Figma file `lpCRLkerxVWOzJVufgCe4I` 2 frames (main view / rebuild view with plan overlay)
 
 ### 0.5 설계 북극성 (proposal §1.2 그대로)
 - [x] **Phase 3 호환성이 모든 설계 결정의 1순위 기준.** Phase 1 UI 편의를 위해 Phase 3 경로(에이전트 대칭 편집)를 오염시키는 선택 거부.
@@ -193,11 +196,11 @@
 - [ ] `studio.manifesto-ai.dev` DNS + TLS + CI 배포 트리거
 - [ ] "Phase 1 — early access" 배너 + 제안서 링크
 
-### 6.2 SDK publish + link 제거
-- [ ] `@manifesto-ai/sdk` 새 버전 publish (`/provider`의 `createBaseRuntimeInstance` 공개 포함)
-- [ ] studio monorepo `pnpm.overrides` → `link:` 라인 제거
-- [ ] `pnpm install` 후 62 tests 그대로 녹색 확인
-- [ ] **P1-G6 ✓**
+### 6.2 SDK publish + link 제거 — ✅ pre-kickoff 완료
+- [x] `@manifesto-ai/sdk@3.15.1` publish (`/provider`의 `createBaseRuntimeInstance` 공개 포함)
+- [x] studio monorepo `pnpm.overrides` → `link:` 라인 제거
+- [x] `pnpm install` 후 62 tests 그대로 녹색
+- [x] **P1-G6 ✓**
 
 ### 6.3 Optional 산출물 (우선순위 순)
 - [ ] **P1-SC-9** — Plan diff view (P1-G7)
@@ -263,7 +266,7 @@
 | P1-OQ-4 | SchemaGraphView 레이아웃 — force vs ELK vs Dagre | **Week 3 spike** |
 | P1-OQ-5 | Envelope 구독 — push vs poll | Week 2 |
 | P1-OQ-6 | InteractionEditor 미지원 FieldSpec 처리 | Week 4 |
-| P1-OQ-7 | 배포 타깃 — Vercel / CF Pages / self-host | Week 5 |
+| ~~P1-OQ-7~~ | ✅ **closed: Vercel** — DNS + TLS 준비 완료 | resolved pre-kickoff |
 | P1-OQ-8 | Fixture 전략 — 번들 vs 업로드 vs 둘 다 | Week 2 |
 
 ---
@@ -317,6 +320,7 @@ Phase 0의 SE-BUILD / SE-RECON / SE-HIST / SE-ADP 규범은 변경 없이 유지
 | Date | Change |
 |------|--------|
 | 2026-04-17 | **Initial Phase 1 roadmap.** 4주+1주 일정, Primary P1-G1~G6, Mandatory P1-SC-1~8, SE-UI-1~6 규범, INV-P1-1~3 신설. Pre-flight 4건(effects/store ordering/SDK seam/CI allowlist) 완료 상태에서 착수. D3 그래프와 InteractionEditor는 첫 공개 필수로 확정. apps/webapp이 studio.manifesto-ai.dev 운영 타깃. |
+| 2026-04-17 | **Phase 1 kickoff.** `phase-1-proposal.md` Ratified. `@manifesto-ai/sdk@3.15.1` publish 확인 → `pnpm.overrides link:` 제거, 62 tests 그대로 녹색. **P1-G6 pre-kickoff 완료**. P1-OQ-7 Vercel로 closed (DNS/TLS 확보). UI 러프 와이어프레임 합의 (Figma `lpCRLkerxVWOzJVufgCe4I`, main view + rebuild view). 외부 GPT 교차 리뷰는 on-demand (Codex) 보류. W1 scaffold 착수 가능. |
 
 ---
 
