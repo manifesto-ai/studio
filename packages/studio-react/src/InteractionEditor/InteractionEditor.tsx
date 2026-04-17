@@ -9,6 +9,7 @@ import { COLORS, FONT_STACK, MONO_STACK } from "../style-tokens.js";
 import { useStudio } from "../useStudio.js";
 import type {
   DispatchBlocker,
+  IntentExplanation,
   StudioDispatchResult,
   StudioSimulateResult,
 } from "@manifesto-ai/studio-core";
@@ -35,7 +36,14 @@ export type InteractionEditorProps = {
  * `dispatch` / `simulate` / `createIntent` from `useStudio()`.
  */
 export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Element {
-  const { module, snapshot, simulate, dispatch, createIntent } = useStudio();
+  const {
+    module,
+    snapshot,
+    explainIntent,
+    simulate,
+    dispatch,
+    createIntent,
+  } = useStudio();
 
   const actionNames = useMemo(() => {
     if (module === null) return [] as readonly string[];
@@ -44,6 +52,10 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
 
   const [selectedAction, setSelectedAction] = useState<string | null>(
     _props.initialAction ?? null,
+  );
+  const [sessions, setSessions] = useState<Record<string, InteractionSession>>({});
+  const [currentSession, setCurrentSession] = useState<InteractionSession>(() =>
+    createInteractionSession({}),
   );
 
   // When actions list changes (module rebuild), ensure selection stays valid.
@@ -63,25 +75,72 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
     return descriptorForAction(module.schema, selectedAction);
   }, [module, selectedAction]);
 
-  const [value, setValue] = useState<unknown>(() =>
-    descriptor === null ? {} : defaultValueFor(descriptor),
+  const defaultSession = useMemo(
+    () => createInteractionSession(
+      descriptor === null ? {} : defaultValueFor(descriptor),
+    ),
+    [descriptor],
   );
-  // Reset form value when descriptor identity changes.
-  useEffect(() => {
-    setValue(descriptor === null ? {} : defaultValueFor(descriptor));
-  }, [descriptor]);
+  const sessionKey = useMemo(() => {
+    if (module === null || selectedAction === null) return null;
+    return `${module.schema.hash}:${selectedAction}`;
+  }, [module, selectedAction]);
+  const value = currentSession.value;
+  const runtimeError = currentSession.runtimeError;
+  const simulateResult = currentSession.lastSimulateResult;
+  const dispatchResult = currentSession.lastDispatchResult;
+  const explanation = currentSession.lastExplanation;
+  const lastInteraction = currentSession.lastInteraction;
+  const isStale =
+    currentSession.lastInsightValueSignature !== null &&
+    currentSession.valueSignature !== currentSession.lastInsightValueSignature;
+  const hasCachedOutput =
+    currentSession.lastExplanation !== null ||
+    currentSession.lastSimulateResult !== null ||
+    currentSession.lastDispatchResult !== null ||
+    currentSession.runtimeError !== null;
 
-  const [simulateResult, setSimulateResult] = useState<StudioSimulateResult | null>(null);
-  const [dispatchResult, setDispatchResult] = useState<StudioDispatchResult | null>(null);
-  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  // Reset the whole in-memory session cache on schema changes.
+  useEffect(() => {
+    setSessions({});
+  }, [module?.schema.hash]);
+
+  useEffect(() => {
+    if (sessionKey === null) {
+      setCurrentSession(defaultSession);
+      return;
+    }
+    setCurrentSession(sessions[sessionKey] ?? defaultSession);
+  }, [defaultSession, sessionKey]);
+
   const [pending, setPending] = useState<"simulate" | "dispatch" | null>(null);
 
-  // Reset result panels when action changes.
   useEffect(() => {
-    setSimulateResult(null);
-    setDispatchResult(null);
-    setRuntimeError(null);
-  }, [selectedAction, module?.schema.hash]);
+    if (sessionKey === null) return;
+    setSessions((prev) => {
+      if (prev[sessionKey] === currentSession) return prev;
+      return { ...prev, [sessionKey]: currentSession };
+    });
+  }, [currentSession, sessionKey]);
+
+  const updateActiveSession = useCallback(
+    (updater: (prev: InteractionSession) => InteractionSession): void => {
+      setCurrentSession((prev) => updater(prev));
+    },
+    [],
+  );
+
+  const onValueChange = useCallback(
+    (next: unknown): void => {
+      updateActiveSession((prev) => ({
+        ...prev,
+        value: next,
+        valueSignature: stableSerialize(next),
+        runtimeError: null,
+      }));
+    },
+    [updateActiveSession],
+  );
 
   const buildIntent = useCallback((): ReturnType<typeof createIntent> | null => {
     if (selectedAction === null) return null;
@@ -90,47 +149,72 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
       // input we pass the full value as a single arg.
       return createIntent(selectedAction, value);
     } catch (err) {
-      setRuntimeError((err as Error).message);
+      updateActiveSession((prev) => ({
+        ...prev,
+        runtimeError: (err as Error).message,
+      }));
       return null;
     }
-  }, [createIntent, selectedAction, value]);
+  }, [createIntent, selectedAction, updateActiveSession, value]);
 
   const onSimulate = useCallback(() => {
-    setRuntimeError(null);
     const intent = buildIntent();
     if (intent === null) return;
     setPending("simulate");
     try {
+      const explained = explainIntent(intent);
+      if (explained.kind === "blocked") {
+        updateActiveSession((prev) => ({
+          ...prev,
+          runtimeError: null,
+          lastInteraction: "simulate",
+          lastInsightValueSignature: prev.valueSignature,
+          lastExplanation: explained,
+        }));
+        return;
+      }
       const result = simulate(intent);
-      setSimulateResult(result);
+      updateActiveSession((prev) => ({
+        ...prev,
+        runtimeError: null,
+        lastInteraction: "simulate",
+        lastInsightValueSignature: prev.valueSignature,
+        lastExplanation: explained,
+        lastSimulateResult: result,
+      }));
     } catch (err) {
-      setRuntimeError((err as Error).message);
+      updateActiveSession((prev) => ({
+        ...prev,
+        runtimeError: (err as Error).message,
+      }));
     } finally {
       setPending(null);
     }
-  }, [buildIntent, simulate]);
+  }, [buildIntent, explainIntent, simulate, updateActiveSession]);
 
   const onDispatch = useCallback(async () => {
-    setRuntimeError(null);
     const intent = buildIntent();
     if (intent === null) return;
     setPending("dispatch");
     try {
       const result = await dispatch(intent);
-      setDispatchResult(result);
-      // Re-run simulate so the preview matches post-dispatch state.
-      try {
-        const nextIntent = createIntent(selectedAction ?? "", value);
-        if (selectedAction !== null) setSimulateResult(simulate(nextIntent));
-      } catch {
-        setSimulateResult(null);
-      }
+      updateActiveSession((prev) => ({
+        ...prev,
+        runtimeError: null,
+        lastInteraction: "dispatch",
+        lastInsightValueSignature: prev.valueSignature,
+        lastExplanation: explanationFromDispatch(result) ?? prev.lastExplanation,
+        lastDispatchResult: result,
+      }));
     } catch (err) {
-      setRuntimeError((err as Error).message);
+      updateActiveSession((prev) => ({
+        ...prev,
+        runtimeError: (err as Error).message,
+      }));
     } finally {
       setPending(null);
     }
-  }, [buildIntent, createIntent, dispatch, selectedAction, simulate, value]);
+  }, [buildIntent, dispatch, updateActiveSession]);
 
   if (module === null) {
     return (
@@ -142,8 +226,19 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
     );
   }
 
-  const rejection = rejectedBlockers(dispatchResult);
-  const failure = failureInfo(dispatchResult);
+  const visibleExplanation =
+    lastInteraction === "dispatch"
+      ? explanationFromDispatch(dispatchResult)
+      : explanation;
+  const visibleDispatchResult = lastInteraction === "dispatch" ? dispatchResult : null;
+  const visibleSimulateResult = lastInteraction === "simulate" ? simulateResult : null;
+  const blockers = blockerInfo(lastInteraction, visibleExplanation, visibleDispatchResult);
+  const failure = failureInfo(visibleDispatchResult);
+  const showInsight =
+    !isStale &&
+    lastInteraction !== null &&
+    (lastInteraction !== "dispatch" || visibleDispatchResult?.kind !== "failed") &&
+    (visibleExplanation !== null || visibleSimulateResult !== null || visibleDispatchResult !== null);
 
   return (
     <div style={rootStyle}>
@@ -186,7 +281,7 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
           <ActionForm
             descriptor={descriptor}
             value={value}
-            onChange={setValue}
+            onChange={onValueChange}
             disabled={pending !== null}
           />
         )}
@@ -211,39 +306,66 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
         </button>
       </div>
 
-      {runtimeError !== null ? (
+      {runtimeError !== null && !isStale ? (
         <div style={errorBoxStyle} role="alert">
           {runtimeError}
         </div>
       ) : null}
 
-      {rejection !== null ? (
-        <BlockerList
-          blockers={rejection.blockers}
-          reason={rejection.reason}
+      {isStale && hasCachedOutput ? (
+        <div style={staleBoxStyle} data-testid="interaction-stale">
+          input changed — rerun simulate/dispatch
+        </div>
+      ) : null}
+
+      {showInsight ? (
+        <SimulatePreview
+          beforeSnapshot={snapshot}
+          explanation={visibleExplanation}
+          result={visibleSimulateResult}
+          dispatchResult={visibleDispatchResult}
+          stale={isStale}
         />
       ) : null}
 
-      {failure !== null ? (
+      {blockers !== null && !isStale ? (
+        <BlockerList
+          blockers={blockers.blockers}
+          reason={blockers.reason}
+        />
+      ) : null}
+
+      {failure !== null && !isStale ? (
         <div style={errorBoxStyle} role="alert">
           dispatch failed — {failure}
         </div>
       ) : null}
-
-      {simulateResult !== null ? (
-        <SimulatePreview result={simulateResult} beforeSnapshot={snapshot} />
-      ) : null}
-
-      {dispatchResult !== null && dispatchResult.kind === "completed" ? (
-        <div style={successBoxStyle}>
-          dispatched · {dispatchResult.outcome.projected.changedPaths.length} path
-          {dispatchResult.outcome.projected.changedPaths.length === 1 ? "" : "s"} changed
-          · {dispatchResult.traceIds.length} trace
-          {dispatchResult.traceIds.length === 1 ? "" : "s"}
-        </div>
-      ) : null}
     </div>
   );
+}
+
+type InteractionSession = {
+  readonly value: unknown;
+  readonly valueSignature: string;
+  readonly lastInsightValueSignature: string | null;
+  readonly lastExplanation: IntentExplanation | null;
+  readonly lastSimulateResult: StudioSimulateResult | null;
+  readonly lastDispatchResult: StudioDispatchResult | null;
+  readonly runtimeError: string | null;
+  readonly lastInteraction: "simulate" | "dispatch" | null;
+};
+
+function createInteractionSession(defaultValue: unknown): InteractionSession {
+  return {
+    value: defaultValue,
+    valueSignature: stableSerialize(defaultValue),
+    lastInsightValueSignature: null,
+    lastExplanation: null,
+    lastSimulateResult: null,
+    lastDispatchResult: null,
+    runtimeError: null,
+    lastInteraction: null,
+  };
 }
 
 function ActionSignature({
@@ -283,9 +405,19 @@ function ActionSignature({
   );
 }
 
-function rejectedBlockers(
+function blockerInfo(
+  lastInteraction: InteractionSession["lastInteraction"],
+  explanation: IntentExplanation | null,
   result: StudioDispatchResult | null,
 ): { blockers: readonly DispatchBlocker[]; reason: string } | null {
+  if (lastInteraction === "simulate" && explanation?.kind === "blocked") {
+    return {
+      blockers: explanation.blockers,
+      reason: explanation.available
+        ? "simulate skipped — intent not dispatchable"
+        : "simulate skipped — action unavailable",
+    };
+  }
   if (result === null || result.kind !== "rejected") return null;
   const failure = result.admission.failure;
   if (failure.kind === "unavailable" || failure.kind === "not_dispatchable") {
@@ -300,9 +432,54 @@ function rejectedBlockers(
   };
 }
 
+function explanationFromDispatch(
+  result: StudioDispatchResult | null,
+): IntentExplanation | null {
+  if (result === null || result.kind !== "rejected") return null;
+  const failure = result.admission.failure;
+  if (failure.kind === "unavailable") {
+    return {
+      kind: "blocked",
+      actionName: result.admission.actionName,
+      available: false,
+      dispatchable: false,
+      blockers: failure.blockers,
+    };
+  }
+  if (failure.kind === "not_dispatchable") {
+    return {
+      kind: "blocked",
+      actionName: result.admission.actionName,
+      available: true,
+      dispatchable: false,
+      blockers: failure.blockers,
+    };
+  }
+  return null;
+}
+
 function failureInfo(result: StudioDispatchResult | null): string | null {
   if (result === null || result.kind !== "failed") return null;
   return result.error.message;
+}
+
+function stableSerialize(value: unknown): string {
+  return JSON.stringify(sortForSignature(value)) ?? "null";
+}
+
+function sortForSignature(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortForSignature);
+  }
+  if (value !== null && typeof value === "object") {
+    const input = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(input)
+        .sort()
+        .map((key) => [key, sortForSignature(input[key])]),
+    );
+  }
+  return value;
 }
 
 const rootStyle: CSSProperties = {
@@ -414,12 +591,12 @@ const errorBoxStyle: CSSProperties = {
   fontFamily: MONO_STACK,
 };
 
-const successBoxStyle: CSSProperties = {
+const staleBoxStyle: CSSProperties = {
   padding: "8px 10px",
-  background: `${COLORS.preserved}15`,
-  border: `1px solid ${COLORS.preserved}66`,
+  background: `${COLORS.warn}15`,
+  border: `1px solid ${COLORS.warn}66`,
   borderRadius: 4,
-  color: COLORS.preserved,
+  color: COLORS.warn,
   fontSize: 11.5,
   fontFamily: MONO_STACK,
 };

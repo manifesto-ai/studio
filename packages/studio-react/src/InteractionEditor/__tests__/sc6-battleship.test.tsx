@@ -124,6 +124,29 @@ describe("P1-SC-6 — battleship parity", () => {
 });
 
 describe("P1-SC-7 — blocker UX", () => {
+  it("simulate shows blocked insight instead of a runtime error", async () => {
+    const { container, cleanup } = await mountBattleship();
+    const select = container.querySelector("#ie-action-select") as HTMLSelectElement;
+    await act(async () => {
+      fireInput(select, "shoot");
+    });
+    const textInput = container.querySelector("input[type=text]") as HTMLInputElement;
+    expect(textInput).not.toBeNull();
+    await act(async () => {
+      fireInput(textInput, "cell-0-0");
+    });
+    const simulateBtn = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim().startsWith("Simulate"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      simulateBtn.click();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(container.querySelector('[data-testid="intent-insight"]')?.textContent ?? "").toMatch(/simulate blocked/i);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    cleanup();
+  });
+
   it("dispatching shoot before initCells rejects with an action-level blocker", async () => {
     const { container, cleanup } = await mountBattleship();
     const select = container.querySelector("#ie-action-select") as HTMLSelectElement;

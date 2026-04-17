@@ -61,6 +61,7 @@ function colorFor(severity: Marker["severity"]): string {
     case "info":
       return COLORS.accent;
   }
+  return COLORS.muted;
 }
 
 const rootStyle: CSSProperties = {

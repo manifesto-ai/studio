@@ -225,7 +225,15 @@ export function App(): JSX.Element {
           >
             <TabRow value={rightTab} onChange={setRightTab} />
             <div style={tabContentStyle}>
-              {rightTab === "interact" ? <InteractionEditor /> : null}
+              <div
+                style={{
+                  display: rightTab === "interact" ? "flex" : "none",
+                  flex: 1,
+                  minHeight: 0,
+                }}
+              >
+                <InteractionEditor />
+              </div>
               {rightTab === "snapshot" ? <SnapshotTree /> : null}
               {rightTab === "plan" ? <PlanPanel /> : null}
               {rightTab === "history" ? <HistoryTimeline /> : null}

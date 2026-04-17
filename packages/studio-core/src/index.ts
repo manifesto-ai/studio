@@ -35,6 +35,7 @@ export type {
   Intent,
   IntentAdmission,
   IntentAdmissionFailure,
+  IntentExplanation,
   ProjectedDiff,
   Snapshot,
 } from "@manifesto-ai/sdk";

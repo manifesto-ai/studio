@@ -144,8 +144,11 @@ describe("SchemaGraphView", () => {
     expect(legend?.textContent ?? "").toMatch(/state/i);
     expect(legend?.textContent ?? "").toMatch(/computed/i);
     expect(legend?.textContent ?? "").toMatch(/action/i);
-    expect(legend?.textContent ?? "").toMatch(/feeds/i);
-    expect(legend?.textContent ?? "").toMatch(/mutates/i);
+    expect(legend?.textContent ?? "").toMatch(/reads dependency/i);
+    expect(legend?.textContent ?? "").toMatch(/patch write/i);
+    expect(legend?.textContent ?? "").toMatch(/availability gate/i);
+    expect(legend?.textContent ?? "").toMatch(/1-hop/i);
+    expect(legend?.textContent ?? "").toMatch(/2-hop/i);
     expect(legend?.textContent ?? "").toMatch(/initialized/i);
     cleanup();
   });

@@ -120,10 +120,12 @@ describe("InteractionEditor — todo.mel end-to-end", () => {
     await act(async () => {
       simBtn.click();
     });
-    // Preview should surface the "simulate" header + "changed paths".
-    const text = container.textContent ?? "";
-    expect(text).toMatch(/simulate/i);
-    expect(text.toLowerCase()).toMatch(/changed paths/);
+    const insight = container.querySelector('[data-testid="intent-insight"]');
+    expect(insight).not.toBeNull();
+    const text = insight?.textContent ?? "";
+    expect(text).toMatch(/simulate preview/i);
+    expect(text).toMatch(/data\.todos\[0\]/i);
+    expect(text).toMatch(/computed\.todoCount/i);
     cleanup();
   });
 
@@ -146,9 +148,8 @@ describe("InteractionEditor — todo.mel end-to-end", () => {
     const data = snap?.data as { todos?: Array<{ title: string }> };
     expect(data.todos?.length).toBe(1);
     expect(data.todos?.[0].title).toBe("buy milk");
-    // UI also shows the success banner.
-    const text = container.textContent ?? "";
-    expect(text).toMatch(/dispatched/i);
+    const insight = container.querySelector('[data-testid="intent-insight"]');
+    expect(insight?.textContent ?? "").toMatch(/dispatch completed/i);
     cleanup();
   });
 
@@ -173,6 +174,54 @@ describe("InteractionEditor — todo.mel end-to-end", () => {
     const snap = core.getSnapshot();
     const data = snap?.data as { todos?: unknown[] };
     expect(data.todos).toEqual([]);
+    const insight = container.querySelector('[data-testid="intent-insight"]');
+    expect(insight?.textContent ?? "").toMatch(/noop dispatch/i);
+    cleanup();
+  });
+
+  it("restores the last payload and insight when switching away and back to an action", async () => {
+    const { container, cleanup } = await mountWithCoreBuilt();
+    const select = container.querySelector("#ie-action-select") as HTMLSelectElement;
+    const titleInput = container.querySelector("input[type=text]") as HTMLInputElement;
+    await act(async () => {
+      fireInput(titleInput, "buy milk");
+    });
+    const simBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.trim().startsWith("Simulate"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      simBtn.click();
+    });
+    await act(async () => {
+      fireInput(select, "clearCompleted");
+    });
+    await act(async () => {
+      fireInput(select, "addTodo");
+    });
+    const restoredInput = container.querySelector("input[type=text]") as HTMLInputElement;
+    expect(restoredInput.value).toBe("buy milk");
+    const insight = container.querySelector('[data-testid="intent-insight"]');
+    expect(insight?.textContent ?? "").toMatch(/computed\.todoCount/i);
+    cleanup();
+  });
+
+  it("marks cached results stale after the payload changes", async () => {
+    const { container, cleanup } = await mountWithCoreBuilt();
+    const titleInput = container.querySelector("input[type=text]") as HTMLInputElement;
+    await act(async () => {
+      fireInput(titleInput, "buy milk");
+    });
+    const simBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.trim().startsWith("Simulate"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      simBtn.click();
+    });
+    await act(async () => {
+      fireInput(titleInput, "buy bread");
+    });
+    expect(container.querySelector('[data-testid="interaction-stale"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="intent-insight"]')).toBeNull();
     cleanup();
   });
 

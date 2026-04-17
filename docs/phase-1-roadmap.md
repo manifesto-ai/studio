@@ -2,7 +2,7 @@
 
 > **Status:** 🚀 **Active — kickoff (2026-04-17)**
 > **Date:** 2026-04-17
-> **Ref:** [phase-1-proposal.md](./phase-1-proposal.md) (ratified)
+> **Ref:** [phase-1-proposal.md](./phase-1-proposal.md) (ratified), [studio-backlog.md](./studio-backlog.md)
 > **Duration:** 4주 본 + 1주 버퍼 (최대 5주)
 > **Phase 0 closure:** 62 tests / 14 files green · Mandatory SC-1~7 + Optional SC-8~10 전부 GO
 

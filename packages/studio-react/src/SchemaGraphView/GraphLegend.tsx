@@ -27,17 +27,26 @@ export function GraphLegend(): JSX.Element {
           <section>
             <header style={headerStyle}>Nodes</header>
             <ul style={listStyle}>
-              <LegendRow glyph="S" glyphBg={COLORS.state} label="state" hint="stored field" />
-              <LegendRow glyph="ƒ" glyphBg={COLORS.computed} label="computed" hint="derived" />
-              <LegendRow glyph="A" glyphBg={COLORS.action} label="action" hint="intent handler" />
+              <LegendRow glyph="S" glyphBg={COLORS.state} label="state" hint="stored snapshot field" />
+              <LegendRow glyph="ƒ" glyphBg={COLORS.computed} label="computed" hint="derived view" />
+              <LegendRow glyph="A" glyphBg={COLORS.action} label="action" hint="intent entrypoint" />
             </ul>
           </section>
           <section style={{ marginTop: 10 }}>
             <header style={headerStyle}>Edges</header>
             <ul style={listStyle}>
-              <EdgeRow color={COLORS.textDim} dashed={false} label="feeds" hint="reads" />
-              <EdgeRow color="#F59E0B" dashed={false} label="mutates" hint="writes" />
-              <EdgeRow color={COLORS.muted} dashed label="unlocks" hint="availability" />
+              <EdgeRow color={COLORS.textDim} dashed={false} label="feeds" hint="reads dependency" />
+              <EdgeRow color="#F59E0B" dashed={false} label="mutates" hint="patch write" />
+              <EdgeRow color={COLORS.muted} dashed label="unlocks" hint="legality / availability gate" />
+            </ul>
+          </section>
+          <section style={{ marginTop: 10 }}>
+            <header style={headerStyle}>Focus</header>
+            <ul style={listStyle}>
+              <LegendRow glyph="●" glyphBg={COLORS.accent} label="root" hint="selected node" />
+              <LegendRow glyph="1" glyphBg={COLORS.warn} label="1-hop" hint="direct neighbors" />
+              <LegendRow glyph="2" glyphBg={COLORS.preserved} label="2-hop" hint="context ring" />
+              <LegendRow glyph="·" glyphBg={COLORS.muted} label="background" hint="dimmed context" />
             </ul>
           </section>
           <section style={{ marginTop: 10 }}>

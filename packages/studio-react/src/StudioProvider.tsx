@@ -8,9 +8,11 @@ import {
 } from "react";
 import type {
   BuildResult,
+  DispatchBlocker,
   EditIntentEnvelope,
   EditorAdapter,
   Intent,
+  IntentExplanation,
   StudioCore,
   StudioDispatchResult,
   StudioSimulateResult,
@@ -32,6 +34,9 @@ export type StudioContextValue = {
   readonly version: number;
   readonly history: readonly EditIntentEnvelope[];
   readonly build: () => Promise<BuildResult>;
+  readonly explainIntent: (intent: Intent) => IntentExplanation;
+  readonly why: (intent: Intent) => IntentExplanation;
+  readonly whyNot: (intent: Intent) => readonly DispatchBlocker[] | null;
   readonly dispatch: (intent: Intent) => Promise<StudioDispatchResult>;
   readonly simulate: (intent: Intent) => StudioSimulateResult;
   readonly createIntent: (action: string, ...args: unknown[]) => Intent;
@@ -127,6 +132,18 @@ export function StudioProvider({
     (intent: Intent) => bump(() => core.dispatchAsync(intent)),
     [bump, core],
   );
+  const explainIntent = useCallback(
+    (intent: Intent) => core.explainIntent(intent),
+    [core],
+  );
+  const why = useCallback(
+    (intent: Intent) => core.why(intent),
+    [core],
+  );
+  const whyNot = useCallback(
+    (intent: Intent) => core.whyNot(intent),
+    [core],
+  );
   const simulate = useCallback(
     (intent: Intent) => core.simulate(intent),
     [core],
@@ -155,6 +172,9 @@ export function StudioProvider({
       version,
       history,
       build,
+      explainIntent,
+      why,
+      whyNot,
       dispatch,
       simulate,
       createIntent,
@@ -167,6 +187,9 @@ export function StudioProvider({
       version,
       history,
       build,
+      explainIntent,
+      why,
+      whyNot,
       dispatch,
       simulate,
       createIntent,
