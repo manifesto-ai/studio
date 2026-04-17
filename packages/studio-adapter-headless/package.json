@@ -1,0 +1,34 @@
+{
+  "name": "@manifesto-ai/studio-adapter-headless",
+  "version": "0.0.0",
+  "description": "Headless (widget-independent) adapter for Studio Editor — agent entry point and test harness",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "studio-repl": "./bin/studio-repl.mjs"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsup",
+    "clean": "rm -rf dist",
+    "lint": "echo 'lint not configured'",
+    "test": "node ../../node_modules/vitest/vitest.mjs run",
+    "test:watch": "node ../../node_modules/vitest/vitest.mjs"
+  },
+  "dependencies": {
+    "@manifesto-ai/studio-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@manifesto-ai/compiler": "^3.7.0"
+  },
+  "files": [
+    "dist",
+    "bin"
+  ]
+}
