@@ -3,12 +3,17 @@ import { defineConfig } from "tsup";
 const release = process.env.MANIFESTO_RELEASE === "1";
 
 export default defineConfig({
-  entry: ["src/index.ts", "src/sqlite.ts"],
+  entry: ["src/index.ts"],
   format: "esm",
   tsconfig: "tsconfig.build.json",
   dts: true,
   clean: true,
   sourcemap: !release,
   minify: false,
-  external: ["better-sqlite3"],
+  external: [
+    "react",
+    "react-dom",
+    "react/jsx-runtime",
+    "monaco-editor",
+  ],
 });

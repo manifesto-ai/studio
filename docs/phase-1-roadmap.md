@@ -61,37 +61,40 @@
 ## 2. Week 1 — Adapter + Scaffolding
 
 ### 2.1 `@manifesto-ai/studio-adapter-monaco`
-- [ ] `packages/studio-adapter-monaco/package.json` (`monaco-editor` dep, `studio-core` workspace:*)
-- [ ] `packages/studio-adapter-monaco/tsconfig.json`, `tsconfig.build.json`, `tsup.config.ts`, `vitest.config.ts`
-- [ ] `src/monaco-adapter.ts` — `createMonacoAdapter({ editor, markerOwner? })`
-- [ ] `src/marker-mapping.ts` — `Marker → monaco.editor.IMarkerData`
-- [ ] `src/source-bridge.ts` — `setValue` loop-suppression (`sketch` §4)
-- [ ] `src/index.ts` — public export
-- [ ] 테스트 — jsdom 기반 Monaco stub, `adapter-contract.test.ts` 포팅
+- [x] package.json (`monaco-editor` peer, `studio-core` workspace:*, jsdom devDep)
+- [x] tsconfig + tsconfig.build + tsup + vitest (jsdom)
+- [x] `src/monaco-adapter.ts` — `createMonacoAdapter({ editor, markerOwner?, monaco })` + `.dispose()`
+- [x] `src/marker-mapping.ts` — `Marker → MonacoMarkerData` with 1-based line/column clamping
+- [x] loop-suppression (sketch §4) — `suppressChangeDepth` counter, no auto-build
+- [x] `src/index.ts` 공개 export
 
 ### 2.2 `@manifesto-ai/studio-react` 스캐폴드
-- [ ] `packages/studio-react/package.json` (`react`, `react-dom`, `d3-force`, `d3-selection`, `d3-shape`; `studio-core` + `studio-adapter-monaco` workspace:*)
-- [ ] `tsconfig` + `tsup` + `vitest` (jsdom environment 설정)
-- [ ] `src/StudioProvider.tsx` — React context + `core` / `adapter` hand-in
-- [ ] `src/useStudio.ts` — hook (module / snapshot / plan / history / diagnostics / build / simulate / dispatch / createIntent / setSource)
-- [ ] `src/index.ts` — 타입 + 컴포넌트 skeleton re-export
+- [x] package.json (`react`, `react-dom` peer; d3-force/d3-selection/d3-shape + @types; jsdom + @testing-library/react)
+- [x] tsconfig + tsup + vitest (jsdom)
+- [x] `src/StudioProvider.tsx` — Context + `adapter` attach/detach + version bump + history poll (P1-OQ-5 poll 기본 500ms)
+- [x] `src/useStudio.ts` — hook (module / snapshot / plan / diagnostics / history + build / simulate / dispatch / createIntent / setSource)
+- [x] `src/type-imports.ts` — SDK 타입 우회 re-export via studio-core
 
 ### 2.3 `apps/webapp` 스캐폴드
-- [ ] `apps/webapp/package.json` — `private: true`, `@manifesto-ai/studio-webapp`, `react` + `vite`
-- [ ] `apps/webapp/vite.config.ts` — monaco-editor code-splitting
-- [ ] `apps/webapp/index.html` — meta (og image, favicon 자리 holder)
-- [ ] `apps/webapp/src/main.tsx` — Vite entry, `StudioProvider` 바인딩
-- [ ] `apps/webapp/src/App.tsx` — 3-pane placeholder (editor / graph / interaction)
-- [ ] `apps/webapp/src/fixtures/` — `todo.mel`, `battleship.mel` 번들 (symlink 대신 import-as-asset으로 Vite 친화)
-- [ ] `pnpm -w build` 4 패키지 + 1 app 녹색
+- [x] package.json `private: true`, `@manifesto-ai/studio-webapp`
+- [x] `vite.config.ts` — `manualChunks: { monaco }` code-splitting, `*.mel` asset include
+- [x] `index.html` — dark color-scheme + og meta 자리
+- [x] `src/main.tsx` + `src/App.tsx` — 3-pane placeholder, Monaco 인스턴스 mount + Studio wiring
+- [x] `src/fixtures/todo.mel` + `battleship.mel` 번들 (Vite `?raw` import)
+- [x] `pnpm -w build` 4 패키지 + 1 app 녹색 — Monaco chunk 3.3MB, 별도 chunk로 격리
 
 ### 2.4 Headless parity 재실행
-- [ ] Monaco 어댑터를 headless 대신 꽂은 상태에서 `smoke`, `sc3`, `sc5`, `inv-se-2` 테스트 재실행 (jsdom)
-- [ ] **P1-SC-2 ✓** — 실패 시 W2 블록
+- [x] `parity-smoke.test.ts` (studio-adapter-monaco) — todo.mel build + addTodo dispatch + SC-3 parity + 진단 marker forwarding
+- [x] **P1-SC-2 ✓** — jsdom + 가짜 Monaco editor로 `adapter-contract.test.ts` 6 tests + parity 3 tests 녹색
 
 ### 2.5 Success Criteria
-- [ ] **P1-SC-1 ✓** — `pnpm -w build` 4 packages + 1 app 녹색
-- [ ] **P1-SC-2 ✓** — studio-adapter-monaco headless parity 녹색
+- [x] **P1-SC-1 ✓** — `pnpm -w build` 4 packages + 1 app 녹색 (15.9s)
+- [x] **P1-SC-2 ✓** — studio-adapter-monaco parity 녹색
+
+### 2.6 Pre-planned 변경 (scope adjustment)
+- **SQLite 서브패스 분리** — `@manifesto-ai/studio-core/sqlite`로 `createSqliteEditHistoryStore` 이동. 브라우저 번들에서 `better-sqlite3`/`node:fs`/`node:path` 제거. CLI REPL은 subpath에서 import.
+- **WebCrypto 브리지** — `node:crypto` 의존 제거. `build-id` / `envelope-codec`은 `globalThis.crypto.randomUUID`, trace-buffer는 FNV-1a 64-bit 해시로 전환 (sync + isomorphic + 결정론 유지).
+- 두 변경 모두 studio-core 공개 API surface 불변 (INV-P1-1 지킴).
 
 ---
 
@@ -321,6 +324,7 @@ Phase 0의 SE-BUILD / SE-RECON / SE-HIST / SE-ADP 규범은 변경 없이 유지
 |------|--------|
 | 2026-04-17 | **Initial Phase 1 roadmap.** 4주+1주 일정, Primary P1-G1~G6, Mandatory P1-SC-1~8, SE-UI-1~6 규범, INV-P1-1~3 신설. Pre-flight 4건(effects/store ordering/SDK seam/CI allowlist) 완료 상태에서 착수. D3 그래프와 InteractionEditor는 첫 공개 필수로 확정. apps/webapp이 studio.manifesto-ai.dev 운영 타깃. |
 | 2026-04-17 | **Phase 1 kickoff.** `phase-1-proposal.md` Ratified. `@manifesto-ai/sdk@3.15.1` publish 확인 → `pnpm.overrides link:` 제거, 62 tests 그대로 녹색. **P1-G6 pre-kickoff 완료**. P1-OQ-7 Vercel로 closed (DNS/TLS 확보). UI 러프 와이어프레임 합의 (Figma `lpCRLkerxVWOzJVufgCe4I`, main view + rebuild view). 외부 GPT 교차 리뷰는 on-demand (Codex) 보류. W1 scaffold 착수 가능. |
+| 2026-04-18 | **W1 완료.** 5 패키지(studio-core + studio-adapter-headless + studio-adapter-monaco + studio-react + apps/webapp) 전부 빌드 녹색. 71 tests / 16 파일 (core 33 + headless 29 + monaco 9). **P1-SC-1 ✓ / P1-SC-2 ✓**. INV-SE-3 실측으로 검증됨 — Monaco 어댑터가 headless adapter-contract 6 tests + parity smoke 3 tests 통과. 선/후행: (1) `@manifesto-ai/studio-core/sqlite` 서브패스 분리 (브라우저 번들에서 node: 모듈 제거), (2) WebCrypto 브리지 + FNV-1a 해시로 `node:crypto` 의존 제거. studio-core 공개 API는 `SqliteEditHistoryStore` export 한 쌍만 서브패스로 이동, `Intent`/`Snapshot`/`DomainModule` 타입은 편의 re-export로 추가. INV-P1-1(core API 동결)은 내부 분할 범위라 유지. |
 
 ---
 

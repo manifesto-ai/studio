@@ -1,0 +1,29 @@
+{
+  "name": "@manifesto-ai/studio-webapp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Manifesto Studio Editor webapp — studio.manifesto-ai.dev",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "clean": "rm -rf dist",
+    "lint": "echo 'lint not configured'",
+    "test": "echo 'no tests yet' && exit 0"
+  },
+  "dependencies": {
+    "@manifesto-ai/studio-adapter-monaco": "workspace:*",
+    "@manifesto-ai/studio-core": "workspace:*",
+    "@manifesto-ai/studio-react": "workspace:*",
+    "monaco-editor": "^0.52.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
+  }
+}

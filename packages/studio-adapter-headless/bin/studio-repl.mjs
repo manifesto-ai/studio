@@ -7,11 +7,13 @@ import { parseArgs } from "node:util";
 import {
   createStudioCore,
   createInMemoryEditHistoryStore,
-  createSqliteEditHistoryStore,
-  defaultEditHistoryDbPath,
   formatPlan,
   replayHistory,
 } from "@manifesto-ai/studio-core";
+import {
+  createSqliteEditHistoryStore,
+  defaultEditHistoryDbPath,
+} from "@manifesto-ai/studio-core/sqlite";
 import { createHeadlessAdapter } from "../dist/index.js";
 
 const USAGE = `studio-repl — interactive Studio Editor debug REPL

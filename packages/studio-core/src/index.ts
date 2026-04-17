@@ -23,6 +23,20 @@ export type {
 export type { StudioDispatchResult } from "./types/dispatch-result.js";
 export type { StudioSimulateResult } from "./types/simulate-result.js";
 
+// SDK types surfaced by StudioCore signatures — re-exported so downstream
+// packages (studio-react, studio-adapter-monaco, host apps) don't need a
+// direct @manifesto-ai/sdk dependency just to name these types.
+export type {
+  CanonicalSnapshot,
+  DispatchReport,
+  EffectHandler,
+  Intent,
+  Snapshot,
+} from "@manifesto-ai/sdk";
+// Also re-export the DomainModule from the compiler since it shows up on
+// `core.getModule()` and on the ReconciliationPlan journey.
+export type { DomainModule } from "@manifesto-ai/compiler";
+
 export type {
   HostTrace,
   TraceId,
@@ -62,11 +76,9 @@ export type {
 } from "./types/edit-history-store.js";
 
 export { createInMemoryEditHistoryStore } from "./internal/in-memory-edit-history-store.js";
-export {
-  createSqliteEditHistoryStore,
-  defaultEditHistoryDbPath,
-  type SqliteStoreOptions,
-} from "./internal/sqlite-edit-history-store.js";
+// `createSqliteEditHistoryStore` is Node-only — live in `@manifesto-ai/studio-core/sqlite`
+// so browser bundles do not drag better-sqlite3 into the tree.
+// See packages/studio-core/src/sqlite.ts
 export {
   buildEnvelope,
   decodeEnvelope,

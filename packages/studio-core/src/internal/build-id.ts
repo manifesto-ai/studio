@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { webCrypto } from "./web-crypto.js";
 
 export function mintBuildId(): string {
-  return randomUUID();
+  return webCrypto.randomUUID();
 }

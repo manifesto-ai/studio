@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { webCrypto } from "./web-crypto.js";
 import type { ReconciliationPlan } from "../types/reconciliation.js";
 import {
   deserializePlan,
@@ -29,7 +29,7 @@ export type BuildEnvelopeInput = {
 export function buildEnvelope(input: BuildEnvelopeInput): EditIntentEnvelope {
   const { payload, plan, author, correlationId, causationId } = input;
   return {
-    id: randomUUID(),
+    id: webCrypto.randomUUID(),
     timestamp: Date.now(),
     envelopeVersion: SUPPORTED_ENVELOPE_VERSION,
     payloadKind: payload.kind,
