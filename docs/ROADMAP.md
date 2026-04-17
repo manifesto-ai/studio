@@ -2,7 +2,7 @@
 
 > **Status:** ✅ **Phase 0 complete — 도장 (2026-04-17)**
 > **Date:** 2026-04-17
-> **Ref:** [proposal.md](./proposal.md) (immutable), [phase-0-review.md](./phase-0-review.md), [phase-1-proposal.md](./phase-1-proposal.md)
+> **Ref:** [proposal.md](./proposal.md) (immutable), [phase-0-review.md](./phase-0-review.md), [phase-1-proposal.md](./phase-1-proposal.md), [phase-1-roadmap.md](./phase-1-roadmap.md)
 > **Duration:** 4주 본 + 1주 버퍼 (실제: 같은 날짜 라인에 전부 마감. Phase 1로 바로 이행 가능)
 >
 > **Completion dossier:** Mandatory SC-1~SC-7 전부 GO. Optional SC-8/SC-9/SC-10 도 GO (bonus). 13 test files / 59 tests 녹색. Phase 1 proposal은 `docs/phase-1-proposal.md`에서 이어감.

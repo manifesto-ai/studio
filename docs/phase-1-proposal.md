@@ -2,7 +2,7 @@
 
 > **Status:** Draft (Phase 1 kickoff pending)
 > **Date:** 2026-04-17
-> **Related:** `proposal.md` (Phase 0 — immutable), `ROADMAP.md` (Phase 0 — complete), `docs/monaco-adapter-sketch.md`, `docs/phase-0-review.md`
+> **Related:** `proposal.md` (Phase 0 — immutable), `ROADMAP.md` (Phase 0 — complete), `docs/phase-1-roadmap.md` (execution checklist), `docs/monaco-adapter-sketch.md`, `docs/phase-0-review.md`
 > **Primary user:** Manifesto developer (성우님 본인 포함)
 > **Design north star (unchanged from Phase 0 §1.2):** Phase 3 compatibility — agents must naturally hook into the Phase 1 surface
 
