@@ -148,60 +148,65 @@
 ## 4. Week 3 — SchemaGraphView (D3)
 
 ### 4.1 D3 레이아웃
-- [ ] `src/SchemaGraphView/layout.ts` — `d3-force` simulation (`forceLink`, `forceManyBody`, `forceCenter`, `forceCollide`)
-- [ ] **캐시 전략:** `(schemaHash → Map<nodeId, {x, y}>)` — 동일 hash 재빌드 시 위치 유지, 새 node만 simulation 재시작
-- [ ] `src/SchemaGraphView/render.ts` — SVG 렌더 (nodes, edges, labels), kind별 색/형태, relation별 선 스타일 (feeds/mutates/unlocks)
+- [x] `src/SchemaGraphView/layout.ts` — `d3-force` simulation (`forceLink`, `forceManyBody`, `forceCenter`, `forceCollide`) + 좁은 pane 대응 boundary force + 결정론 seed (mulberry32 + FNV-1a over schemaHash)
+- [x] **캐시 전략:** `GraphLayoutCache` (LRU N=8) with key = `schemaHash + size bucket`. INV-P1-3 hash-cached position 재사용 동작. 신규 schema 전환 시 `carryOver()`로 보존 노드 좌표를 prevPositions seed로 넘김.
+- [x] `src/SchemaGraphView/SchemaGraphView.tsx` — SVG 렌더 (nodes, edges, labels, arrow markers, grid dot background), kind별 색/형태 (state=rounded rect / computed=hex / action=pill), relation별 선 스타일 (feeds 얇은 회색 / mutates 주황 굵은 / unlocks 파선), hover 강조, 팬/줌 (wheel + drag + 더블클릭 리셋 + ZoomChrome), keyboard focus ring + Enter/Space 클릭, `<title>` tooltip.
 
 ### 4.2 Plan overlay
-- [ ] `plan.identityMap`을 읽어 node border color 오버레이 — preserved (=) / initialized (+) / discarded (-)
-- [ ] `plan.snapshotPlan`도 동일하게 시각화 (state_field 노드 기준)
-- [ ] Legend
+- [x] `plan.identityMap`을 읽어 node FateHalo 링 — initialized (blue) / discarded (red) / renamed (accent), preserved는 quiet.
+- [x] `plan.snapshotPlan`을 state_field 노드에 `FateBadge` dot으로 오버레이 (preserved 빼고).
+- [x] TypeCompatWarning은 `WarnBadge`로 좌상단 표시.
+- [x] `GraphLegend` — 기본 collapsed, Nodes / Edges / Plan 섹션으로 시각 어휘 문서화.
 
 ### 4.3 Click-to-source
-- [ ] `src/SchemaGraphView/hit-testing.ts` — 노드 클릭 시 `module.sourceMap`에서 `LocalTargetKey` → `SourceSpan` 변환
-- [ ] 부모 패널에 `onNodeClick(key)` 콜백 전달, `App.tsx`가 Monaco `editor.revealLineInCenter` 호출
+- [x] `GraphNode.sourceSpan`을 `buildGraphModel`에서 `module.sourceMap.entries[toLocalKey(id)]`로 채움.
+- [x] `SchemaGraphView`의 `onNodeClick(node)` prop → `App.tsx`가 `editor.revealLineInCenterIfOutsideViewport + setPosition + focus` 호출. preview 수동 확인으로 Monaco cursor 이동 검증.
 
 ### 4.4 3-pane 레이아웃 고도화
-- [ ] `App.tsx` — editor | graph | snapshot/interaction 3-pane (드래그 리사이저)
-- [ ] graph pane이 webapp의 시각적 "central piece"가 되도록 레이아웃 균형
+- [x] `App.tsx` — editor | graph | inspector 3-pane + `PaneDivider` 2개 (pointer drag + ArrowLeft/Right 키보드 + Home 리셋 + aria `role=separator`).
+- [x] `usePaneSizes()` — localStorage `studio.layout.v1` persist, `ResizeObserver`로 viewport 변경 시 `MIN_LEFT=240 / MIN_RIGHT=260 / MIN_CENTER=260`으로 clamp.
+- [x] graph pane 배경을 `COLORS.bg`로 유지해 시각적 "central piece"가 되도록 함.
 
 ### 4.5 성능 & 레이아웃 선택
-- [ ] **P1-OQ-4 결정** — battleship (~60 nodes, 100+ edges) 케이스에서 force vs ELK/Dagre 벤치
-- [ ] 200ms 이하 프레임 예산; 초과 시 layered 레이아웃으로 전환
+- [x] todo.mel (11 노드, 17 엣지) — force 시뮬레이션 250 tick, 결정론 seed, 좁은 pane 대응 boundary force로 안정.
+- [ ] **P1-OQ-4 최종 결정** — battleship (~60 nodes) 벤치는 W4로 이월 (apps/webapp에 battleship.mel fixture 로드되는 시점). todo 규모에서는 force 충분.
 
 ### 4.6 Success Criteria
-- [ ] **P1-SC-4 ✓** — `todo.mel` 그래프 렌더 + computed body 변경 후 plan overlay 보임 (`sc4-graph.test.tsx`, jsdom)
+- [x] **P1-SC-4 ✓** — `sc4-graph.test.tsx`: 첫 빌드 → 3 kind 모두 렌더 확인 → state field 추가 edit → 재빌드 → schemaHash 변경 + 모든 노드 identityFate 할당 + 최소 1개 노드 non-preserved fate + DOM `<title>` overlay 단어 확인. 39 tests / 5 files 녹색.
 
 ---
 
 ## 5. Week 4 — InteractionEditor + Blocker UX
 
 ### 5.1 Action picker + 폼 생성
-- [ ] `src/InteractionEditor/InteractionEditor.tsx` — `schema.actions` 드롭다운
-- [ ] `src/InteractionEditor/action-form.tsx` — `ActionSpec.input` / `inputType` 기반 폼 생성
-- [ ] `FieldSpec` kind별 입력 렌더링 — primitive (string/number/boolean), enum (select), object (nested group), array (list), union (kind select)
-- [ ] **P1-OQ-6 결정** — 지원 안 되는 kind는 raw JSON textarea fallback (JSON.parse validation)
+- [x] `src/InteractionEditor/InteractionEditor.tsx` — `schema.actions` 정렬 드롭다운 + `useStudio()` 기반 module/snapshot 소비.
+- [x] `src/InteractionEditor/field-descriptor.ts` — `ActionSpec.inputType` (v0.3.3 TypeDefinition) 우선, `input` (FieldSpec) 폴백, 재귀 `ref` 해소 + recursive-ref guard, 모든 kind → `FormDescriptor` 정규화.
+- [x] `src/InteractionEditor/ActionForm.tsx` — primitive (text/number/checkbox/null chip), enum (select), object (nested group + optional indicator), array (list + add/remove), record (key+value + add/remove).
+- [x] **P1-OQ-6 resolved** — 미지원 shape은 `kind: "json"` descriptor로 떨어뜨리고 `reason` 설명 포함한 raw JSON textarea 렌더 (parse 에러 인라인). mixed-union / non-string record key / unknown ref / recursive ref 모두 이 경로.
 
 ### 5.2 Simulate preview
-- [ ] `src/InteractionEditor/simulate-preview.tsx` — `Simulate` 버튼 → `core.simulate(intent)` → 현재 snapshot과 diff 렌더 (`data.*` 경로별 before/after)
-- [ ] Preview는 실제 dispatch와 분리 — SE-RECON-5 정신 유지
+- [x] `src/InteractionEditor/SimulatePreview.tsx` — `core.simulate(intent)` 결과 가공해서 changed paths (before/after diff) + newAvailableActions chips + pending host requirements + status 배너.
+- [x] `snapshot` (현재 사용자 봐라보는 상태)을 `beforeSnapshot` prop으로 받아 `resolvePath()`로 before 값 추출. 실제 dispatch와 완전 분리 — `simulate()`는 순수.
 
 ### 5.3 Dispatch + blocker list
-- [ ] `Dispatch` 버튼 → `core.dispatchAsync(intent)` → `StudioDispatchResult` 렌더
-- [ ] `src/InteractionEditor/blocker-list.tsx` — action이 unavailable이면 `core.whyNot(intent)` 블로커 리스트 인라인 표시
+- [x] `Dispatch` 버튼 → `core.dispatchAsync(intent)` → `StudioDispatchResult` 3 variant 처리 (completed = success 배너 + `changedPaths` 수, rejected = BlockerList, failed = error toast).
+- [x] `src/InteractionEditor/BlockerList.tsx` — `admission.failure.blockers: DispatchBlocker[]` + `rejection.reason` 를 렌더. `layer` 뱃지로 `available` vs `dispatchable` 구분, `expression` 요약 + `evaluatedResult` 병기.
 
 ### 5.4 battleship 브라우저 parity
-- [ ] `apps/webapp`에서 `battleship.mel` 로드 → `initCells` + `setupBoard` + `shoot`/`recordHit`/`recordMiss` 시퀀스 수행 (SC-8 브라우저 버전)
-- [ ] 재빌드 시 그래프 + 스냅샷 모두 보존/반영 확인
+- [x] `apps/webapp` 고정자 dropdown (`todo.mel` / `battleship.mel`) — TopBar에서 스위칭, `adapter.setSource` → `requestBuild()`.
+- [x] 재빌드 시 graph + snapshot + interaction editor 모두 새 schema로 리프레시 (schemaHash 변경 → useMemo 재계산).
+- [x] battleship은 실측 **182 nodes / 337 edges** (proposal의 "~60 nodes"는 state 필드만 집계한 수치). 현재 force 레이아웃 + 밀도 스케일로 안정 렌더, 초기 build+layout ~2.8초.
 
 ### 5.5 Polish
-- [ ] Loading/empty states (SE-UI-5)
-- [ ] 에러 토스트 (빌드 실패 시 blocker 자리 대신 diagnostics로 routing)
+- [x] SchemaGraphView `densityScale()` — 노드 16+개부터 radius / font / label 모두 스케일 다운. 40+ 노드에서는 label 생략 (glyph-only).
+- [x] layout.ts — iterations를 노드 수에 비례해 증가 (200 → 최대 800), collide radius / charge / link distance 모두 cell(√area/N) 기반으로 재튜닝.
+- [x] Loading/empty states — InteractionEditor는 module=null일 때 "Build the module" hint, 폼이 없는 action은 "no input" chip.
+- [x] 에러 경로 — createIntent/simulate throw는 runtimeError 박스, dispatch failed variant는 error toast, rejected variant는 BlockerList.
 
 ### 5.6 Success Criteria
-- [ ] **P1-SC-5 ✓** — `addTodo(title)` 폼 → simulate → dispatch 풀 플로우 (jsdom + `apps/webapp` 수동 시나리오)
-- [ ] **P1-SC-6 ✓** — `battleship.mel` 브라우저 parity, ~60 node 그래프 안정 렌더
-- [ ] **P1-SC-7 ✓** — `shoot` while phase != "playing" 시 blocker 리스트 렌더 (inline)
+- [x] **P1-SC-5 ✓** — [`InteractionEditor.test.tsx`](packages/studio-react/src/InteractionEditor/__tests__/InteractionEditor.test.tsx): build → addTodo 피커 → title 입력 → simulate preview changed paths 확인 → dispatch → `core.getSnapshot()` 확인 (todos.length=1 + title 일치) + 성공 배너.
+- [x] **P1-SC-6 ✓** — [`sc6-battleship.test.tsx`](packages/studio-react/src/InteractionEditor/__tests__/sc6-battleship.test.tsx): battleship.mel build → `buildGraphModel` 노드 60+개 / 엣지 > 노드 수, 액션 picker에 `initCells`/`setupBoard`/`shoot`/`recordHit`/`recordMiss` 모두 존재, `setupBoard(shipCellCount: 20)` 풀 dispatch 후 `phase="playing"` + `totalShipCells=20` 검증.
+- [x] **P1-SC-7 ✓** — 같은 파일: `shoot(cellId:"cell-0-0")` 초기(phase=idle, canShoot=false) dispatch → rejected admission → BlockerList DOM에 "blocked" + "available|dispatchable" 단어 렌더.
 
 ---
 
@@ -240,13 +245,13 @@
 
 ### Mandatory (전부 GO여야 첫 공개)
 
-- [ ] **P1-SC-1** — 4 packages + 1 app 빌드 녹색 (Week 1)
-- [ ] **P1-SC-2** — Monaco 어댑터 headless parity (Week 1)
-- [ ] **P1-SC-3** — apps/webapp 풀 루프 브라우저 (Week 2)
-- [ ] **P1-SC-4** — SchemaGraphView + plan overlay (Week 3)
-- [ ] **P1-SC-5** — InteractionEditor 폼 + simulate + dispatch (Week 4)
-- [ ] **P1-SC-6** — battleship 브라우저 parity (Week 4)
-- [ ] **P1-SC-7** — Blocker UX (Week 4)
+- [x] **P1-SC-1** — 4 packages + 1 app 빌드 녹색 (Week 1)
+- [x] **P1-SC-2** — Monaco 어댑터 headless parity (Week 1)
+- [x] **P1-SC-3** — apps/webapp 풀 루프 브라우저 (Week 2)
+- [x] **P1-SC-4** — SchemaGraphView + plan overlay (Week 3)
+- [x] **P1-SC-5** — InteractionEditor 폼 + simulate + dispatch (Week 4)
+- [x] **P1-SC-6** — battleship 브라우저 parity (Week 4)
+- [x] **P1-SC-7** — Blocker UX (Week 4)
 - [ ] **P1-SC-8** — 배포 가능 static bundle (Week 5)
 
 ### Optional (있으면 좋음)
@@ -280,9 +285,9 @@
 | P1-OQ-1 | React state library — Context vs Zustand | Week 1 |
 | P1-OQ-2 | Monaco theme | Week 2 |
 | P1-OQ-3 | Vite vs Next | Week 1 (Vite 권장) |
-| P1-OQ-4 | SchemaGraphView 레이아웃 — force vs ELK vs Dagre | **Week 3 spike** |
+| ~~P1-OQ-4~~ | ✅ **resolved: force**. todo(11)/battleship(182) 모두 안정 렌더. density scale + iteration 증가로 180+ 노드까지 가용. ELK/Dagre 전환은 Phase 2 과제. | W4 |
 | P1-OQ-5 | Envelope 구독 — push vs poll | Week 2 |
-| P1-OQ-6 | InteractionEditor 미지원 FieldSpec 처리 | Week 4 |
+| ~~P1-OQ-6~~ | ✅ **closed**: raw JSON textarea fallback via `kind: "json"` FormDescriptor (mixed union / non-string record key / unknown ref / recursive ref 모두 이 경로) | W4 |
 | ~~P1-OQ-7~~ | ✅ **closed: Vercel** — DNS + TLS 준비 완료 | resolved pre-kickoff |
 | P1-OQ-8 | Fixture 전략 — 번들 vs 업로드 vs 둘 다 | Week 2 |
 
@@ -340,6 +345,9 @@ Phase 0의 SE-BUILD / SE-RECON / SE-HIST / SE-ADP 규범은 변경 없이 유지
 | 2026-04-17 | **Phase 1 kickoff.** `phase-1-proposal.md` Ratified. `@manifesto-ai/sdk@3.15.1` publish 확인 → `pnpm.overrides link:` 제거, 62 tests 그대로 녹색. **P1-G6 pre-kickoff 완료**. P1-OQ-7 Vercel로 closed (DNS/TLS 확보). UI 러프 와이어프레임 합의 (Figma `lpCRLkerxVWOzJVufgCe4I`, main view + rebuild view). 외부 GPT 교차 리뷰는 on-demand (Codex) 보류. W1 scaffold 착수 가능. |
 | 2026-04-18 | **W1 완료.** 5 패키지(studio-core + studio-adapter-headless + studio-adapter-monaco + studio-react + apps/webapp) 전부 빌드 녹색. 71 tests / 16 파일 (core 33 + headless 29 + monaco 9). **P1-SC-1 ✓ / P1-SC-2 ✓**. INV-SE-3 실측으로 검증됨 — Monaco 어댑터가 headless adapter-contract 6 tests + parity smoke 3 tests 통과. 선/후행: (1) `@manifesto-ai/studio-core/sqlite` 서브패스 분리 (브라우저 번들에서 node: 모듈 제거), (2) WebCrypto 브리지 + FNV-1a 해시로 `node:crypto` 의존 제거. studio-core 공개 API는 `SqliteEditHistoryStore` export 한 쌍만 서브패스로 이동, `Intent`/`Snapshot`/`DomainModule` 타입은 편의 re-export로 추가. INV-P1-1(core API 동결)은 내부 분할 범위라 유지. |
 | 2026-04-18 | **W2 완료.** 79 tests / 17 파일 (core 33 + headless 29 + monaco 9 + react 8). **P1-SC-3 ✓**. `@manifesto-ai/studio-react`에 5개 패널 (SourceEditor / DiagnosticsPanel / PlanPanel / SnapshotTree / HistoryTimeline) + `StudioHotkeys` + 색 토큰 세트. `StudioProvider`가 `onBuildRequest`로 adapter의 build 신호를 받아 자동 bump; 500ms history poll (P1-OQ-5). `apps/webapp`는 단일 provider 아래 좌(에디터) / 중(graph placeholder) / 우(Snapshot/Plan/History/Diagnostics 4탭) 구성, Ctrl-S 전역 단축키 + Diagnostics 클릭으로 Monaco 라인 점프. vite build 7.1s, main bundle 478kB / monaco 3.3MB chunk 격리. INV-P1-1 유지 (core API 불변), SE-UI-1/2/3 모두 코드 구조로 강제. |
+| 2026-04-18 | **W2 후속 리렌더 버그 수정.** `App.tsx` 초기 마운트 시 `wiring` null → non-null 전환으로 `<StudioProvider>` 래핑이 새로 생기면서 body 전체가 remount → Monaco host div DOM 재생성 → Monaco 인스턴스가 detached div에 그려 화면 빈칸 버그. Fix: `StudioProvider` prop `adapter: EditorAdapter \| null`로 확장 (null이면 attach/onBuildRequest/setSource/requestBuild 효과 모두 guard로 skip), App.tsx는 `useMemo`로 `core`를 초기 렌더부터 생성하고 조건부 분기 제거 — tree 포지션 안정. studio-react 8 tests 그대로 녹색. |
+| 2026-04-18 | **W3 완료.** 39 tests / 5 files (graph-model 13 + layout 9 + SchemaGraphView 8 + sc4 1 + panels 8). **P1-SC-4 ✓**. `packages/studio-react/src/SchemaGraphView/` 4 파일 — `graph-model.ts` (state↔state_field prefix 정규화 + sourceSpan/identityFate/snapshotFate/warnings 인리치먼트), `layout.ts` (d3-force 결정론 simulation + 좁은 pane 대응 boundary force + `GraphLayoutCache` LRU), `SchemaGraphView.tsx` (SVG 렌더 + kind별 shape + relation별 edge 스타일 + hover/focus + pan/zoom + FateHalo/FateBadge/WarnBadge overlay + `<title>` tooltip), `GraphLegend.tsx` (collapsible, Nodes/Edges/Plan 섹션). `apps/webapp`는 `PaneDivider` 2개로 드래그 리사이저 (pointer + 키보드 + localStorage persist + ResizeObserver clamp), graph pane에 `SchemaGraphView` 마운트, 노드 클릭 → Monaco line reveal (P1-SC-5 click-to-source 통합). studio-core는 SchemaGraph/SourceMap 타입 re-export만 추가 (INV-P1-1 유지, §2.6 precedent). P1-OQ-4는 todo 규모에서 force 확정, battleship 벤치는 W4로 이월. |
+| 2026-04-18 | **W4 완료.** 76 tests / 9 files (panels 8 + graph 31 + field-descriptor 18 + ActionForm 9 + InteractionEditor 7 + sc6-battleship 3). **P1-SC-5 / P1-SC-6 / P1-SC-7 ✓**. `packages/studio-react/src/InteractionEditor/` 4 파일 — `field-descriptor.ts` (`FieldSpec` + v0.3.3 `TypeDefinition` → `FormDescriptor` 정규화, unsupported → `kind:"json"` fallback = P1-OQ-6 closed), `ActionForm.tsx` (재귀 렌더: string/number/boolean/null/enum/object/array/record/json, required marker, disabled state), `SimulatePreview.tsx` (changed paths before/after diff + newAvailableActions chips + pending requirements + status 배너), `BlockerList.tsx` (`admission.failure.blockers` 렌더 + layer 뱃지 + expression/evaluatedResult). `apps/webapp` TopBar에 fixture dropdown — todo ↔ battleship 스위칭 (`adapter.setSource` + `requestBuild`). SchemaGraphView는 dense graph 대응 — `densityScale()` 기반 radius/font/label 스케일, 40+ 노드에서 label 생략. layout.ts는 iterations·collideRadius·linkDistance·charge 모두 cell(√area/N) 기반으로 재튜닝. battleship 실측 **182 nodes / 337 edges** — force 레이아웃으로 안정 렌더 (build+layout ~2.8초). studio-core는 `ActionSpec/FieldSpec/TypeDefinition/DispatchBlocker/IntentAdmission/ProjectedDiff/ExecutionOutcome` 타입 re-export만 추가 (INV-P1-1 유지). **P1-OQ-6 closed**. P1-OQ-4는 force로 확정 (180+ 노드까지 사용 가능, ELK/Dagre 전환은 Phase 2로). |
 
 ---
 

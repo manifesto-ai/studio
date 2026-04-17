@@ -1,56 +1,72 @@
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as monaco from "monaco-editor";
 import {
   createStudioCore,
   type EditorAdapter,
   type Marker,
-  type StudioCore,
 } from "@manifesto-ai/studio-core";
 import { createMonacoAdapter } from "@manifesto-ai/studio-adapter-monaco";
 import {
+  buildGraphModel,
   COLORS,
   DiagnosticsPanel,
+  type GraphNode,
   HistoryTimeline,
+  InteractionEditor,
   PlanPanel,
+  SchemaGraphView,
   SnapshotTree,
   StudioHotkeys,
   StudioProvider,
   useStudio,
 } from "@manifesto-ai/studio-react";
 import todoSource from "./fixtures/todo.mel?raw";
+import battleshipSource from "./fixtures/battleship.mel?raw";
 
-type Wiring = {
-  readonly core: StudioCore;
-  readonly adapter: EditorAdapter;
-  readonly editor: monaco.editor.IStandaloneCodeEditor;
-};
+type FixtureId = "todo" | "battleship";
+type Fixture = { readonly id: FixtureId; readonly label: string; readonly source: string };
+const FIXTURES: readonly Fixture[] = [
+  { id: "todo", label: "todo.mel", source: todoSource },
+  { id: "battleship", label: "battleship.mel", source: battleshipSource },
+];
 
-type RightTab = "snapshot" | "plan" | "history" | "diagnostics";
+type RightTab = "interact" | "snapshot" | "plan" | "history" | "diagnostics";
 
 /**
  * Phase 1 W2: editor | graph placeholder | tabbed panel column.
  *
- * The Monaco host `<div ref={editorHostRef} />` is rendered UNCONDITIONALLY
- * at a fixed position in the tree. Swapping its parent between
- * "SourceEditor wrapper" and "plain div" would remount the div and wipe
- * Monaco's content — avoid that. Chrome decoration (header / footer) is
- * applied via sibling elements instead of a wrapper component.
+ * StudioProvider is mounted on the first render with `adapter: null` so
+ * the tree position of every descendant — including the Monaco host div
+ * — is stable across the adapter-ready transition. Remounting the host
+ * div would detach Monaco's internal DOM and blank the editor.
  */
 export function App(): JSX.Element {
   const editorHostRef = useRef<HTMLDivElement | null>(null);
   const editorInstanceRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
-  const [wiring, setWiring] = useState<Wiring | null>(null);
-  const [rightTab, setRightTab] = useState<RightTab>("snapshot");
+  const core = useMemo(() => createStudioCore(), []);
+  const [adapter, setAdapter] = useState<EditorAdapter | null>(null);
+  const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const [rightTab, setRightTab] = useState<RightTab>("interact");
+  const [fixtureId, setFixtureId] = useState<FixtureId>("todo");
+  const fixture = FIXTURES.find((f) => f.id === fixtureId) ?? FIXTURES[0];
 
   useEffect(() => {
     if (editorHostRef.current === null) return;
-    // Guard StrictMode's intentional double-effect-run in dev: if an editor
-    // already exists for this host, don't tear it down and rebuild — just
-    // reuse.
+    // Guard StrictMode's intentional double-effect-run in dev.
     if (editorInstanceRef.current !== null) return;
 
-    const editor = monaco.editor.create(editorHostRef.current, {
-      value: todoSource,
+    const ed = monaco.editor.create(editorHostRef.current, {
+      value: fixture.source,
       language: "plaintext",
       theme: "vs-dark",
       automaticLayout: true,
@@ -60,95 +76,305 @@ export function App(): JSX.Element {
       lineNumbersMinChars: 3,
       padding: { top: 8, bottom: 8 },
     });
-    editorInstanceRef.current = editor;
+    editorInstanceRef.current = ed;
 
-    const adapter = createMonacoAdapter({ editor, monaco });
-    const core = createStudioCore();
-    setWiring({ core, adapter, editor });
+    const a = createMonacoAdapter({ editor: ed, monaco });
+    setEditor(ed);
+    setAdapter(a);
 
     return () => {
-      adapter.dispose();
-      editor.dispose();
+      a.dispose();
+      ed.dispose();
       editorInstanceRef.current = null;
+      setAdapter(null);
+      setEditor(null);
     };
   }, []);
 
-  const revealMarker = (marker: Marker): void => {
-    if (wiring === null) return;
-    const { editor } = wiring;
-    const { start } = marker.span;
-    const line = Math.max(1, start.line);
-    const column = Math.max(1, start.column);
-    editor.revealLineInCenterIfOutsideViewport(line);
-    editor.setPosition({ lineNumber: line, column });
+  // Swap source when fixture dropdown changes. The adapter's loop-
+  // suppression keeps this from echoing into a change event. We then
+  // trigger a build so the graph / interaction editor pick up the new
+  // schema.
+  const lastLoadedFixtureRef = useRef<FixtureId>(fixtureId);
+  useEffect(() => {
+    if (adapter === null) return;
+    if (lastLoadedFixtureRef.current === fixtureId) return;
+    lastLoadedFixtureRef.current = fixtureId;
+    adapter.setSource(fixture.source);
+    adapter.requestBuild();
+  }, [adapter, fixtureId, fixture.source]);
+
+  const revealSpan = (line: number, column: number): void => {
+    if (editor === null) return;
+    const l = Math.max(1, line);
+    const c = Math.max(1, column);
+    editor.revealLineInCenterIfOutsideViewport(l);
+    editor.setPosition({ lineNumber: l, column: c });
     editor.focus();
   };
+  const revealMarker = (marker: Marker): void => {
+    revealSpan(marker.span.start.line, marker.span.start.column);
+  };
+  const revealNode = (node: GraphNode): void => {
+    if (node.sourceSpan === null) return;
+    revealSpan(node.sourceSpan.start.line, node.sourceSpan.start.column);
+  };
 
-  const tabContent = (
-    <>
-      {rightTab === "snapshot" ? <SnapshotTree /> : null}
-      {rightTab === "plan" ? <PlanPanel /> : null}
-      {rightTab === "history" ? <HistoryTimeline /> : null}
-      {rightTab === "diagnostics" ? (
-        <DiagnosticsPanel onSelect={revealMarker} />
-      ) : null}
-    </>
+  const mainRef = useRef<HTMLDivElement | null>(null);
+  const { sizes, setSizes: setPaneSizes, setLeft, setRight } = usePaneSizes();
+
+  // Clamp pane sizes to the actual container width on mount + whenever
+  // the window resizes. Without this, a 800px viewport with defaults
+  // that sum > 800px will leave the center with 0 px.
+  useLayoutEffect(() => {
+    const el = mainRef.current;
+    if (el === null) return;
+    const clampToContainer = (): void => {
+      const total = el.getBoundingClientRect().width;
+      if (total <= 0) return;
+      setPaneSizes((s) => {
+        const leftMax = Math.max(MIN_LEFT, total - MIN_RIGHT - MIN_CENTER);
+        const left = clamp(s.left, MIN_LEFT, leftMax);
+        const rightMax = Math.max(MIN_RIGHT, total - left - MIN_CENTER);
+        const right = clamp(s.right, MIN_RIGHT, rightMax);
+        return left === s.left && right === s.right ? s : { left, right };
+      });
+    };
+    clampToContainer();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(clampToContainer);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [setPaneSizes]);
+
+  const handleResizeLeft = useCallback(
+    (dx: number, startSize: number) => {
+      const total = mainRef.current?.getBoundingClientRect().width ?? 0;
+      if (total === 0) return;
+      setLeft(startSize + dx, total);
+    },
+    [setLeft],
   );
-
-  const body = (
-    <>
-      <TopBar />
-      <div style={mainStyle}>
-        <div style={editorPaneStyle}>
-          <div style={editorHeaderStyle}>
-            <div style={tabChipStyle}>
-              <span>todo.mel</span>
-            </div>
-            <span style={{ color: COLORS.muted, fontSize: 11 }}>
-              ⌘/Ctrl + S to build
-            </span>
-          </div>
-          {/* Stable: never re-parented. */}
-          <div ref={editorHostRef} style={editorHostStyle} />
-          {wiring !== null ? <EditorFooter /> : null}
-        </div>
-
-        <div style={graphPaneStyle}>
-          <PanePlaceholder
-            title="Schema Graph"
-            subtitle="W3 brings the D3 SchemaGraphView here."
-          />
-        </div>
-
-        <div style={rightPaneStyle}>
-          <TabRow value={rightTab} onChange={setRightTab} />
-          <div style={tabContentStyle}>
-            {wiring !== null ? (
-              tabContent
-            ) : (
-              <div style={placeholderContentStyle}>loading…</div>
-            )}
-          </div>
-        </div>
-      </div>
-      <StatusBar />
-    </>
+  const handleResizeRight = useCallback(
+    (dx: number, startSize: number) => {
+      const total = mainRef.current?.getBoundingClientRect().width ?? 0;
+      if (total === 0) return;
+      // Negative dx moves divider left → right pane grows.
+      setRight(startSize - dx, total);
+    },
+    [setRight],
   );
 
   return (
     <div style={rootStyle}>
-      {wiring !== null ? (
-        <StudioProvider
-          core={wiring.core}
-          adapter={wiring.adapter}
-          historyPollMs={500}
-        >
-          <StudioHotkeys />
-          {body}
-        </StudioProvider>
-      ) : (
-        body
-      )}
+      <StudioProvider core={core} adapter={adapter} historyPollMs={500}>
+        <StudioHotkeys />
+        <TopBar
+          fixtureId={fixtureId}
+          onFixtureChange={setFixtureId}
+        />
+        <div style={mainStyle} ref={mainRef}>
+          <div
+            style={{
+              ...editorPaneStyle,
+              width: sizes.left,
+              flex: "none",
+            }}
+          >
+            <div style={editorHeaderStyle}>
+              <div style={tabChipStyle}>
+                <span>{fixture.label}</span>
+              </div>
+              <span style={{ color: COLORS.muted, fontSize: 11 }}>
+                ⌘/Ctrl + S to build
+              </span>
+            </div>
+            {/* Stable: never re-parented. */}
+            <div ref={editorHostRef} style={editorHostStyle} />
+            <EditorFooter />
+          </div>
+
+          <PaneDivider
+            onResize={handleResizeLeft}
+            getSize={() => sizes.left}
+            ariaLabel="Resize editor pane"
+          />
+
+          <div style={graphPaneStyle}>
+            <GraphPane onNodeClick={revealNode} />
+          </div>
+
+          <PaneDivider
+            onResize={handleResizeRight}
+            getSize={() => sizes.right}
+            ariaLabel="Resize inspector pane"
+            invertDelta
+          />
+
+          <div
+            style={{
+              ...rightPaneStyle,
+              width: sizes.right,
+              flex: "none",
+            }}
+          >
+            <TabRow value={rightTab} onChange={setRightTab} />
+            <div style={tabContentStyle}>
+              {rightTab === "interact" ? <InteractionEditor /> : null}
+              {rightTab === "snapshot" ? <SnapshotTree /> : null}
+              {rightTab === "plan" ? <PlanPanel /> : null}
+              {rightTab === "history" ? <HistoryTimeline /> : null}
+              {rightTab === "diagnostics" ? (
+                <DiagnosticsPanel onSelect={revealMarker} />
+              ) : null}
+            </div>
+          </div>
+        </div>
+        <StatusBar />
+      </StudioProvider>
+    </div>
+  );
+}
+
+const MIN_LEFT = 240;
+const MIN_RIGHT = 260;
+const MIN_CENTER = 260;
+const LAYOUT_STORAGE_KEY = "studio.layout.v1";
+const DEFAULT_SIZES: PaneSizes = { left: 420, right: 380 };
+
+type PaneSizes = { readonly left: number; readonly right: number };
+
+function usePaneSizes() {
+  const [sizes, setSizes] = useState<PaneSizes>(() => loadSizes());
+
+  useEffect(() => {
+    saveSizes(sizes);
+  }, [sizes]);
+
+  const setLeft = useCallback(
+    (next: number, totalWidth: number) => {
+      setSizes((s) => {
+        const upper = Math.max(MIN_LEFT, totalWidth - s.right - MIN_CENTER);
+        const clamped = clamp(next, MIN_LEFT, upper);
+        return clamped === s.left ? s : { ...s, left: clamped };
+      });
+    },
+    [],
+  );
+  const setRight = useCallback(
+    (next: number, totalWidth: number) => {
+      setSizes((s) => {
+        const upper = Math.max(MIN_RIGHT, totalWidth - s.left - MIN_CENTER);
+        const clamped = clamp(next, MIN_RIGHT, upper);
+        return clamped === s.right ? s : { ...s, right: clamped };
+      });
+    },
+    [],
+  );
+  return { sizes, setSizes, setLeft, setRight };
+}
+
+function loadSizes(): PaneSizes {
+  if (typeof window === "undefined") return DEFAULT_SIZES;
+  try {
+    const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (raw === null) return DEFAULT_SIZES;
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as PaneSizes).left === "number" &&
+      typeof (parsed as PaneSizes).right === "number"
+    ) {
+      return parsed as PaneSizes;
+    }
+  } catch {
+    // ignore
+  }
+  return DEFAULT_SIZES;
+}
+
+function saveSizes(s: PaneSizes): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(s));
+  } catch {
+    // ignore
+  }
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(Math.max(n, lo), hi);
+}
+
+function PaneDivider({
+  onResize,
+  getSize,
+  ariaLabel,
+  invertDelta = false,
+}: {
+  readonly onResize: (dx: number, startSize: number) => void;
+  readonly getSize: () => number;
+  readonly ariaLabel: string;
+  readonly invertDelta?: boolean;
+}): JSX.Element {
+  const [active, setActive] = useState(false);
+  const dragRef = useRef<{ startX: number; startSize: number } | null>(null);
+
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    if (e.button !== 0) return;
+    dragRef.current = { startX: e.clientX, startSize: getSize() };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setActive(true);
+    e.preventDefault();
+  };
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    const d = dragRef.current;
+    if (d === null) return;
+    onResize(e.clientX - d.startX, d.startSize);
+  };
+  const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    dragRef.current = null;
+    setActive(false);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    const step = e.shiftKey ? 48 : 16;
+    if (e.key === "ArrowLeft") {
+      onResize(invertDelta ? step : -step, getSize());
+      e.preventDefault();
+    } else if (e.key === "ArrowRight") {
+      onResize(invertDelta ? -step : step, getSize());
+      e.preventDefault();
+    } else if (e.key === "Home") {
+      // Reset to default for this side
+      const delta = invertDelta
+        ? getSize() - DEFAULT_SIZES.right
+        : DEFAULT_SIZES.left - getSize();
+      onResize(delta, getSize());
+      e.preventDefault();
+    }
+  };
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={ariaLabel}
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      onKeyDown={onKeyDown}
+      style={{
+        ...dividerStyle,
+        background: active ? COLORS.accent : "transparent",
+      }}
+    >
+      <div style={dividerInnerStyle(active)} />
     </div>
   );
 }
@@ -179,13 +405,35 @@ function EditorFooter(): JSX.Element {
   );
 }
 
-function TopBar(): JSX.Element {
+function TopBar({
+  fixtureId,
+  onFixtureChange,
+}: {
+  readonly fixtureId: FixtureId;
+  readonly onFixtureChange: (next: FixtureId) => void;
+}): JSX.Element {
+  const fixture = FIXTURES.find((f) => f.id === fixtureId) ?? FIXTURES[0];
   return (
     <div style={topBarStyle}>
       <span style={{ fontWeight: 600 }}>Studio</span>
       <span style={{ color: COLORS.textDim, marginLeft: 16 }}>
-        manifesto-ai / studio / todo.mel
+        manifesto-ai / studio /
       </span>
+      <select
+        aria-label="Fixture"
+        value={fixtureId}
+        onChange={(e) => onFixtureChange(e.currentTarget.value as FixtureId)}
+        style={fixtureSelectStyle}
+      >
+        {FIXTURES.map((f) => (
+          <option key={f.id} value={f.id}>
+            {f.label}
+          </option>
+        ))}
+      </select>
+      {fixture.id === "battleship" ? (
+        <span style={fixtureBadgeStyle}>60+ nodes · layout stress</span>
+      ) : null}
       <span style={{ marginLeft: "auto", color: COLORS.textDim, fontSize: 12 }}>
         studio.manifesto-ai.dev — early access
       </span>
@@ -196,7 +444,7 @@ function TopBar(): JSX.Element {
 function StatusBar(): JSX.Element {
   return (
     <div style={statusBarStyle}>
-      <span style={{ color: COLORS.textDim }}>Phase 1 — W2 panels wired</span>
+      <span style={{ color: COLORS.textDim }}>Phase 1 — W4 interaction editor</span>
     </div>
   );
 }
@@ -209,6 +457,7 @@ function TabRow({
   readonly onChange: (next: RightTab) => void;
 }): JSX.Element {
   const tabs: readonly { readonly id: RightTab; readonly label: string }[] = [
+    { id: "interact", label: "Interact" },
     { id: "snapshot", label: "Snapshot" },
     { id: "plan", label: "Plan" },
     { id: "history", label: "History" },
@@ -237,19 +486,51 @@ function TabRow({
   );
 }
 
-function PanePlaceholder({
-  title,
-  subtitle,
+function GraphPane({
+  onNodeClick,
 }: {
-  readonly title: string;
-  readonly subtitle: string;
+  readonly onNodeClick: (node: GraphNode) => void;
 }): JSX.Element {
+  const { module, plan } = useStudio();
+  const graphModel = useMemo(
+    () => buildGraphModel(module, plan),
+    [module, plan],
+  );
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const { width, height } = useContainerSize(hostRef);
+  const ready = width > 80 && height > 80;
   return (
-    <div style={{ padding: 0, height: "100%" }}>
-      <div style={paneHeaderStyle}>{title}</div>
-      <div style={placeholderContentStyle}>{subtitle}</div>
+    <div ref={hostRef} style={graphHostStyle}>
+      {ready ? (
+        <SchemaGraphView
+          model={graphModel}
+          width={width}
+          height={height}
+          onNodeClick={onNodeClick}
+        />
+      ) : null}
     </div>
   );
+}
+
+function useContainerSize(
+  ref: React.RefObject<HTMLElement | null>,
+): { width: number; height: number } {
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    const update = (): void => {
+      const rect = el.getBoundingClientRect();
+      setSize({ width: rect.width, height: rect.height });
+    };
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return size;
 }
 
 const rootStyle: CSSProperties = {
@@ -262,11 +543,31 @@ const rootStyle: CSSProperties = {
 const topBarStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
+  gap: 8,
   padding: "0 16px",
   height: 48,
   background: COLORS.surface,
   borderBottom: `1px solid ${COLORS.line}`,
   fontSize: 13,
+};
+const fixtureSelectStyle: CSSProperties = {
+  background: COLORS.panel,
+  color: COLORS.text,
+  border: `1px solid ${COLORS.line}`,
+  borderRadius: 4,
+  padding: "4px 8px",
+  fontSize: 12,
+  fontFamily: "inherit",
+};
+const fixtureBadgeStyle: CSSProperties = {
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: 0.6,
+  textTransform: "uppercase",
+  color: COLORS.warn,
+  background: `${COLORS.warn}22`,
+  padding: "2px 6px",
+  borderRadius: 3,
 };
 const mainStyle: CSSProperties = {
   display: "flex",
@@ -274,9 +575,7 @@ const mainStyle: CSSProperties = {
   minHeight: 0,
 };
 const editorPaneStyle: CSSProperties = {
-  width: "40%",
   minWidth: 0,
-  borderRight: `1px solid ${COLORS.line}`,
   background: COLORS.panel,
   display: "flex",
   flexDirection: "column",
@@ -321,15 +620,39 @@ const dotStyle: CSSProperties = {
   display: "inline-block",
 };
 const graphPaneStyle: CSSProperties = {
-  width: "35%",
+  flex: 1,
   minWidth: 0,
-  borderRight: `1px solid ${COLORS.line}`,
-  background: COLORS.panel,
+  background: COLORS.bg,
   display: "flex",
   flexDirection: "column",
 };
+const graphHostStyle: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  position: "relative",
+  overflow: "hidden",
+};
+const dividerStyle: CSSProperties = {
+  width: 6,
+  flex: "none",
+  cursor: "col-resize",
+  position: "relative",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  outline: "none",
+  transition: "background 120ms ease-out",
+};
+function dividerInnerStyle(active: boolean): CSSProperties {
+  return {
+    width: 1,
+    height: "100%",
+    background: active ? COLORS.accent : COLORS.line,
+    boxShadow: active ? `0 0 0 1px ${COLORS.accent}` : "none",
+    transition: "background 120ms ease-out, box-shadow 120ms ease-out",
+  };
+}
 const rightPaneStyle: CSSProperties = {
-  width: "25%",
   minWidth: 0,
   background: COLORS.panel,
   display: "flex",

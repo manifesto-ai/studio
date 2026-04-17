@@ -28,14 +28,54 @@ export type { StudioSimulateResult } from "./types/simulate-result.js";
 // direct @manifesto-ai/sdk dependency just to name these types.
 export type {
   CanonicalSnapshot,
+  DispatchBlocker,
   DispatchReport,
   EffectHandler,
+  ExecutionOutcome,
   Intent,
+  IntentAdmission,
+  IntentAdmissionFailure,
+  ProjectedDiff,
   Snapshot,
 } from "@manifesto-ai/sdk";
 // Also re-export the DomainModule from the compiler since it shows up on
 // `core.getModule()` and on the ReconciliationPlan journey.
 export type { DomainModule } from "@manifesto-ai/compiler";
+
+// Schema graph projections — compiler already derives nodes/edges from the
+// schema, so downstream (studio-react SchemaGraphView) consumes this rather
+// than re-deriving. Re-exported from core to keep the studio-react ↔ compiler
+// boundary mediated by studio-core (INV-P1-2).
+export type {
+  SchemaGraph,
+  SchemaGraphEdge,
+  SchemaGraphEdgeRelation,
+  SchemaGraphNode,
+  SchemaGraphNodeId,
+  SchemaGraphNodeKind,
+} from "@manifesto-ai/compiler";
+
+// Source-map projection types — needed by studio-react for click-to-source.
+export type {
+  SourceMapEntry,
+  SourceMapIndex,
+  SourceMapPath,
+} from "@manifesto-ai/compiler";
+
+// Action/field schema projections — surface area for form generation in
+// studio-react InteractionEditor. Same INV-P1-1 precedent (type re-export
+// only, no new runtime API).
+export type {
+  ActionSpec,
+  ComputedFieldSpec,
+  ComputedSpec,
+  DomainSchema,
+  FieldSpec,
+  FieldType,
+  StateSpec,
+  TypeDefinition,
+  TypeSpec,
+} from "@manifesto-ai/compiler";
 
 export type {
   HostTrace,

@@ -18,7 +18,12 @@ import type {
 
 export type StudioContextValue = {
   readonly core: StudioCore;
-  readonly adapter: EditorAdapter;
+  /**
+   * Null while the editor host is still mounting. Adapter-dependent
+   * actions (`setSource`, `requestBuild`) no-op until this becomes
+   * non-null. Consumers that need adapter identity can check for null.
+   */
+  readonly adapter: EditorAdapter | null;
   /**
    * Monotonic version that bumps after any state-changing call (build /
    * dispatch / setSource). Components reading synchronous values like
@@ -39,7 +44,12 @@ StudioContext.displayName = "StudioContext";
 
 export type StudioProviderProps = {
   readonly core: StudioCore;
-  readonly adapter: EditorAdapter;
+  /**
+   * Null is permitted so the provider can be mounted at a stable tree
+   * position before the editor host has created its adapter. When the
+   * adapter becomes non-null, attach + onBuildRequest wiring kicks in.
+   */
+  readonly adapter: EditorAdapter | null;
   readonly children: ReactNode;
   /**
    * Poll interval for edit history refresh, in ms. Defaults to 500.
@@ -66,6 +76,7 @@ export function StudioProvider({
   // One-time attach. Re-attaching on adapter identity change is a caller
   // decision: if they swap adapters they must remount the provider.
   useEffect(() => {
+    if (adapter === null) return;
     const detach = core.attach(adapter);
     // Prime history on mount.
     void core.getEditHistory().then(setHistory).catch(() => {});
@@ -78,6 +89,7 @@ export function StudioProvider({
   // Wire adapter's `requestBuild` → provider's `build` so that CTRL-S /
   // Build buttons inside SourceEditor trigger the full pipeline.
   useEffect(() => {
+    if (adapter === null) return;
     const unsubscribe = adapter.onBuildRequest(() => {
       void bump(() => core.build());
     });
@@ -125,12 +137,16 @@ export function StudioProvider({
   );
   const setSource = useCallback(
     (source: string) => {
+      if (adapter === null) return;
       adapter.setSource(source);
       // SE-BUILD-2: staging only. No version bump, no build trigger.
     },
     [adapter],
   );
-  const requestBuild = useCallback(() => adapter.requestBuild(), [adapter]);
+  const requestBuild = useCallback(() => {
+    if (adapter === null) return;
+    adapter.requestBuild();
+  }, [adapter]);
 
   const value = useMemo<StudioContextValue>(
     () => ({
