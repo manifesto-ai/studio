@@ -1,12 +1,20 @@
 #!/usr/bin/env node
-// INV-SE-1: studio packages must not depend on any widget/UI framework library.
-// Runs over packages/*/package.json and fails if any forbidden dependency is declared.
-import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
+// INV-SE-1: the widget-INDEPENDENT core package must not depend on any
+// widget / UI framework library. Adapter packages (e.g. studio-adapter-monaco,
+// studio-react) are by design allowed to bring their widget of choice.
+//
+// The gate scans only packages listed in STUDIO_CORE_PACKAGES. New packages
+// appended to that list automatically inherit the widget ban.
+import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const pkgDir = join(repoRoot, "packages");
+
+const STUDIO_CORE_PACKAGES = [
+  "studio-core",
+];
 
 const DENY_EXACT = new Set([
   "react",
@@ -51,9 +59,16 @@ if (!existsSync(pkgDir)) {
   process.exit(0);
 }
 
-for (const pkg of readdirSync(pkgDir)) {
+let checked = 0;
+for (const pkg of STUDIO_CORE_PACKAGES) {
   const pkgJsonPath = join(pkgDir, pkg, "package.json");
-  if (!existsSync(pkgJsonPath) || !statSync(pkgJsonPath).isFile()) continue;
+  if (!existsSync(pkgJsonPath) || !statSync(pkgJsonPath).isFile()) {
+    console.error(
+      `[check-no-widget-deps] missing core package manifest: ${pkgJsonPath}`,
+    );
+    failed = true;
+    continue;
+  }
   let manifest;
   try {
     manifest = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
@@ -73,10 +88,15 @@ for (const pkg of readdirSync(pkgDir)) {
       }
     }
   }
+  checked += 1;
 }
 
 if (failed) {
-  console.error("\nINV-SE-1 violated: widget library dependency detected in studio packages.");
+  console.error(
+    "\nINV-SE-1 violated: widget library dependency detected in a widget-independent core package.",
+  );
   process.exit(1);
 }
-console.log("[check-no-widget-deps] OK — INV-SE-1 satisfied.");
+console.log(
+  `[check-no-widget-deps] OK — INV-SE-1 satisfied (${checked} core package${checked === 1 ? "" : "s"} scanned).`,
+);
