@@ -251,8 +251,8 @@
 
 ### Mandatory (전부 GO여야 Phase 1 진입)
 
-- [ ] **SC-1** — `studio-core` + `studio-adapter-headless` 두 패키지 `pnpm build` 성공 (Week 1)
-- [ ] **SC-2** — Headless 어댑터로 "source 설정 → 빌드 → dispatch → snapshot 확인" 한 테스트 통과 (Week 1)
+- [x] **SC-1** — `studio-core` + `studio-adapter-headless` 두 패키지 `pnpm build` 성공 (Week 1)
+- [x] **SC-2** — Headless 어댑터로 "source 설정 → 빌드 → dispatch → snapshot 확인" 한 테스트 통과 (Week 1)
 - [x] **SC-3** — 재빌드: v1 state 초기값 변경 → v2 computed body 수정 → snapshot 값 보존 (Week 2)
 - [x] **SC-4** — 재빌드: v1 action 존재 → v2 action 제거 → trace `obsolete` 태깅 (Week 2)
 - [x] **SC-5** — 결정론: 동일 EditIntent 시퀀스 두 번 = 동일 최종 state + plan (Week 3)
