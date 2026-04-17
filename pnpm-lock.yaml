@@ -127,6 +127,9 @@ importers:
       '@manifesto-ai/compiler':
         specifier: ^3.7.0
         version: 3.7.0(@manifesto-ai/core@2.12.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7))(zod@4.3.6)
+      '@manifesto-ai/studio-adapter-headless':
+        specifier: workspace:*
+        version: link:../studio-adapter-headless
       '@testing-library/react':
         specifier: ^16.1.0
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)

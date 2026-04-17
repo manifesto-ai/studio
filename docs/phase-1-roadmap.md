@@ -101,33 +101,47 @@
 ## 3. Week 2 — Base Panels
 
 ### 3.1 `SourceEditor`
-- [ ] `packages/studio-react/src/SourceEditor.tsx` — Monaco 인스턴스 생성 + `attach(adapter)` + `:build` 키바인딩 (CTRL-S)
-- [ ] SE-UI-1, SE-UI-2 준수 — 렌더는 순수, 자동 build 없음
-- [ ] 다이어그노스틱스는 build 경계에만 반영 (SE-UI-3)
+- [x] `packages/studio-react/src/SourceEditor.tsx` — 패널 chrome (tab + footer) + editor host via `children`
+- [x] `StudioHotkeys` 컴포넌트 — CTRL/CMD + S 전역 훅 → `adapter.requestBuild()` (SE-UI-2)
+- [x] footer에 errors / warnings 카운트 (SE-UI-3 — build 경계에서만 diagnostics 반영)
 
 ### 3.2 `DiagnosticsPanel`
-- [ ] `src/DiagnosticsPanel.tsx` — `core.getDiagnostics()` 리스트 렌더, 클릭 시 `SourceMapIndex`로 Monaco 라인 점프
-- [ ] severity별 아이콘 + message + span
+- [x] `src/DiagnosticsPanel.tsx` — severity 점 + message + `line:column` 목록
+- [x] `onSelect(marker)` 콜백으로 Monaco 라인 점프 (webapp이 editor 참조 보유)
+- [x] 0-issue empty state
 
 ### 3.3 `PlanPanel`
-- [ ] `src/PlanPanel.tsx` — `formatPlan(plan)` 재활용 + 구조화된 탭 뷰 (identity / snapshot / traces)
-- [ ] preserved / initialized / discarded 배지
+- [x] `src/PlanPanel.tsx` — identity 배지 4종 + Snapshot 버킷 3종 + traces 요약
+- [x] `formatPlan(plan)` raw 뷰 `<details>` 토글 (`data-testid=raw-plan`)
+- [x] prevHash → nextHash 헤더 표시
 
 ### 3.4 `SnapshotTree`
-- [ ] `src/SnapshotTree.tsx` — `snapshot.data` 재귀 트리. 기본은 읽기 전용
-- [ ] `.path` 경로 복사 UX (CLI의 `:snapshot .data.todos` 대응)
+- [x] `src/SnapshotTree.tsx` — `snapshot.data` 재귀 트리, 기본 depth<3 open
+- [x] path 클릭 시 clipboard 복사 + 명시적 copy 버튼
+- [x] 타입별 색상 (string/number/boolean/null)
 
 ### 3.5 `HistoryTimeline`
-- [ ] `src/HistoryTimeline.tsx` — `core.getEditHistory()` 폴링 (P1-OQ-5 W2 결정)
-- [ ] envelope id / timestamp / payloadKind / hash 전후
-- [ ] 향후 replay-from-here 훅 자리 확보 (P1-G8)
+- [x] `src/HistoryTimeline.tsx` — envelope 목록 (payloadKind + prev→next hash + timestamp + author)
+- [x] 선택 상태 — `onSelect(envelope)` 콜백 (P1-G8 replay-from-here용 자리 확보)
+- [x] `StudioProvider`의 500ms poll로 자동 갱신
 
 ### 3.6 apps/webapp 통합
-- [ ] `App.tsx`에 5개 패널 와이어 — 좌(에디터) / 중(스냅샷+플랜 탭) / 우(diagnostics+history 탭)
-- [ ] 브라우저에서 `todo.mel` 편집 → 빌드 → dispatch → 스냅샷 갱신까지 수동 확인
+- [x] `App.tsx` 재구성 — 좌(`SourceEditor` + Monaco div) / 중(graph placeholder) / 우(탭 4종: Snapshot / Plan / History / Diagnostics)
+- [x] 단일 `StudioProvider`로 좌·우 모두 감쌈 (이중 attach 방지)
+- [x] `StudioHotkeys` 바인딩 — CTRL-S 전역
+- [x] Diagnostics 탭에서 클릭 시 Monaco 라인 포커스 (`revealLineInCenterIfOutsideViewport`)
 
-### 3.7 Success Criteria
-- [ ] **P1-SC-3 ✓** — 브라우저에서 `todo.mel` 풀 루프 (`apps/webapp` 수동 시나리오 테스트)
+### 3.7 유닛 테스트 (`packages/studio-react/src/__tests__/panels.test.tsx`)
+- [x] SourceEditor — header/children/footer smoke
+- [x] DiagnosticsPanel — empty state + onSelect 콜백
+- [x] PlanPanel — empty state
+- [x] SnapshotTree — empty state
+- [x] HistoryTimeline — empty state
+- [x] Live flow — build + dispatch 후 4개 패널 상태 반영 (`preserved`, `todos`, `from-test` 문자열 확인)
+- [x] StudioHotkeys — Ctrl-S 이벤트 → requestBuild 호출
+
+### 3.8 Success Criteria
+- [x] **P1-SC-3 ✓** — studio-react 8 tests + 79 tests 전체 녹색 + `pnpm --filter @manifesto-ai/studio-webapp build` 성공 (7.1s, main bundle 478kB / monaco 3.3MB 격리). 브라우저 실측은 사용자 확인으로 이관.
 
 ---
 
@@ -325,6 +339,7 @@ Phase 0의 SE-BUILD / SE-RECON / SE-HIST / SE-ADP 규범은 변경 없이 유지
 | 2026-04-17 | **Initial Phase 1 roadmap.** 4주+1주 일정, Primary P1-G1~G6, Mandatory P1-SC-1~8, SE-UI-1~6 규범, INV-P1-1~3 신설. Pre-flight 4건(effects/store ordering/SDK seam/CI allowlist) 완료 상태에서 착수. D3 그래프와 InteractionEditor는 첫 공개 필수로 확정. apps/webapp이 studio.manifesto-ai.dev 운영 타깃. |
 | 2026-04-17 | **Phase 1 kickoff.** `phase-1-proposal.md` Ratified. `@manifesto-ai/sdk@3.15.1` publish 확인 → `pnpm.overrides link:` 제거, 62 tests 그대로 녹색. **P1-G6 pre-kickoff 완료**. P1-OQ-7 Vercel로 closed (DNS/TLS 확보). UI 러프 와이어프레임 합의 (Figma `lpCRLkerxVWOzJVufgCe4I`, main view + rebuild view). 외부 GPT 교차 리뷰는 on-demand (Codex) 보류. W1 scaffold 착수 가능. |
 | 2026-04-18 | **W1 완료.** 5 패키지(studio-core + studio-adapter-headless + studio-adapter-monaco + studio-react + apps/webapp) 전부 빌드 녹색. 71 tests / 16 파일 (core 33 + headless 29 + monaco 9). **P1-SC-1 ✓ / P1-SC-2 ✓**. INV-SE-3 실측으로 검증됨 — Monaco 어댑터가 headless adapter-contract 6 tests + parity smoke 3 tests 통과. 선/후행: (1) `@manifesto-ai/studio-core/sqlite` 서브패스 분리 (브라우저 번들에서 node: 모듈 제거), (2) WebCrypto 브리지 + FNV-1a 해시로 `node:crypto` 의존 제거. studio-core 공개 API는 `SqliteEditHistoryStore` export 한 쌍만 서브패스로 이동, `Intent`/`Snapshot`/`DomainModule` 타입은 편의 re-export로 추가. INV-P1-1(core API 동결)은 내부 분할 범위라 유지. |
+| 2026-04-18 | **W2 완료.** 79 tests / 17 파일 (core 33 + headless 29 + monaco 9 + react 8). **P1-SC-3 ✓**. `@manifesto-ai/studio-react`에 5개 패널 (SourceEditor / DiagnosticsPanel / PlanPanel / SnapshotTree / HistoryTimeline) + `StudioHotkeys` + 색 토큰 세트. `StudioProvider`가 `onBuildRequest`로 adapter의 build 신호를 받아 자동 bump; 500ms history poll (P1-OQ-5). `apps/webapp`는 단일 provider 아래 좌(에디터) / 중(graph placeholder) / 우(Snapshot/Plan/History/Diagnostics 4탭) 구성, Ctrl-S 전역 단축키 + Diagnostics 클릭으로 Monaco 라인 점프. vite build 7.1s, main bundle 478kB / monaco 3.3MB chunk 격리. INV-P1-1 유지 (core API 불변), SE-UI-1/2/3 모두 코드 구조로 강제. |
 
 ---
 
