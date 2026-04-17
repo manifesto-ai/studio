@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import * as monaco from "monaco-editor";
 import {
   createStudioCore,
@@ -13,9 +13,9 @@ import {
   HistoryTimeline,
   PlanPanel,
   SnapshotTree,
-  SourceEditor,
   StudioHotkeys,
   StudioProvider,
+  useStudio,
 } from "@manifesto-ai/studio-react";
 import todoSource from "./fixtures/todo.mel?raw";
 
@@ -28,17 +28,26 @@ type Wiring = {
 type RightTab = "snapshot" | "plan" | "history" | "diagnostics";
 
 /**
- * Phase 1 W2: editor | graph placeholder | tabbed panel column. W3
- * replaces the graph placeholder with SchemaGraphView; W4 adds
- * InteractionEditor as a top tab in the right column.
+ * Phase 1 W2: editor | graph placeholder | tabbed panel column.
+ *
+ * The Monaco host `<div ref={editorHostRef} />` is rendered UNCONDITIONALLY
+ * at a fixed position in the tree. Swapping its parent between
+ * "SourceEditor wrapper" and "plain div" would remount the div and wipe
+ * Monaco's content — avoid that. Chrome decoration (header / footer) is
+ * applied via sibling elements instead of a wrapper component.
  */
 export function App(): JSX.Element {
   const editorHostRef = useRef<HTMLDivElement | null>(null);
+  const editorInstanceRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const [wiring, setWiring] = useState<Wiring | null>(null);
   const [rightTab, setRightTab] = useState<RightTab>("snapshot");
 
   useEffect(() => {
     if (editorHostRef.current === null) return;
+    // Guard StrictMode's intentional double-effect-run in dev: if an editor
+    // already exists for this host, don't tear it down and rebuild — just
+    // reuse.
+    if (editorInstanceRef.current !== null) return;
 
     const editor = monaco.editor.create(editorHostRef.current, {
       value: todoSource,
@@ -51,6 +60,8 @@ export function App(): JSX.Element {
       lineNumbersMinChars: 3,
       padding: { top: 8, bottom: 8 },
     });
+    editorInstanceRef.current = editor;
+
     const adapter = createMonacoAdapter({ editor, monaco });
     const core = createStudioCore();
     setWiring({ core, adapter, editor });
@@ -58,6 +69,7 @@ export function App(): JSX.Element {
     return () => {
       adapter.dispose();
       editor.dispose();
+      editorInstanceRef.current = null;
     };
   }, []);
 
@@ -72,43 +84,51 @@ export function App(): JSX.Element {
     editor.focus();
   };
 
-  const layout = (
+  const tabContent = (
+    <>
+      {rightTab === "snapshot" ? <SnapshotTree /> : null}
+      {rightTab === "plan" ? <PlanPanel /> : null}
+      {rightTab === "history" ? <HistoryTimeline /> : null}
+      {rightTab === "diagnostics" ? (
+        <DiagnosticsPanel onSelect={revealMarker} />
+      ) : null}
+    </>
+  );
+
+  const body = (
     <>
       <TopBar />
       <div style={mainStyle}>
         <div style={editorPaneStyle}>
-          {wiring !== null ? (
-            <SourceEditor filename="todo.mel">
-              <div ref={editorHostRef} style={editorHostStyle} />
-            </SourceEditor>
-          ) : (
-            <div style={placeholderStyle}>
-              <div ref={editorHostRef} style={editorHostStyle} />
+          <div style={editorHeaderStyle}>
+            <div style={tabChipStyle}>
+              <span>todo.mel</span>
             </div>
-          )}
+            <span style={{ color: COLORS.muted, fontSize: 11 }}>
+              ⌘/Ctrl + S to build
+            </span>
+          </div>
+          {/* Stable: never re-parented. */}
+          <div ref={editorHostRef} style={editorHostStyle} />
+          {wiring !== null ? <EditorFooter /> : null}
         </div>
+
         <div style={graphPaneStyle}>
           <PanePlaceholder
             title="Schema Graph"
             subtitle="W3 brings the D3 SchemaGraphView here."
           />
         </div>
+
         <div style={rightPaneStyle}>
-          {wiring !== null ? (
-            <>
-              <TabRow value={rightTab} onChange={setRightTab} />
-              <div style={tabContentStyle}>
-                {rightTab === "snapshot" ? <SnapshotTree /> : null}
-                {rightTab === "plan" ? <PlanPanel /> : null}
-                {rightTab === "history" ? <HistoryTimeline /> : null}
-                {rightTab === "diagnostics" ? (
-                  <DiagnosticsPanel onSelect={revealMarker} />
-                ) : null}
-              </div>
-            </>
-          ) : (
-            <PanePlaceholder title="Right" subtitle="loading…" />
-          )}
+          <TabRow value={rightTab} onChange={setRightTab} />
+          <div style={tabContentStyle}>
+            {wiring !== null ? (
+              tabContent
+            ) : (
+              <div style={placeholderContentStyle}>loading…</div>
+            )}
+          </div>
         </div>
       </div>
       <StatusBar />
@@ -124,11 +144,37 @@ export function App(): JSX.Element {
           historyPollMs={500}
         >
           <StudioHotkeys />
-          {layout}
+          {body}
         </StudioProvider>
       ) : (
-        layout
+        body
       )}
+    </div>
+  );
+}
+
+function EditorFooter(): JSX.Element {
+  const { diagnostics, module } = useStudio();
+  let errors = 0;
+  let warnings = 0;
+  for (const m of diagnostics) {
+    if (m.severity === "error") errors += 1;
+    else if (m.severity === "warning") warnings += 1;
+  }
+  return (
+    <div style={editorFooterStyle}>
+      <span style={{ ...dotStyle, background: errors > 0 ? COLORS.err : COLORS.muted }} />
+      <span>
+        {errors} error{errors === 1 ? "" : "s"}
+      </span>
+      <span style={{ width: 16 }} />
+      <span style={{ ...dotStyle, background: warnings > 0 ? COLORS.warn : COLORS.muted }} />
+      <span>
+        {warnings} warning{warnings === 1 ? "" : "s"}
+      </span>
+      <span style={{ marginLeft: "auto", color: COLORS.muted, fontSize: 11 }}>
+        {module === null ? "no module yet" : `schema ${module.schema.hash.slice(0, 8)}`}
+      </span>
     </div>
   );
 }
@@ -206,14 +252,14 @@ function PanePlaceholder({
   );
 }
 
-const rootStyle: React.CSSProperties = {
+const rootStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   height: "100vh",
   background: COLORS.bg,
   color: COLORS.text,
 };
-const topBarStyle: React.CSSProperties = {
+const topBarStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   padding: "0 16px",
@@ -222,23 +268,59 @@ const topBarStyle: React.CSSProperties = {
   borderBottom: `1px solid ${COLORS.line}`,
   fontSize: 13,
 };
-const mainStyle: React.CSSProperties = {
+const mainStyle: CSSProperties = {
   display: "flex",
   flex: 1,
   minHeight: 0,
 };
-const editorPaneStyle: React.CSSProperties = {
+const editorPaneStyle: CSSProperties = {
   width: "40%",
   minWidth: 0,
   borderRight: `1px solid ${COLORS.line}`,
+  background: COLORS.panel,
   display: "flex",
   flexDirection: "column",
 };
-const editorHostStyle: React.CSSProperties = {
+const editorHeaderStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  padding: "10px 14px",
+  fontSize: 13,
+  fontWeight: 600,
+  borderBottom: `1px solid ${COLORS.line}`,
+  background: COLORS.panelAlt,
+  color: COLORS.text,
+};
+const tabChipStyle: CSSProperties = {
+  padding: "4px 10px",
+  background: COLORS.panel,
+  border: `1px solid ${COLORS.line}`,
+  borderRadius: 6,
+  fontSize: 11,
+  color: COLORS.text,
+};
+const editorHostStyle: CSSProperties = {
   flex: 1,
   minHeight: 0,
 };
-const graphPaneStyle: React.CSSProperties = {
+const editorFooterStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "8px 14px",
+  borderTop: `1px solid ${COLORS.line}`,
+  background: COLORS.panelAlt,
+  color: COLORS.textDim,
+  fontSize: 11,
+};
+const dotStyle: CSSProperties = {
+  width: 6,
+  height: 6,
+  borderRadius: 3,
+  display: "inline-block",
+};
+const graphPaneStyle: CSSProperties = {
   width: "35%",
   minWidth: 0,
   borderRight: `1px solid ${COLORS.line}`,
@@ -246,26 +328,26 @@ const graphPaneStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
 };
-const rightPaneStyle: React.CSSProperties = {
+const rightPaneStyle: CSSProperties = {
   width: "25%",
   minWidth: 0,
   background: COLORS.panel,
   display: "flex",
   flexDirection: "column",
 };
-const paneHeaderStyle: React.CSSProperties = {
+const paneHeaderStyle: CSSProperties = {
   padding: "10px 14px",
   fontSize: 13,
   fontWeight: 600,
   borderBottom: `1px solid ${COLORS.line}`,
   background: COLORS.panelAlt,
 };
-const tabRowStyle: React.CSSProperties = {
+const tabRowStyle: CSSProperties = {
   display: "flex",
   background: COLORS.panelAlt,
   borderBottom: `1px solid ${COLORS.line}`,
 };
-const tabButtonStyle: React.CSSProperties = {
+const tabButtonStyle: CSSProperties = {
   background: "transparent",
   border: "none",
   padding: "10px 14px",
@@ -273,13 +355,13 @@ const tabButtonStyle: React.CSSProperties = {
   cursor: "pointer",
   fontFamily: "inherit",
 };
-const tabContentStyle: React.CSSProperties = {
+const tabContentStyle: CSSProperties = {
   flex: 1,
   minHeight: 0,
   display: "flex",
   flexDirection: "column",
 };
-const statusBarStyle: React.CSSProperties = {
+const statusBarStyle: CSSProperties = {
   padding: "0 16px",
   height: 40,
   background: COLORS.surface,
@@ -288,12 +370,7 @@ const statusBarStyle: React.CSSProperties = {
   alignItems: "center",
   fontSize: 12,
 };
-const placeholderStyle: React.CSSProperties = {
-  height: "100%",
-  display: "flex",
-  flexDirection: "column",
-};
-const placeholderContentStyle: React.CSSProperties = {
+const placeholderContentStyle: CSSProperties = {
   flex: 1,
   color: COLORS.muted,
   fontSize: 12,
