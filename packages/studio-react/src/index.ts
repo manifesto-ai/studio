@@ -49,6 +49,15 @@ export {
   type NodePosition,
   type PositionMap,
 } from "./SchemaGraphView/layout.js";
+export {
+  buildGraphFocusLens,
+  normalizeSpan,
+  resolveFocusRoots,
+  type GraphFocusGroup,
+  type GraphFocusGroupLabel,
+  type GraphFocusLens,
+  type GraphFocusOrigin,
+} from "./SchemaGraphView/focus-lens.js";
 
 export {
   InteractionEditor,

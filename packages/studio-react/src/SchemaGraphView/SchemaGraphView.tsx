@@ -24,6 +24,7 @@ import {
   type GraphNodeId,
   type GraphNodeKind,
 } from "./graph-model.js";
+import type { GraphFocusLens } from "./focus-lens.js";
 import type { IdentityFate } from "@manifesto-ai/studio-core";
 import { GraphLegend } from "./GraphLegend.js";
 
@@ -34,6 +35,8 @@ export type SchemaGraphViewProps = {
   readonly height?: number;
   readonly onNodeClick?: (node: GraphNode) => void;
   readonly selectedNodeId?: GraphNodeId | null;
+  readonly focusLens?: GraphFocusLens | null;
+  readonly onBackgroundClick?: () => void;
   /** Override label. Used in empty state. */
   readonly emptyLabel?: string;
 };
@@ -62,6 +65,8 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
     height = 600,
     onNodeClick,
     selectedNodeId = null,
+    focusLens = null,
+    onBackgroundClick,
     emptyLabel = "Build the module to see its schema graph.",
   } = props;
 
@@ -103,7 +108,13 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
   const [view, setView] = useState<ViewTransform>(IDENTITY);
   const [hoveredId, setHoveredId] = useState<GraphNodeId | null>(null);
   const [isPanning, setIsPanning] = useState(false);
-  const panStateRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+  const panStateRef = useRef<{
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+    moved: boolean;
+  } | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   const resetView = useCallback(() => setView(IDENTITY), []);
@@ -113,6 +124,19 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
     resetView();
     setHoveredId(null);
   }, [model?.schemaHash, resetView]);
+
+  useEffect(() => {
+    if (focusLens === null || positions === null) return;
+    const bounds = focusBounds(focusLens, positions, BASE_NODE_RADIUS * densityScale(model?.nodes.length ?? 0));
+    if (bounds === null) return;
+    setView((current) => {
+      const next =
+        focusLens.origin === "graph"
+          ? fitBounds(bounds, width, height)
+          : centerBounds(bounds, current, width, height);
+      return sameView(current, next) ? current : next;
+    });
+  }, [focusLens, height, model?.nodes.length, positions, width]);
 
   const handleWheel = useCallback(
     (e: ReactWheelEvent<SVGSVGElement>) => {
@@ -147,9 +171,12 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
         startY: e.clientY,
         origX: view.x,
         origY: view.y,
+        moved: false,
       };
       setIsPanning(true);
-      (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
+      if ("setPointerCapture" in e.currentTarget) {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }
     },
     [view.x, view.y],
   );
@@ -160,6 +187,9 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
       if (st === null) return;
       const dx = e.clientX - st.startX;
       const dy = e.clientY - st.startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        st.moved = true;
+      }
       setView((v) => ({ ...v, x: st.origX + dx, y: st.origY + dy }));
     },
     [],
@@ -167,13 +197,27 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
 
   const handlePointerUp = useCallback(
     (e: ReactPointerEvent<SVGSVGElement>) => {
+      const st = panStateRef.current;
       panStateRef.current = null;
       setIsPanning(false);
-      if ((e.currentTarget as SVGSVGElement).hasPointerCapture(e.pointerId)) {
-        (e.currentTarget as SVGSVGElement).releasePointerCapture(e.pointerId);
+      if (
+        "hasPointerCapture" in e.currentTarget &&
+        e.currentTarget.hasPointerCapture(e.pointerId) &&
+        "releasePointerCapture" in e.currentTarget
+      ) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      const target = e.target as Element;
+      if (
+        st !== null &&
+        st.moved === false &&
+        target.closest("[data-node-id]") === null
+      ) {
+        setHoveredId(null);
+        onBackgroundClick?.();
       }
     },
-    [],
+    [onBackgroundClick],
   );
 
   const handleDoubleClick = useCallback(
@@ -189,9 +233,12 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
     return <EmptyState width={width} height={height} label={emptyLabel} />;
   }
 
-  const connectedByHover = hoveredId !== null
+  const connectedByHover = focusLens === null && hoveredId !== null
     ? edgesTouching(model, hoveredId)
     : null;
+  const focusNodeIds = focusLens === null ? null : new Set(focusLens.nodeIds);
+  const focusEdgeIds = focusLens === null ? null : new Set(focusLens.edgeIds);
+  const focusRootIds = focusLens === null ? null : new Set(focusLens.rootNodeIds);
 
   const scale = densityScale(model.nodes.length);
   const nodeRadius = BASE_NODE_RADIUS * scale;
@@ -252,10 +299,14 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
                 positions={positions}
                 radius={nodeRadius}
                 dimmed={
-                  hoveredId !== null && connectedByHover?.has(e.id) !== true
+                  focusLens !== null
+                    ? focusEdgeIds?.has(e.id) !== true
+                    : hoveredId !== null && connectedByHover?.has(e.id) !== true
                 }
                 emphasized={
-                  hoveredId !== null && connectedByHover?.has(e.id) === true
+                  focusLens !== null
+                    ? focusEdgeIds?.has(e.id) === true
+                    : hoveredId !== null && connectedByHover?.has(e.id) === true
                 }
               />
             ))}
@@ -275,12 +326,15 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
                   glyphFontSize={glyphFontSize}
                   labelFontSize={labelFontSize}
                   showLabel={showLabels}
-                  hovered={hoveredId === n.id}
+                  hovered={focusLens === null && hoveredId === n.id}
                   dimmed={
-                    hoveredId !== null &&
-                    hoveredId !== n.id &&
-                    connectedByHover?.has(n.id) !== true
+                    focusLens !== null
+                      ? focusNodeIds?.has(n.id) !== true
+                      : hoveredId !== null &&
+                        hoveredId !== n.id &&
+                        connectedByHover?.has(n.id) !== true
                   }
+                  rooted={focusRootIds?.has(n.id) === true}
                   selected={selectedNodeId === n.id}
                   onHover={setHoveredId}
                   onClick={onNodeClick}
@@ -292,6 +346,7 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
       </svg>
 
       <GraphLegend />
+      <FocusSummary lens={focusLens} model={model} />
 
       {/* Minimap / zoom chrome corner, production-lite */}
       <ZoomChrome view={view} onReset={resetView} onChange={setView} />
@@ -308,6 +363,7 @@ type NodeProps = {
   readonly showLabel: boolean;
   readonly hovered: boolean;
   readonly dimmed: boolean;
+  readonly rooted: boolean;
   readonly selected: boolean;
   readonly onHover: (id: GraphNodeId | null) => void;
   readonly onClick?: (node: GraphNode) => void;
@@ -322,12 +378,13 @@ function NodeShape({
   showLabel,
   hovered,
   dimmed,
+  rooted,
   selected,
   onHover,
   onClick,
 }: NodeProps): JSX.Element {
   const { fill, stroke } = kindColors(node.kind);
-  const opacity = dimmed ? 0.3 : 1;
+  const opacity = dimmed ? 0.22 : 1;
 
   const onClickInner = onClick === undefined ? undefined : () => onClick(node);
   const onKeyDown = (e: React.KeyboardEvent<SVGGElement>) => {
@@ -346,6 +403,8 @@ function NodeShape({
     <g
       transform={`translate(${position.x} ${position.y})`}
       data-node-id={node.id}
+      data-focus-root={rooted ? "true" : undefined}
+      data-focus-dimmed={dimmed ? "true" : undefined}
       tabIndex={0}
       role="button"
       aria-label={`${node.kind} ${node.name}`}
@@ -363,13 +422,13 @@ function NodeShape({
       onKeyDown={onKeyDown}
     >
       <FateHalo fate={node.identityFate} Shape={Shape} radius={radius} />
-      {(hovered || selected) && (
+      {(hovered || selected || rooted) && (
         <Shape
           fill="none"
-          stroke={selected ? COLORS.accent : "#FFFFFF"}
-          strokeWidth={selected ? 2.5 : 2}
-          expand={6}
-          opacity={selected ? 0.9 : 0.5}
+          stroke={rooted || selected ? COLORS.accent : "#FFFFFF"}
+          strokeWidth={rooted ? 3 : selected ? 2.5 : 2}
+          expand={rooted ? 7 : 6}
+          opacity={rooted || selected ? 0.95 : 0.5}
           radius={radius}
         />
       )}
@@ -660,6 +719,8 @@ function EdgeShape({ edge, positions, radius, dimmed, emphasized }: EdgeProps): 
 
   return (
     <path
+      data-edge-id={edge.id}
+      data-focus-dimmed={dimmed ? "true" : undefined}
       d={path}
       fill="none"
       stroke={color}
@@ -775,6 +836,60 @@ function GridPattern({
   return <g pointerEvents="none">{dots}</g>;
 }
 
+function FocusSummary({
+  lens,
+  model,
+}: {
+  readonly lens: GraphFocusLens | null;
+  readonly model: GraphModel;
+}): JSX.Element | null {
+  if (lens === null) return null;
+  const rootNames = lens.rootNodeIds
+    .map((nodeId) => model.nodesById.get(nodeId)?.name ?? nodeId)
+    .slice(0, 3);
+  const extraRoots = lens.rootNodeIds.length - rootNames.length;
+  return (
+    <div style={focusSummaryStyle} data-testid="focus-summary">
+      <div style={focusHeaderStyle}>
+        <span style={{ fontWeight: 700, letterSpacing: 0.6 }}>Focus</span>
+        <span style={focusOriginStyle(lens.origin)}>
+          {lens.origin === "graph" ? "Pinned" : "Editor"}
+        </span>
+      </div>
+      <div style={focusRootsStyle}>
+        {rootNames.join(", ")}
+        {extraRoots > 0 ? ` +${extraRoots}` : ""}
+      </div>
+      <div style={focusMetaStyle}>
+        {lens.nodeIds.length} nodes · {lens.edgeIds.length} edges
+      </div>
+      <div style={focusGroupListStyle}>
+        {lens.groups.map((group) => (
+          <div
+            key={group.label}
+            style={focusGroupRowStyle}
+            data-focus-group-label={group.label}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div>{group.label}</div>
+              <div style={focusGroupNamesStyle}>
+                {group.nodeIds
+                  .map((nodeId) => model.nodesById.get(nodeId)?.name ?? nodeId)
+                  .slice(0, 2)
+                  .join(", ")}
+              </div>
+            </div>
+            <span style={{ color: COLORS.text }}>{group.nodeIds.length}</span>
+          </div>
+        ))}
+      </div>
+      {lens.origin === "graph" ? (
+        <div style={focusHintStyle}>Esc or background click to clear</div>
+      ) : null}
+    </div>
+  );
+}
+
 function EmptyState({
   width,
   height,
@@ -854,6 +969,72 @@ function edgesTouching(model: GraphModel, nodeId: GraphNodeId): Set<string> {
   return touched;
 }
 
+function focusBounds(
+  lens: GraphFocusLens,
+  positions: PositionMap,
+  radius: number,
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const nodeId of lens.nodeIds) {
+    const position = positions.get(nodeId);
+    if (position === undefined) continue;
+    minX = Math.min(minX, position.x - radius * 1.4);
+    minY = Math.min(minY, position.y - radius * 1.1);
+    maxX = Math.max(maxX, position.x + radius * 1.4);
+    maxY = Math.max(maxY, position.y + radius * 1.1);
+  }
+  if (!Number.isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+function fitBounds(
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  width: number,
+  height: number,
+): ViewTransform {
+  const padding = 48;
+  const w = Math.max(40, bounds.maxX - bounds.minX);
+  const h = Math.max(40, bounds.maxY - bounds.minY);
+  const k = clamp(
+    Math.min((width - padding * 2) / w, (height - padding * 2) / h),
+    MIN_SCALE,
+    MAX_SCALE,
+  );
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
+  return {
+    x: width / 2 - centerX * k,
+    y: height / 2 - centerY * k,
+    k,
+  };
+}
+
+function centerBounds(
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  current: ViewTransform,
+  width: number,
+  height: number,
+): ViewTransform {
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
+  return {
+    x: width / 2 - centerX * current.k,
+    y: height / 2 - centerY * current.k,
+    k: current.k,
+  };
+}
+
+function sameView(a: ViewTransform, b: ViewTransform): boolean {
+  return (
+    Math.abs(a.x - b.x) < 0.5 &&
+    Math.abs(a.y - b.y) < 0.5 &&
+    Math.abs(a.k - b.k) < 0.005
+  );
+}
+
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
 }
@@ -891,4 +1072,81 @@ const zoomBtnStyle: CSSProperties = {
   cursor: "pointer",
   borderRadius: 4,
   minWidth: 28,
+};
+
+const focusSummaryStyle: CSSProperties = {
+  position: "absolute",
+  top: 12,
+  right: 12,
+  minWidth: 180,
+  background: COLORS.panelAlt,
+  border: `1px solid ${COLORS.line}`,
+  borderRadius: 8,
+  padding: "10px 12px",
+  fontFamily: FONT_STACK,
+  fontSize: 11,
+  color: COLORS.textDim,
+  boxShadow: "0 2px 12px rgba(0,0,0,0.3)",
+};
+
+const focusHeaderStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+  color: COLORS.text,
+};
+
+function focusOriginStyle(origin: GraphFocusLens["origin"]): CSSProperties {
+  return {
+    fontSize: 10,
+    fontWeight: 700,
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    color: origin === "graph" ? COLORS.accent : COLORS.warn,
+  };
+}
+
+const focusRootsStyle: CSSProperties = {
+  marginTop: 6,
+  color: COLORS.text,
+  fontWeight: 600,
+};
+
+const focusMetaStyle: CSSProperties = {
+  marginTop: 4,
+  color: COLORS.muted,
+  fontSize: 10,
+};
+
+const focusGroupListStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  marginTop: 10,
+};
+
+const focusGroupRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+};
+
+const focusGroupNamesStyle: CSSProperties = {
+  marginTop: 2,
+  color: COLORS.muted,
+  fontSize: 10,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  maxWidth: 120,
+};
+
+const focusHintStyle: CSSProperties = {
+  marginTop: 10,
+  paddingTop: 8,
+  borderTop: `1px solid ${COLORS.line}`,
+  color: COLORS.muted,
+  fontSize: 10,
 };

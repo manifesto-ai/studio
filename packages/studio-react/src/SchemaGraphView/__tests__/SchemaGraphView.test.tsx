@@ -8,6 +8,7 @@ import { createStudioCore } from "@manifesto-ai/studio-core";
 import { createHeadlessAdapter } from "@manifesto-ai/studio-adapter-headless";
 import { buildGraphModel } from "../graph-model.js";
 import { SchemaGraphView } from "../SchemaGraphView.js";
+import { buildGraphFocusLens } from "../focus-lens.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..", "..", "..");
@@ -228,6 +229,113 @@ describe("SchemaGraphView", () => {
     );
     expect(titles.some((t) => /discarded/.test(t))).toBe(true);
     expect(titles.some((t) => /renamed/.test(t))).toBe(true);
+    cleanup();
+  });
+
+  it("dims unrelated nodes and renders a focus summary card", async () => {
+    const model = await buildTodoModel();
+    const lens = buildGraphFocusLens(model, ["action:addTodo"], "graph");
+    if (lens === null) throw new Error("lens null");
+    const { container, root, cleanup } = mount(null);
+    await act(async () => {
+      root.render(
+        <SchemaGraphView
+          model={model}
+          width={800}
+          height={600}
+          focusLens={lens}
+        />,
+      );
+    });
+    const summary = container.querySelector('[data-testid="focus-summary"]');
+    expect(summary?.textContent ?? "").toMatch(/focus/i);
+    expect(summary?.textContent ?? "").toMatch(/mutates/i);
+    expect(summary?.textContent ?? "").toMatch(/todos/i);
+
+    const focused = container.querySelector('[data-node-id="action:addTodo"]');
+    const dimmed = container.querySelector('[data-node-id="computed:todoCount"]');
+    expect(focused?.getAttribute("data-focus-root")).toBe("true");
+    expect(dimmed?.getAttribute("data-focus-dimmed")).toBe("true");
+    cleanup();
+  });
+
+  it("fits zoom for graph-origin focus but keeps 100% for editor-origin focus", async () => {
+    const model = await buildTodoModel();
+    const graphLens = buildGraphFocusLens(model, ["action:addTodo"], "graph");
+    const editorLens = buildGraphFocusLens(model, ["action:addTodo"], "editor");
+    if (graphLens === null || editorLens === null) throw new Error("lens null");
+    const graphMount = mount(null);
+
+    await act(async () => {
+      graphMount.root.render(
+        <SchemaGraphView
+          model={model}
+          width={800}
+          height={600}
+          focusLens={graphLens}
+        />,
+      );
+    });
+    const zoomAfterGraph = Array.from(graphMount.container.querySelectorAll("button"))
+      .map((button) => button.textContent ?? "")
+      .find((text) => text.endsWith("%"));
+    expect(zoomAfterGraph).not.toBe("100%");
+    graphMount.cleanup();
+
+    const editorMount = mount(null);
+    await act(async () => {
+      editorMount.root.render(
+        <SchemaGraphView
+          model={model}
+          width={800}
+          height={600}
+          focusLens={editorLens}
+        />,
+      );
+    });
+    const zoomAfterEditor = Array.from(editorMount.container.querySelectorAll("button"))
+      .map((button) => button.textContent ?? "")
+      .find((text) => text.endsWith("%"));
+    expect(zoomAfterEditor).toBe("100%");
+    editorMount.cleanup();
+  });
+
+  it("calls onBackgroundClick when the empty canvas is clicked", async () => {
+    const model = await buildTodoModel();
+    const onBackgroundClick = vi.fn();
+    const { container, root, cleanup } = mount(null);
+    await act(async () => {
+      root.render(
+        <SchemaGraphView
+          model={model}
+          width={800}
+          height={600}
+          onBackgroundClick={onBackgroundClick}
+        />,
+      );
+    });
+    const svg = container.querySelector("svg");
+    expect(svg).not.toBeNull();
+    const PointerEvt = window.PointerEvent ?? window.MouseEvent;
+    await act(async () => {
+      (svg as SVGSVGElement).dispatchEvent(
+        new PointerEvt("pointerdown", {
+          bubbles: true,
+          button: 0,
+          clientX: 40,
+          clientY: 40,
+        }),
+      );
+      (svg as SVGSVGElement).dispatchEvent(
+        new PointerEvt("pointerup", {
+          bubbles: true,
+          button: 0,
+          clientX: 40,
+          clientY: 40,
+        }),
+      );
+    });
+    expect(onBackgroundClick).toHaveBeenCalledTimes(1);
     cleanup();
   });
 });

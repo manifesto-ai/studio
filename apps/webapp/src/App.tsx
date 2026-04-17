@@ -14,16 +14,24 @@ import {
   createStudioCore,
   type EditorAdapter,
   type Marker,
+  type SourceSpan,
 } from "@manifesto-ai/studio-core";
-import { createMonacoAdapter } from "@manifesto-ai/studio-adapter-monaco";
+import {
+  createMonacoAdapter,
+  MEL_LANGUAGE_ID,
+  registerMelLanguage,
+} from "@manifesto-ai/studio-adapter-monaco";
 import {
   buildGraphModel,
+  buildGraphFocusLens,
   COLORS,
   DiagnosticsPanel,
+  type GraphFocusLens,
   type GraphNode,
   HistoryTimeline,
   InteractionEditor,
   PlanPanel,
+  resolveFocusRoots,
   SchemaGraphView,
   SnapshotTree,
   StudioHotkeys,
@@ -65,9 +73,10 @@ export function App(): JSX.Element {
     // Guard StrictMode's intentional double-effect-run in dev.
     if (editorInstanceRef.current !== null) return;
 
+    registerMelLanguage(monaco);
     const ed = monaco.editor.create(editorHostRef.current, {
       value: fixture.source,
-      language: "plaintext",
+      language: MEL_LANGUAGE_ID,
       theme: "vs-dark",
       automaticLayout: true,
       fontSize: 12,
@@ -114,10 +123,6 @@ export function App(): JSX.Element {
   };
   const revealMarker = (marker: Marker): void => {
     revealSpan(marker.span.start.line, marker.span.start.column);
-  };
-  const revealNode = (node: GraphNode): void => {
-    if (node.sourceSpan === null) return;
-    revealSpan(node.sourceSpan.start.line, node.sourceSpan.start.column);
   };
 
   const mainRef = useRef<HTMLDivElement | null>(null);
@@ -201,7 +206,7 @@ export function App(): JSX.Element {
           />
 
           <div style={graphPaneStyle}>
-            <GraphPane onNodeClick={revealNode} />
+            <GraphPane editor={editor} />
           </div>
 
           <PaneDivider
@@ -487,18 +492,104 @@ function TabRow({
 }
 
 function GraphPane({
-  onNodeClick,
+  editor,
 }: {
-  readonly onNodeClick: (node: GraphNode) => void;
+  readonly editor: monaco.editor.IStandaloneCodeEditor | null;
 }): JSX.Element {
   const { module, plan } = useStudio();
   const graphModel = useMemo(
     () => buildGraphModel(module, plan),
     [module, plan],
   );
+  const [editorLens, setEditorLens] = useState<GraphFocusLens | null>(null);
+  const [pinnedGraphLens, setPinnedGraphLens] = useState<GraphFocusLens | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const { width, height } = useContainerSize(hostRef);
   const ready = width > 80 && height > 80;
+
+  const syncEditorLens = useCallback(
+    (selection: monaco.Selection | null) => {
+      if (graphModel === null || selection === null) {
+        setEditorLens((prev) => (prev === null ? prev : null));
+        return;
+      }
+      const roots = resolveFocusRoots(graphModel, selectionToSpan(selection));
+      const next = buildGraphFocusLens(
+        graphModel,
+        roots.map((node) => node.id),
+        "editor",
+      );
+      setEditorLens((prev) => (sameLens(prev, next) ? prev : next));
+    },
+    [graphModel],
+  );
+
+  useEffect(() => {
+    if (graphModel === null) {
+      setEditorLens(null);
+      setPinnedGraphLens(null);
+      return;
+    }
+    setPinnedGraphLens(null);
+  }, [graphModel?.schemaHash]);
+
+  useEffect(() => {
+    if (editor === null || graphModel === null) {
+      setEditorLens(null);
+      return;
+    }
+    let timer: number | null = null;
+    const schedule = (): void => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        syncEditorLens(editor.getSelection());
+      }, 80);
+    };
+    schedule();
+    const disposable = editor.onDidChangeCursorSelection(() => {
+      schedule();
+    });
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      disposable.dispose();
+    };
+  }, [editor, graphModel, syncEditorLens]);
+
+  useEffect(() => {
+    if (pinnedGraphLens === null) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        setPinnedGraphLens(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [pinnedGraphLens]);
+
+  const activeLens = pinnedGraphLens ?? editorLens;
+  const revealNode = useCallback(
+    (node: GraphNode): void => {
+      if (editor === null || node.sourceSpan === null) return;
+      editor.revealLineInCenterIfOutsideViewport(node.sourceSpan.start.line);
+      editor.setPosition({
+        lineNumber: node.sourceSpan.start.line,
+        column: node.sourceSpan.start.column,
+      });
+      editor.focus();
+    },
+    [editor],
+  );
+  const handleNodeClick = useCallback(
+    (node: GraphNode): void => {
+      if (graphModel !== null) {
+        const next = buildGraphFocusLens(graphModel, [node.id], "graph");
+        setPinnedGraphLens((prev) => (sameLens(prev, next) ? prev : next));
+      }
+      revealNode(node);
+    },
+    [graphModel, revealNode],
+  );
+
   return (
     <div ref={hostRef} style={graphHostStyle}>
       {ready ? (
@@ -506,11 +597,34 @@ function GraphPane({
           model={graphModel}
           width={width}
           height={height}
-          onNodeClick={onNodeClick}
+          focusLens={activeLens}
+          onNodeClick={handleNodeClick}
+          onBackgroundClick={() => setPinnedGraphLens(null)}
         />
       ) : null}
     </div>
   );
+}
+
+function selectionToSpan(selection: monaco.Selection): SourceSpan {
+  return {
+    start: {
+      line: selection.startLineNumber,
+      column: selection.startColumn,
+    },
+    end: {
+      line: selection.endLineNumber,
+      column: selection.endColumn,
+    },
+  };
+}
+
+function sameLens(
+  a: GraphFocusLens | null,
+  b: GraphFocusLens | null,
+): boolean {
+  if (a === null || b === null) return a === b;
+  return a.signature === b.signature && a.origin === b.origin;
 }
 
 function useContainerSize(
