@@ -130,10 +130,7 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
     const bounds = focusBounds(focusLens, positions, BASE_NODE_RADIUS * densityScale(model?.nodes.length ?? 0));
     if (bounds === null) return;
     setView((current) => {
-      const next =
-        focusLens.origin === "graph"
-          ? fitBounds(bounds, width, height)
-          : centerBounds(bounds, current, width, height);
+      const next = smartFocusBounds(bounds, current, width, height);
       return sameView(current, next) ? current : next;
     });
   }, [focusLens, height, model?.nodes.length, positions, width]);
@@ -239,6 +236,11 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
   const focusNodeIds = focusLens === null ? null : new Set(focusLens.nodeIds);
   const focusEdgeIds = focusLens === null ? null : new Set(focusLens.edgeIds);
   const focusRootIds = focusLens === null ? null : new Set(focusLens.rootNodeIds);
+  const hop1NodeIds = focusLens === null ? null : new Set(focusLens.hop1NodeIds);
+  const hop2NodeIds = focusLens === null ? null : new Set(focusLens.hop2NodeIds);
+  const hop1EdgeIds = focusLens === null ? null : new Set(focusLens.hop1EdgeIds);
+  const hop2EdgeIds = focusLens === null ? null : new Set(focusLens.hop2EdgeIds);
+  const blastKey = focusLens?.signature ?? "none";
 
   const scale = densityScale(model.nodes.length);
   const nodeRadius = BASE_NODE_RADIUS * scale;
@@ -276,6 +278,18 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
             <stop offset="0%" stopColor="#FFFFFF" stopOpacity={0.12} />
             <stop offset="100%" stopColor="#FFFFFF" stopOpacity={0} />
           </radialGradient>
+          <style>
+            {`
+              @keyframes blastNodePulse {
+                0% { filter: brightness(1.55); }
+                100% { filter: brightness(1); }
+              }
+              @keyframes blastEdgePulse {
+                0% { filter: brightness(1.65); }
+                100% { filter: brightness(1); }
+              }
+            `}
+          </style>
         </defs>
 
         <rect
@@ -294,10 +308,21 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
           <g>
             {model.edges.map((e) => (
               <EdgeShape
-                key={e.id}
+                key={`${blastKey}:${e.id}`}
                 edge={e}
                 positions={positions}
                 radius={nodeRadius}
+                hopDepth={
+                  focusLens === null
+                    ? null
+                    : hop1EdgeIds?.has(e.id)
+                      ? 1
+                      : hop2EdgeIds?.has(e.id)
+                        ? 2
+                        : focusEdgeIds?.has(e.id)
+                          ? 0
+                          : null
+                }
                 dimmed={
                   focusLens !== null
                     ? focusEdgeIds?.has(e.id) !== true
@@ -308,6 +333,7 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
                     ? focusEdgeIds?.has(e.id) === true
                     : hoveredId !== null && connectedByHover?.has(e.id) === true
                 }
+                blastDepth={focusLens?.blastEdgeDepths.get(e.id) ?? null}
               />
             ))}
           </g>
@@ -319,7 +345,7 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
               if (p === undefined) return null;
               return (
                 <NodeShape
-                  key={n.id}
+                  key={`${blastKey}:${n.id}`}
                   node={n}
                   position={p}
                   radius={nodeRadius}
@@ -327,6 +353,17 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
                   labelFontSize={labelFontSize}
                   showLabel={showLabels}
                   hovered={focusLens === null && hoveredId === n.id}
+                  hopDepth={
+                    focusLens === null
+                      ? null
+                      : focusRootIds?.has(n.id)
+                        ? 0
+                        : hop1NodeIds?.has(n.id)
+                          ? 1
+                          : hop2NodeIds?.has(n.id)
+                            ? 2
+                            : null
+                  }
                   dimmed={
                     focusLens !== null
                       ? focusNodeIds?.has(n.id) !== true
@@ -335,6 +372,7 @@ export function SchemaGraphView(props: SchemaGraphViewProps): JSX.Element {
                         connectedByHover?.has(n.id) !== true
                   }
                   rooted={focusRootIds?.has(n.id) === true}
+                  blastDepth={focusLens?.blastNodeDepths.get(n.id) ?? null}
                   selected={selectedNodeId === n.id}
                   onHover={setHoveredId}
                   onClick={onNodeClick}
@@ -362,8 +400,10 @@ type NodeProps = {
   readonly labelFontSize: number;
   readonly showLabel: boolean;
   readonly hovered: boolean;
+  readonly hopDepth: 0 | 1 | 2 | null;
   readonly dimmed: boolean;
   readonly rooted: boolean;
+  readonly blastDepth: 1 | 2 | null;
   readonly selected: boolean;
   readonly onHover: (id: GraphNodeId | null) => void;
   readonly onClick?: (node: GraphNode) => void;
@@ -377,14 +417,17 @@ function NodeShape({
   labelFontSize,
   showLabel,
   hovered,
+  hopDepth,
   dimmed,
   rooted,
+  blastDepth,
   selected,
   onHover,
   onClick,
 }: NodeProps): JSX.Element {
   const { fill, stroke } = kindColors(node.kind);
-  const opacity = dimmed ? 0.22 : 1;
+  const opacity = focusNodeOpacity(hopDepth, dimmed);
+  const animation = blastDepth === null ? undefined : blastAnimation("node", blastDepth);
 
   const onClickInner = onClick === undefined ? undefined : () => onClick(node);
   const onKeyDown = (e: React.KeyboardEvent<SVGGElement>) => {
@@ -404,6 +447,8 @@ function NodeShape({
       transform={`translate(${position.x} ${position.y})`}
       data-node-id={node.id}
       data-focus-root={rooted ? "true" : undefined}
+      data-hop-depth={hopDepth ?? undefined}
+      data-blast-depth={blastDepth ?? undefined}
       data-focus-dimmed={dimmed ? "true" : undefined}
       tabIndex={0}
       role="button"
@@ -413,6 +458,7 @@ function NodeShape({
         opacity,
         outline: "none",
         transition: "opacity 120ms ease-out",
+        animation,
       }}
       onMouseEnter={() => onHover(node.id)}
       onMouseLeave={() => onHover(null)}
@@ -703,23 +749,36 @@ type EdgeProps = {
   readonly edge: GraphEdge;
   readonly positions: PositionMap;
   readonly radius: number;
+  readonly hopDepth: 0 | 1 | 2 | null;
   readonly dimmed: boolean;
   readonly emphasized: boolean;
+  readonly blastDepth: 1 | 2 | null;
 };
 
-function EdgeShape({ edge, positions, radius, dimmed, emphasized }: EdgeProps): JSX.Element | null {
+function EdgeShape({
+  edge,
+  positions,
+  radius,
+  hopDepth,
+  dimmed,
+  emphasized,
+  blastDepth,
+}: EdgeProps): JSX.Element | null {
   const s = positions.get(edge.source);
   const t = positions.get(edge.target);
   if (s === undefined || t === undefined) return null;
 
-  const path = curvedPath(s, t, edge, radius);
+  const path = orthogonalPath(s, t, edge, radius);
   const { color, strokeWidth, dash, marker } = edgeStyle(edge.relation);
-  const opacity = dimmed ? 0.18 : emphasized ? 1 : 0.8;
+  const opacity = focusEdgeOpacity(hopDepth, dimmed, emphasized);
   const finalWidth = emphasized ? strokeWidth + 0.5 : strokeWidth;
+  const animation = blastDepth === null ? undefined : blastAnimation("edge", blastDepth);
 
   return (
     <path
       data-edge-id={edge.id}
+      data-hop-depth={hopDepth ?? undefined}
+      data-blast-depth={blastDepth ?? undefined}
       data-focus-dimmed={dimmed ? "true" : undefined}
       d={path}
       fill="none"
@@ -728,7 +787,8 @@ function EdgeShape({ edge, positions, radius, dimmed, emphasized }: EdgeProps): 
       strokeDasharray={dash}
       markerEnd={`url(#${marker})`}
       opacity={opacity}
-      style={{ transition: "opacity 120ms ease-out" }}
+      strokeLinejoin="round"
+      style={{ transition: "opacity 120ms ease-out", animation }}
     />
   );
 }
@@ -749,7 +809,7 @@ function edgeStyle(relation: GraphEdgeRelation): {
   }
 }
 
-function curvedPath(
+function orthogonalPath(
   s: NodePosition,
   t: NodePosition,
   edge: GraphEdge,
@@ -757,24 +817,37 @@ function curvedPath(
 ): string {
   const dx = t.x - s.x;
   const dy = t.y - s.y;
-  const dist = Math.hypot(dx, dy);
-  if (dist === 0) return `M ${s.x} ${s.y}`;
-  // Trim both endpoints to the node boundary approximation (circle radius)
-  const nx = dx / dist;
-  const ny = dy / dist;
+  if (dx === 0 && dy === 0) return `M ${s.x} ${s.y}`;
   const pad = radius + 6;
-  const startX = s.x + nx * pad;
-  const startY = s.y + ny * pad;
-  const endX = t.x - nx * pad;
-  const endY = t.y - ny * pad;
-  // Quadratic curve with offset perpendicular — slight arc reduces overlaps
-  // and gives a directional feel even with bidirectional edges.
-  const hash = stringHash(edge.id);
-  const side = (hash & 1) === 0 ? 1 : -1;
-  const curve = Math.min(40, dist * 0.2) * side;
-  const mx = (startX + endX) / 2 - ny * curve;
-  const my = (startY + endY) / 2 + nx * curve;
-  return `M ${startX} ${startY} Q ${mx} ${my} ${endX} ${endY}`;
+  const lane = laneOffset(edge.id);
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    const dirX = dx >= 0 ? 1 : -1;
+    const startX = s.x + dirX * pad;
+    const startY = s.y;
+    const endX = t.x - dirX * pad;
+    const endY = t.y;
+    const midX = (startX + endX) / 2 + lane;
+    return `M ${startX} ${startY} L ${midX} ${startY} L ${midX} ${endY} L ${endX} ${endY}`;
+  }
+  const dirY = dy >= 0 ? 1 : -1;
+  const startX = s.x;
+  const startY = s.y + dirY * pad;
+  const endX = t.x;
+  const endY = t.y - dirY * pad;
+  const midY = (startY + endY) / 2 + lane;
+  return `M ${startX} ${startY} L ${startX} ${midY} L ${endX} ${midY} L ${endX} ${endY}`;
+}
+
+function laneOffset(edgeId: string): number {
+  const bucket = stringHash(edgeId) % 3;
+  switch (bucket) {
+    case 0:
+      return -18;
+    case 1:
+      return 0;
+    default:
+      return 18;
+  }
 }
 
 function stringHash(s: string): number {
@@ -852,9 +925,7 @@ function FocusSummary({
     <div style={focusSummaryStyle} data-testid="focus-summary">
       <div style={focusHeaderStyle}>
         <span style={{ fontWeight: 700, letterSpacing: 0.6 }}>Focus</span>
-        <span style={focusOriginStyle(lens.origin)}>
-          {lens.origin === "graph" ? "Pinned" : "Editor"}
-        </span>
+        <span style={focusModeStyle}>2-Hop DOI</span>
       </div>
       <div style={focusRootsStyle}>
         {rootNames.join(", ")}
@@ -862,6 +933,9 @@ function FocusSummary({
       </div>
       <div style={focusMetaStyle}>
         {lens.nodeIds.length} nodes · {lens.edgeIds.length} edges
+      </div>
+      <div style={focusMetaStyle}>
+        1-hop {lens.hop1NodeIds.length} · 2-hop {lens.hop2NodeIds.length}
       </div>
       <div style={focusGroupListStyle}>
         {lens.groups.map((group) => (
@@ -883,9 +957,7 @@ function FocusSummary({
           </div>
         ))}
       </div>
-      {lens.origin === "graph" ? (
-        <div style={focusHintStyle}>Esc or background click to clear</div>
-      ) : null}
+      <div style={focusHintStyle}>Esc or background click to clear</div>
     </div>
   );
 }
@@ -990,12 +1062,42 @@ function focusBounds(
   return { minX, minY, maxX, maxY };
 }
 
+function smartFocusBounds(
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  current: ViewTransform,
+  width: number,
+  height: number,
+): ViewTransform {
+  return boundsInsideViewport(bounds, current, width, height, 64)
+    ? centerBounds(bounds, current, width, height)
+    : fitBounds(bounds, width, height, 72);
+}
+
+function boundsInsideViewport(
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  view: ViewTransform,
+  width: number,
+  height: number,
+  inset: number,
+): boolean {
+  const minX = bounds.minX * view.k + view.x;
+  const minY = bounds.minY * view.k + view.y;
+  const maxX = bounds.maxX * view.k + view.x;
+  const maxY = bounds.maxY * view.k + view.y;
+  return (
+    minX >= inset &&
+    minY >= inset &&
+    maxX <= width - inset &&
+    maxY <= height - inset
+  );
+}
+
 function fitBounds(
   bounds: { minX: number; minY: number; maxX: number; maxY: number },
   width: number,
   height: number,
+  padding: number,
 ): ViewTransform {
-  const padding = 48;
   const w = Math.max(40, bounds.maxX - bounds.minX);
   const h = Math.max(40, bounds.maxY - bounds.minY);
   const k = clamp(
@@ -1033,6 +1135,42 @@ function sameView(a: ViewTransform, b: ViewTransform): boolean {
     Math.abs(a.y - b.y) < 0.5 &&
     Math.abs(a.k - b.k) < 0.005
   );
+}
+
+function focusNodeOpacity(
+  hopDepth: 0 | 1 | 2 | null,
+  dimmed: boolean,
+): number {
+  if (dimmed) return 0.14;
+  switch (hopDepth) {
+    case 0:
+      return 1;
+    case 1:
+      return 0.95;
+    case 2:
+      return 0.7;
+    default:
+      return 1;
+  }
+}
+
+function focusEdgeOpacity(
+  hopDepth: 0 | 1 | 2 | null,
+  dimmed: boolean,
+  emphasized: boolean,
+): number {
+  if (dimmed) return 0.12;
+  if (hopDepth === 0 || hopDepth === 1) return 0.95;
+  if (hopDepth === 2) return 0.7;
+  return emphasized ? 1 : 0.8;
+}
+
+function blastAnimation(
+  kind: "node" | "edge",
+  depth: 1 | 2,
+): string {
+  const name = kind === "node" ? "blastNodePulse" : "blastEdgePulse";
+  return `${name} 420ms ease-out ${depth * 90}ms 1 both`;
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -1097,15 +1235,13 @@ const focusHeaderStyle: CSSProperties = {
   color: COLORS.text,
 };
 
-function focusOriginStyle(origin: GraphFocusLens["origin"]): CSSProperties {
-  return {
-    fontSize: 10,
-    fontWeight: 700,
-    letterSpacing: 0.8,
-    textTransform: "uppercase",
-    color: origin === "graph" ? COLORS.accent : COLORS.warn,
-  };
-}
+const focusModeStyle: CSSProperties = {
+  fontSize: 10,
+  fontWeight: 700,
+  letterSpacing: 0.8,
+  textTransform: "uppercase",
+  color: COLORS.accent,
+};
 
 const focusRootsStyle: CSSProperties = {
   marginTop: 6,

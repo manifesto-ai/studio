@@ -251,53 +251,95 @@ describe("SchemaGraphView", () => {
     expect(summary?.textContent ?? "").toMatch(/focus/i);
     expect(summary?.textContent ?? "").toMatch(/mutates/i);
     expect(summary?.textContent ?? "").toMatch(/todos/i);
+    expect(summary?.textContent ?? "").toMatch(/1-hop/i);
+    expect(summary?.textContent ?? "").toMatch(/2-hop/i);
 
     const focused = container.querySelector('[data-node-id="action:addTodo"]');
-    const dimmed = container.querySelector('[data-node-id="computed:todoCount"]');
+    const hop1 = container.querySelector('[data-node-id="state:todos"]');
+    const hop2 = container.querySelector('[data-node-id="computed:todoCount"]');
+    const dimmed = container.querySelector('[data-node-id="computed:activeCount"]');
     expect(focused?.getAttribute("data-focus-root")).toBe("true");
+    expect(focused?.getAttribute("data-hop-depth")).toBe("0");
+    expect(hop1?.getAttribute("data-hop-depth")).toBe("1");
+    expect(hop1?.getAttribute("data-blast-depth")).toBe("1");
+    expect(hop2?.getAttribute("data-hop-depth")).toBe("2");
+    expect(hop2?.getAttribute("data-blast-depth")).toBe("2");
     expect(dimmed?.getAttribute("data-focus-dimmed")).toBe("true");
+    expect(dimmed?.getAttribute("style")).toContain("opacity: 0.14");
+
+    const hop1Edge = container.querySelector('[data-edge-id="action:addTodo->state:todos:mutates"]');
+    const hop2Edge = container.querySelector('[data-edge-id="state:todos->computed:todoCount:feeds"]');
+    const dimmedEdge = container.querySelector('[data-edge-id="computed:todoCount->computed:activeCount:feeds"]');
+    expect(hop1Edge?.getAttribute("data-hop-depth")).toBe("1");
+    expect(hop1Edge?.getAttribute("data-blast-depth")).toBe("1");
+    expect(hop2Edge?.getAttribute("data-hop-depth")).toBe("2");
+    expect(hop2Edge?.getAttribute("data-blast-depth")).toBe("2");
+    expect(dimmedEdge?.getAttribute("data-focus-dimmed")).toBe("true");
+    expect(dimmedEdge?.getAttribute("opacity")).toBe("0.12");
     cleanup();
   });
 
-  it("fits zoom for graph-origin focus but keeps 100% for editor-origin focus", async () => {
+  it("uses smart focus to fit when needed and preserve 100% when already visible", async () => {
     const model = await buildTodoModel();
-    const graphLens = buildGraphFocusLens(model, ["action:addTodo"], "graph");
-    const editorLens = buildGraphFocusLens(model, ["action:addTodo"], "editor");
-    if (graphLens === null || editorLens === null) throw new Error("lens null");
-    const graphMount = mount(null);
+    const lens = buildGraphFocusLens(model, ["action:addTodo"], "graph");
+    if (lens === null) throw new Error("lens null");
+    const tightMount = mount(null);
 
     await act(async () => {
-      graphMount.root.render(
+      tightMount.root.render(
+        <SchemaGraphView
+          model={model}
+          width={260}
+          height={180}
+          focusLens={lens}
+        />,
+      );
+    });
+    const zoomAfterTight = Array.from(tightMount.container.querySelectorAll("button"))
+      .map((button) => button.textContent ?? "")
+      .find((text) => text.endsWith("%"));
+    expect(zoomAfterTight).not.toBe("100%");
+    tightMount.cleanup();
+
+    const wideMount = mount(null);
+    await act(async () => {
+      wideMount.root.render(
+        <SchemaGraphView
+          model={model}
+          width={1400}
+          height={1000}
+          focusLens={lens}
+        />,
+      );
+    });
+    const zoomAfterWide = Array.from(wideMount.container.querySelectorAll("button"))
+      .map((button) => button.textContent ?? "")
+      .find((text) => text.endsWith("%"));
+    expect(zoomAfterWide).toBe("100%");
+    wideMount.cleanup();
+  });
+
+  it("renders orthogonal edge paths instead of quadratic curves", async () => {
+    const model = await buildTodoModel();
+    const lens = buildGraphFocusLens(model, ["action:addTodo"], "graph");
+    if (lens === null) throw new Error("lens null");
+    const { container, root, cleanup } = mount(null);
+
+    await act(async () => {
+      root.render(
         <SchemaGraphView
           model={model}
           width={800}
           height={600}
-          focusLens={graphLens}
+          focusLens={lens}
         />,
       );
     });
-    const zoomAfterGraph = Array.from(graphMount.container.querySelectorAll("button"))
-      .map((button) => button.textContent ?? "")
-      .find((text) => text.endsWith("%"));
-    expect(zoomAfterGraph).not.toBe("100%");
-    graphMount.cleanup();
 
-    const editorMount = mount(null);
-    await act(async () => {
-      editorMount.root.render(
-        <SchemaGraphView
-          model={model}
-          width={800}
-          height={600}
-          focusLens={editorLens}
-        />,
-      );
-    });
-    const zoomAfterEditor = Array.from(editorMount.container.querySelectorAll("button"))
-      .map((button) => button.textContent ?? "")
-      .find((text) => text.endsWith("%"));
-    expect(zoomAfterEditor).toBe("100%");
-    editorMount.cleanup();
+    const path = container.querySelector('[data-edge-id="action:addTodo->state:todos:mutates"]');
+    expect(path?.getAttribute("d")).toContain(" L ");
+    expect(path?.getAttribute("d")).not.toContain("Q");
+    cleanup();
   });
 
   it("calls onBackgroundClick when the empty canvas is clicked", async () => {

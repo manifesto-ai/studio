@@ -107,7 +107,7 @@ describe("resolveFocusRoots", () => {
 });
 
 describe("buildGraphFocusLens", () => {
-  it("builds a 1-hop lens for action roots", async () => {
+  it("builds a 2-hop context lens for action roots and keeps groups direct-only", async () => {
     const model = await buildModel(todoSource);
 
     const lens = buildGraphFocusLens(model, ["action:addTodo"], "graph");
@@ -115,16 +115,27 @@ describe("buildGraphFocusLens", () => {
     expect(lens).not.toBeNull();
     if (lens === null) return;
     expect(lens.rootNodeIds).toEqual(["action:addTodo"]);
-    expect(lens.nodeIds).toContain("state:todos");
+    expect(lens.hop1NodeIds).toEqual(["state:todos"]);
+    expect(lens.hop2NodeIds).toEqual(
+      expect.arrayContaining([
+        "action:clearCompleted",
+        "action:removeTodo",
+        "action:toggleTodo",
+        "computed:completedCount",
+        "computed:todoCount",
+      ]),
+    );
     expect(lens.edgeIds).toContain("action:addTodo->state:todos:mutates");
     expect(lens.groups).toContainEqual({
       label: "Mutates",
       nodeIds: ["state:todos"],
       edgeIds: ["action:addTodo->state:todos:mutates"],
     });
+    const groupNodeIds = new Set(lens.groups.flatMap((group) => group.nodeIds));
+    expect(groupNodeIds.has("computed:activeCount")).toBe(false);
   });
 
-  it("builds inbound and outbound relation groups for state roots", async () => {
+  it("builds inbound and outbound context for state roots", async () => {
     const model = await buildModel(todoSource);
 
     const lens = buildGraphFocusLens(model, ["state:todos"], "editor");
@@ -146,6 +157,12 @@ describe("buildGraphFocusLens", () => {
         "action:clearCompleted",
       ]),
     );
+    expect(lens.hop2NodeIds).toEqual(
+      expect.arrayContaining([
+        "computed:activeCount",
+        "computed:hasCompleted",
+      ]),
+    );
   });
 
   it("builds unlock groups on dense graphs", async () => {
@@ -157,6 +174,20 @@ describe("buildGraphFocusLens", () => {
     if (lens === null) return;
     const unlocks = lens.groups.find((group) => group.label === "Unlocks");
     expect(unlocks?.nodeIds).toContain("action:shoot");
+  });
+
+  it("computes downstream-only blast depths", async () => {
+    const model = await buildModel(todoSource);
+
+    const lens = buildGraphFocusLens(model, ["action:addTodo"], "graph");
+
+    expect(lens).not.toBeNull();
+    if (lens === null) return;
+    expect(lens.blastNodeDepths.get("state:todos")).toBe(1);
+    expect(lens.blastNodeDepths.get("computed:todoCount")).toBe(2);
+    expect(lens.blastNodeDepths.get("action:toggleTodo")).toBeUndefined();
+    expect(lens.blastEdgeDepths.get("action:addTodo->state:todos:mutates")).toBe(1);
+    expect(lens.blastEdgeDepths.get("state:todos->computed:todoCount:feeds")).toBe(2);
   });
 
   it("returns null when no valid graph-visible roots are present", async () => {

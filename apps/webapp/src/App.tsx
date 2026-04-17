@@ -501,48 +501,64 @@ function GraphPane({
     () => buildGraphModel(module, plan),
     [module, plan],
   );
-  const [editorLens, setEditorLens] = useState<GraphFocusLens | null>(null);
-  const [pinnedGraphLens, setPinnedGraphLens] = useState<GraphFocusLens | null>(null);
+  const [activeSelectionLens, setActiveSelectionLens] = useState<GraphFocusLens | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const { width, height } = useContainerSize(hostRef);
   const ready = width > 80 && height > 80;
 
-  const syncEditorLens = useCallback(
-    (selection: monaco.Selection | null) => {
-      if (graphModel === null || selection === null) {
-        setEditorLens((prev) => (prev === null ? prev : null));
+  const setSelectionFromRoots = useCallback(
+    (rootIds: readonly GraphNode["id"][], origin: GraphFocusLens["origin"]) => {
+      if (graphModel === null) {
+        setActiveSelectionLens(null);
         return;
       }
-      const roots = resolveFocusRoots(graphModel, selectionToSpan(selection));
-      const next = buildGraphFocusLens(
-        graphModel,
-        roots.map((node) => node.id),
-        "editor",
-      );
-      setEditorLens((prev) => (sameLens(prev, next) ? prev : next));
+      const next = buildGraphFocusLens(graphModel, rootIds, origin);
+      setActiveSelectionLens((prev) => (sameLens(prev, next) ? prev : next));
     },
     [graphModel],
   );
 
+  const clearSelection = useCallback(() => {
+    setActiveSelectionLens((prev) => (prev === null ? prev : null));
+  }, []);
+
+  const syncEditorSelection = useCallback(
+    (selection: monaco.Selection | null) => {
+      if (graphModel === null || selection === null) {
+        clearSelection();
+        return;
+      }
+      const roots = resolveFocusRoots(graphModel, selectionToSpan(selection));
+      if (roots.length === 0) {
+        clearSelection();
+        return;
+      }
+      setSelectionFromRoots(
+        roots.map((node) => node.id),
+        "editor",
+      );
+    },
+    [clearSelection, graphModel, setSelectionFromRoots],
+  );
+
   useEffect(() => {
     if (graphModel === null) {
-      setEditorLens(null);
-      setPinnedGraphLens(null);
+      setActiveSelectionLens(null);
       return;
     }
-    setPinnedGraphLens(null);
+    setActiveSelectionLens(null);
   }, [graphModel?.schemaHash]);
 
   useEffect(() => {
     if (editor === null || graphModel === null) {
-      setEditorLens(null);
+      setActiveSelectionLens(null);
       return;
     }
     let timer: number | null = null;
     const schedule = (): void => {
       if (timer !== null) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
-        syncEditorLens(editor.getSelection());
+        syncEditorSelection(editor.getSelection());
       }, 80);
     };
     schedule();
@@ -553,20 +569,18 @@ function GraphPane({
       if (timer !== null) window.clearTimeout(timer);
       disposable.dispose();
     };
-  }, [editor, graphModel, syncEditorLens]);
+  }, [editor, graphModel, syncEditorSelection]);
 
   useEffect(() => {
-    if (pinnedGraphLens === null) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
-        setPinnedGraphLens(null);
+        clearSelection();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [pinnedGraphLens]);
+  }, [clearSelection]);
 
-  const activeLens = pinnedGraphLens ?? editorLens;
   const revealNode = useCallback(
     (node: GraphNode): void => {
       if (editor === null || node.sourceSpan === null) return;
@@ -581,13 +595,10 @@ function GraphPane({
   );
   const handleNodeClick = useCallback(
     (node: GraphNode): void => {
-      if (graphModel !== null) {
-        const next = buildGraphFocusLens(graphModel, [node.id], "graph");
-        setPinnedGraphLens((prev) => (sameLens(prev, next) ? prev : next));
-      }
+      setSelectionFromRoots([node.id], "graph");
       revealNode(node);
     },
-    [graphModel, revealNode],
+    [revealNode, setSelectionFromRoots],
   );
 
   return (
@@ -597,9 +608,9 @@ function GraphPane({
           model={graphModel}
           width={width}
           height={height}
-          focusLens={activeLens}
+          focusLens={activeSelectionLens}
           onNodeClick={handleNodeClick}
-          onBackgroundClick={() => setPinnedGraphLens(null)}
+          onBackgroundClick={clearSelection}
         />
       ) : null}
     </div>
@@ -624,7 +635,7 @@ function sameLens(
   b: GraphFocusLens | null,
 ): boolean {
   if (a === null || b === null) return a === b;
-  return a.signature === b.signature && a.origin === b.origin;
+  return a.signature === b.signature;
 }
 
 function useContainerSize(
