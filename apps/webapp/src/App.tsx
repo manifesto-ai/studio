@@ -24,6 +24,7 @@ import { TopBar } from "@/components/chrome/TopBar";
 import { NowLine } from "@/components/chrome/NowLine";
 import { PaneDivider } from "@/components/chrome/PaneDivider";
 import { SnapshotRipple } from "@/components/motion/SnapshotRipple";
+import { TimeScrubProvider } from "@/hooks/useTimeScrub";
 import { SourcePane } from "@/components/panes/SourcePane";
 import { ObservatoryPane } from "@/components/panes/ObservatoryPane";
 import { LensPane, type LensId } from "@/components/panes/LensPane";
@@ -166,6 +167,7 @@ export function App(): JSX.Element {
   return (
     <div className="flex flex-col h-screen relative">
       <StudioProvider core={core} adapter={adapter} historyPollMs={500}>
+        <TimeScrubProvider>
         <StudioHotkeys />
 
         <TopBar
@@ -216,6 +218,7 @@ export function App(): JSX.Element {
 
         <NowLine />
         <SnapshotRipple />
+        </TimeScrubProvider>
       </StudioProvider>
     </div>
   );

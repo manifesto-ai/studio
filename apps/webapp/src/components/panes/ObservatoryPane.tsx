@@ -1,125 +1,43 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type RefObject,
-} from "react";
-import { Focus, Orbit } from "lucide-react";
+import { useCallback, useMemo } from "react";
+import { Orbit, Clock } from "lucide-react";
 import * as monaco from "monaco-editor";
 import {
   buildGraphModel,
-  buildGraphFocusLens,
-  resolveFocusRoots,
-  SchemaGraphView,
   useStudio,
-  type GraphFocusLens,
   type GraphNode,
 } from "@manifesto-ai/studio-react";
-import type { SourceSpan } from "@manifesto-ai/studio-core";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/Panel";
 import { Button } from "@/components/ui/Button";
+import { LiveGraph } from "@/components/graph/LiveGraph";
+import { useTimeScrub } from "@/hooks/useTimeScrub";
 
 /**
- * ObservatoryPane — the central instrument. Renders the schema
- * dependency graph inside a glass viewport. Hooks up editor selection
- * <-> graph focus lens bidirectionally.
- *
- * The SchemaGraphView itself is untouched; we only wrap and style the
- * chrome around it.
+ * ObservatoryPane — the central instrument. Renders the domain as a
+ * live graph of cards: each state / computed node shows its current
+ * value, each action node shows dispatchability. Clicking an action
+ * opens a dispatch popover; a new envelope animates a propagation
+ * pulse from the origin through its downstream cascade.
  */
 export function ObservatoryPane({
   editor,
 }: {
   readonly editor: monaco.editor.IStandaloneCodeEditor | null;
 }): JSX.Element {
-  const { module, plan } = useStudio();
+  const { module: liveModule, plan } = useStudio();
+  const { state: scrub, returnToNow } = useTimeScrub();
+
+  // In past mode, the graph is built from the replayed module so it
+  // shows the domain as it was at that envelope. The reconciliation
+  // plan is not replayed (it lives on live state), so snapshot-fate
+  // overlays only apply live.
+  const effectiveModule =
+    scrub.mode === "past" ? scrub.module : liveModule;
+  const effectivePlan = scrub.mode === "past" ? null : plan;
+
   const graphModel = useMemo(
-    () => buildGraphModel(module, plan),
-    [module, plan],
+    () => buildGraphModel(effectiveModule, effectivePlan),
+    [effectiveModule, effectivePlan],
   );
-  const [activeSelectionLens, setActiveSelectionLens] =
-    useState<GraphFocusLens | null>(null);
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  const { width, height } = useContainerSize(hostRef);
-  const ready = width > 80 && height > 80;
-
-  const setSelectionFromRoots = useCallback(
-    (rootIds: readonly GraphNode["id"][], origin: GraphFocusLens["origin"]) => {
-      if (graphModel === null) {
-        setActiveSelectionLens(null);
-        return;
-      }
-      const next = buildGraphFocusLens(graphModel, rootIds, origin);
-      setActiveSelectionLens((prev) => (sameLens(prev, next) ? prev : next));
-    },
-    [graphModel],
-  );
-
-  const clearSelection = useCallback(() => {
-    setActiveSelectionLens((prev) => (prev === null ? prev : null));
-  }, []);
-
-  const syncEditorSelection = useCallback(
-    (selection: monaco.Selection | null) => {
-      if (graphModel === null || selection === null) {
-        clearSelection();
-        return;
-      }
-      const roots = resolveFocusRoots(graphModel, selectionToSpan(selection));
-      if (roots.length === 0) {
-        clearSelection();
-        return;
-      }
-      setSelectionFromRoots(
-        roots.map((node) => node.id),
-        "editor",
-      );
-    },
-    [clearSelection, graphModel, setSelectionFromRoots],
-  );
-
-  useEffect(() => {
-    if (graphModel === null) {
-      setActiveSelectionLens(null);
-      return;
-    }
-    setActiveSelectionLens(null);
-  }, [graphModel?.schemaHash]);
-
-  useEffect(() => {
-    if (editor === null || graphModel === null) {
-      setActiveSelectionLens(null);
-      return;
-    }
-    let timer: number | null = null;
-    const schedule = (): void => {
-      if (timer !== null) window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        syncEditorSelection(editor.getSelection());
-      }, 80);
-    };
-    schedule();
-    const disposable = editor.onDidChangeCursorSelection(() => {
-      schedule();
-    });
-    return () => {
-      if (timer !== null) window.clearTimeout(timer);
-      disposable.dispose();
-    };
-  }, [editor, graphModel, syncEditorSelection]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        clearSelection();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [clearSelection]);
 
   const revealNode = useCallback(
     (node: GraphNode): void => {
@@ -133,31 +51,25 @@ export function ObservatoryPane({
     },
     [editor],
   );
-  const handleNodeClick = useCallback(
-    (node: GraphNode): void => {
-      setSelectionFromRoots([node.id], "graph");
-      revealNode(node);
-    },
-    [revealNode, setSelectionFromRoots],
-  );
 
-  const lensActive = activeSelectionLens !== null;
+  const hasGraph =
+    graphModel !== null && graphModel.nodes.length > 0;
+  const isPast = scrub.mode === "past";
 
   return (
     <Panel className="overflow-hidden">
       <PanelHeader
         channel="state"
         right={
-          lensActive ? (
+          isPast ? (
             <Button
-              variant="chip"
+              variant="solid"
               size="xs"
-              onClick={clearSelection}
-              aria-label="Clear focus lens"
+              onClick={returnToNow}
               className="gap-1.5"
             >
-              <Focus className="h-[10px] w-[10px]" />
-              <span>clear lens</span>
+              <Clock className="h-[10px] w-[10px]" />
+              viewing past · return to now
             </Button>
           ) : undefined
         }
@@ -166,26 +78,30 @@ export function ObservatoryPane({
       </PanelHeader>
 
       <PanelBody className="relative">
-        <div ref={hostRef} className="absolute inset-0 overflow-hidden">
-          {ready && graphModel !== null && graphModel.nodes.length > 0 ? (
-            <SchemaGraphView
-              model={graphModel}
-              width={width}
-              height={height}
-              focusLens={activeSelectionLens}
-              onNodeClick={handleNodeClick}
-              onBackgroundClick={clearSelection}
-            />
-          ) : (
-            <EmptyObservatory ready={ready} />
-          )}
-        </div>
+        {hasGraph ? (
+          <LiveGraph
+            model={graphModel}
+            onRevealNode={revealNode}
+            snapshotOverride={
+              scrub.mode === "past" ? scrub.snapshot : undefined
+            }
+            disableDispatch={isPast}
+          />
+        ) : (
+          <EmptyObservatory />
+        )}
+        {isPast && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-[var(--color-violet-hot)] opacity-30"
+          />
+        )}
       </PanelBody>
     </Panel>
   );
 }
 
-function EmptyObservatory({ ready }: { readonly ready: boolean }): JSX.Element {
+function EmptyObservatory(): JSX.Element {
   return (
     <div className="absolute inset-0 flex items-center justify-center">
       <div className="flex flex-col items-center gap-3 text-center max-w-[360px]">
@@ -211,50 +127,18 @@ function EmptyObservatory({ ready }: { readonly ready: boolean }): JSX.Element {
           />
         </div>
         <div className="font-sans font-medium text-[14px] text-[var(--color-ink)]">
-          {ready ? "Awaiting module" : "Calibrating"}
+          Awaiting module
         </div>
         <div className="font-sans text-[12px] leading-relaxed text-[var(--color-ink-mute)] max-w-[280px]">
           Press{" "}
           <span className="font-mono text-[11.5px] text-[var(--color-ink)]">
             ⌘S
           </span>{" "}
-          in the source pane to compile. Nodes will appear as observed
-          signals.
+          in the source pane to compile. Nodes appear as live cards
+          showing state values, computed results, and dispatchable
+          actions.
         </div>
       </div>
     </div>
   );
-}
-
-function selectionToSpan(selection: monaco.Selection): SourceSpan {
-  return {
-    start: { line: selection.startLineNumber, column: selection.startColumn },
-    end: { line: selection.endLineNumber, column: selection.endColumn },
-  };
-}
-
-function sameLens(a: GraphFocusLens | null, b: GraphFocusLens | null): boolean {
-  if (a === null || b === null) return a === b;
-  return a.signature === b.signature;
-}
-
-function useContainerSize(ref: RefObject<HTMLElement | null>): {
-  width: number;
-  height: number;
-} {
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (el === null) return;
-    const update = (): void => {
-      const rect = el.getBoundingClientRect();
-      setSize({ width: rect.width, height: rect.height });
-    };
-    update();
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [ref]);
-  return size;
 }
