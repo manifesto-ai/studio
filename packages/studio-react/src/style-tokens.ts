@@ -1,33 +1,35 @@
 /**
- * Shared inline-style tokens for Phase 1 panels. Not a design system —
- * just enough to keep the webapp cohesive without inventing a styling
- * solution in W2. A real token layer (CSS vars + dark/light switch)
- * lands with P1-OQ-2 resolution.
+ * Shared inline-style tokens for Phase 1 panels.
+ *
+ * Values are CSS variable references so the host app (studio-webapp) can
+ * theme the whole panel family by defining those vars. The fallbacks in
+ * each `var(…, …)` are the original Phase 1 hexes — they apply when
+ * studio-react is consumed outside the webapp (tests, storybook).
  */
 export const COLORS = {
-  bg: "#0B1020",
-  panel: "#0F172A",
-  panelAlt: "#1A2036",
-  surface: "#1E293B",
-  line: "#334155",
-  text: "#E6EBF8",
-  textDim: "#95A3B8",
-  muted: "#607089",
-  accent: "#63B3FC",
-  state: "#7ABBFF",
-  computed: "#C18CFF",
-  action: "#75DBA2",
-  warn: "#FAC263",
-  err: "#FC6A6B",
-  preserved: "#75DBA2",
-  initialized: "#63B3FC",
-  discarded: "#FC6A6B",
+  bg: "var(--color-void, #0B1020)",
+  panel: "var(--color-glass, rgba(255,255,255,0.03))",
+  panelAlt: "var(--color-void-hi, #1A2036)",
+  surface: "var(--color-void-hi, #1E293B)",
+  line: "var(--color-rule, #334155)",
+  text: "var(--color-ink, #E6EBF8)",
+  textDim: "var(--color-ink-dim, #95A3B8)",
+  muted: "var(--color-ink-mute, #607089)",
+  accent: "var(--color-violet-hot, #63B3FC)",
+  state: "var(--color-sig-state, #7ABBFF)",
+  computed: "var(--color-sig-computed, #C18CFF)",
+  action: "var(--color-sig-action, #75DBA2)",
+  warn: "var(--color-warn, #FAC263)",
+  err: "var(--color-err, #FC6A6B)",
+  preserved: "var(--color-sig-action, #75DBA2)",
+  initialized: "var(--color-violet-hot, #63B3FC)",
+  discarded: "var(--color-err, #FC6A6B)",
 } as const;
 
 export const FONT_STACK =
-  '"Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  'var(--font-sans, "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif)';
 export const MONO_STACK =
-  '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", monospace';
+  'var(--font-mono, "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", monospace)';
 
 export const PANEL_HEADER: React.CSSProperties = {
   padding: "10px 14px",

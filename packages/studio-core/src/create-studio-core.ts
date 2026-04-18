@@ -1,5 +1,11 @@
 import type { DomainModule } from "@manifesto-ai/compiler";
-import type { DispatchReport, Intent, Snapshot } from "@manifesto-ai/sdk";
+import type {
+  DispatchBlocker,
+  DispatchReport,
+  Intent,
+  IntentExplanation,
+  Snapshot,
+} from "@manifesto-ai/sdk";
 import type { EditorAdapter, Marker } from "./adapter-interface.js";
 import type { BuildResult } from "./types/build-result.js";
 import type { StudioDispatchResult } from "./types/dispatch-result.js";
@@ -130,6 +136,21 @@ export function createStudioCore(options?: StudioCoreOptions): StudioCore {
     return typedCreate(actionRef, ...args);
   }
 
+  function explainIntent(intent: Intent): IntentExplanation {
+    const runtime = requireRuntime("explainIntent");
+    return runtime.explainIntent(intent as never) as IntentExplanation;
+  }
+
+  function why(intent: Intent): IntentExplanation {
+    const runtime = requireRuntime("why");
+    return runtime.why(intent as never) as IntentExplanation;
+  }
+
+  function whyNot(intent: Intent): readonly DispatchBlocker[] | null {
+    const runtime = requireRuntime("whyNot");
+    return runtime.whyNot(intent as never) as readonly DispatchBlocker[] | null;
+  }
+
   async function dispatchAsync(intent: Intent): Promise<StudioDispatchResult> {
     const runtime = requireRuntime("dispatchAsync");
     const schemaHash = state.currentSchemaHash;
@@ -184,6 +205,9 @@ export function createStudioCore(options?: StudioCoreOptions): StudioCore {
     build,
     getSnapshot,
     createIntent,
+    explainIntent,
+    why,
+    whyNot,
     dispatchAsync,
     simulate,
     getTraceHistory,

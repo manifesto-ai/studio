@@ -1,5 +1,11 @@
 import type { DomainModule } from "@manifesto-ai/compiler";
-import type { EffectHandler, Intent, Snapshot } from "@manifesto-ai/sdk";
+import type {
+  DispatchBlocker,
+  EffectHandler,
+  Intent,
+  IntentExplanation,
+  Snapshot,
+} from "@manifesto-ai/sdk";
 import type { EditorAdapter, Marker } from "../adapter-interface.js";
 import type { BuildResult } from "./build-result.js";
 import type { StudioDispatchResult } from "./dispatch-result.js";
@@ -33,6 +39,9 @@ export type StudioCore = {
   readonly build: () => Promise<BuildResult>;
   readonly getSnapshot: () => Snapshot<unknown> | null;
   readonly createIntent: (action: string, ...args: unknown[]) => Intent;
+  readonly explainIntent: (intent: Intent) => IntentExplanation;
+  readonly why: (intent: Intent) => IntentExplanation;
+  readonly whyNot: (intent: Intent) => readonly DispatchBlocker[] | null;
   readonly dispatchAsync: (intent: Intent) => Promise<StudioDispatchResult>;
   readonly simulate: (intent: Intent) => StudioSimulateResult;
   readonly getTraceHistory: () => readonly TraceRecord[];

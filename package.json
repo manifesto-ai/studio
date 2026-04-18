@@ -13,7 +13,8 @@
     "test": "turbo run test",
     "lint": "turbo run lint",
     "clean": "turbo run clean && rm -rf node_modules",
-    "check:no-widget-deps": "node scripts/check-no-widget-deps.mjs"
+    "check:no-widget-deps": "node scripts/check-no-widget-deps.mjs",
+    "dev:webapp": "turbo run dev --filter=webapp"
   },
   "devDependencies": {
     "@manifesto-ai/skills": "^1.2.0",

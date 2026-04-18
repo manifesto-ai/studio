@@ -13,3 +13,9 @@ export {
   MONACO_SEVERITY,
   type MonacoMarkerData,
 } from "./marker-mapping.js";
+
+export {
+  MEL_LANGUAGE_ID,
+  registerMelLanguage,
+  type MonacoLanguageApiLike,
+} from "./language.js";
