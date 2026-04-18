@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import { App } from "./App.js";
+import "./styles/globals.css";
 
 // Monaco requires a MonacoEnvironment.getWorker hook to spawn its tokenizer
 // worker. MEL uses a local Monarch tokenizer, so the base editor worker is
