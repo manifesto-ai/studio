@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(set -e)",
+      "Bash(chmod +x *)"
+    ]
+  }
+}
