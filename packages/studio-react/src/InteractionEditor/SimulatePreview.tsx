@@ -6,6 +6,11 @@ import type {
   StudioDispatchResult,
   StudioSimulateResult,
 } from "@manifesto-ai/studio-core";
+import {
+  resolveValueAtPath,
+  sortPaths,
+  summarizePreviewValue,
+} from "./snapshot-diff.js";
 
 export type SimulatePreviewProps = {
   readonly beforeSnapshot: Snapshot<unknown> | null;
@@ -70,8 +75,8 @@ export function SimulatePreview({
               <PathRow
                 key={path}
                 path={path}
-                before={resolvePath(insight.beforeRoot, path)}
-                after={resolvePath(insight.afterRoot, path)}
+                before={resolveValueAtPath(insight.beforeRoot, path)}
+                after={resolveValueAtPath(insight.afterRoot, path)}
               />
             ))}
           </ul>
@@ -113,7 +118,7 @@ export function SimulatePreview({
               <li key={r.id} style={reqRowStyle}>
                 <code style={reqTypeStyle}>{r.type}</code>
                 <code style={reqParamsStyle}>
-                  {truncate(JSON.stringify(r.params) ?? "undefined")}
+                  {summarizePreviewValue(r.params, 80)}
                 </code>
               </li>
             ))}
@@ -328,75 +333,12 @@ function Pill({
   );
 }
 
-function resolvePath(root: unknown, path: string): unknown {
-  if (root === null || root === undefined) return undefined;
-  const segments = tokenizePath(path);
-  let current: unknown = root;
-  for (const seg of segments) {
-    if (current === null || current === undefined) return undefined;
-    if (Array.isArray(current)) {
-      const index = Number(seg);
-      if (!Number.isInteger(index)) return undefined;
-      current = current[index];
-      continue;
-    }
-    if (typeof current !== "object") return undefined;
-    current = (current as Record<string, unknown>)[seg];
-  }
-  return current;
-}
-
-function tokenizePath(path: string): readonly string[] {
-  return path
-    .replace(/\[([^\]]+)\]/g, (_, raw: string) => {
-      const next = raw.replace(/^["']|["']$/g, "");
-      return `.${next}`;
-    })
-    .split(".")
-    .map((segment) => segment.trim())
-    .filter((segment) => segment !== "" && segment !== "$");
-}
-
-function sortPaths(paths: readonly string[]): readonly string[] {
-  return [...paths].sort((left, right) => {
-    const leftRank = namespaceRank(left);
-    const rightRank = namespaceRank(right);
-    if (leftRank !== rightRank) return leftRank - rightRank;
-    return left.localeCompare(right);
-  });
-}
-
-function namespaceRank(path: string): number {
-  const head = tokenizePath(path)[0] ?? "";
-  switch (head) {
-    case "data":
-      return 0;
-    case "computed":
-      return 1;
-    case "system":
-      return 2;
-    default:
-      return 3;
-  }
-}
-
 function flagLabel(value: boolean): string {
   return value ? "yes" : "no";
 }
 
 function formatValue(v: unknown): string {
-  if (v === undefined) return "undefined";
-  if (v === null) return "null";
-  try {
-    const s = JSON.stringify(v);
-    return truncate(s);
-  } catch {
-    return "(value)";
-  }
-}
-
-function truncate(s: string, max = 80): string {
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+  return summarizePreviewValue(v, 80);
 }
 
 function statusTone(status: string): InsightTone {

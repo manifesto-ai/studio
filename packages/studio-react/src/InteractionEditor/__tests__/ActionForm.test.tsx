@@ -148,6 +148,69 @@ describe("ActionForm — object", () => {
     expect(onChange).toHaveBeenLastCalledWith({ title: "buy milk", done: false });
     cleanup();
   });
+
+  it("hides optional fields until the user activates them", () => {
+    const { container, root, cleanup } = mount();
+    const onChange = vi.fn();
+    const desc: FormDescriptor = {
+      kind: "object",
+      required: true,
+      fields: [
+        { name: "title", descriptor: { kind: "string", required: true } },
+        { name: "done", descriptor: { kind: "boolean", required: false } },
+      ],
+    };
+    act(() => {
+      root.render(
+        <ActionForm
+          descriptor={desc}
+          value={{ title: "" }}
+          onChange={onChange}
+          label="todo"
+        />,
+      );
+    });
+    expect(container.querySelector("input[type=checkbox]")).toBeNull();
+    const addBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("+ done"),
+    ) as HTMLButtonElement;
+    act(() => {
+      addBtn.click();
+    });
+    expect(onChange).toHaveBeenLastCalledWith({ title: "", done: false });
+    cleanup();
+  });
+
+  it("removes optional fields from the payload when dismissed", () => {
+    const { container, root, cleanup } = mount();
+    const onChange = vi.fn();
+    const desc: FormDescriptor = {
+      kind: "object",
+      required: true,
+      fields: [
+        { name: "title", descriptor: { kind: "string", required: true } },
+        { name: "done", descriptor: { kind: "boolean", required: false } },
+      ],
+    };
+    act(() => {
+      root.render(
+        <ActionForm
+          descriptor={desc}
+          value={{ title: "", done: false }}
+          onChange={onChange}
+          label="todo"
+        />,
+      );
+    });
+    const removeBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("remove"),
+    ) as HTMLButtonElement;
+    act(() => {
+      removeBtn.click();
+    });
+    expect(onChange).toHaveBeenLastCalledWith({ title: "" });
+    cleanup();
+  });
 });
 
 describe("ActionForm — array", () => {
@@ -224,7 +287,36 @@ describe("ActionForm — json fallback", () => {
       fireInput(textarea, "{invalid");
     });
     // Invalid → don't clobber value; show error text.
-    expect(container.textContent ?? "").toMatch(/Expected|Unexpected|JSON/i);
+    expect(container.textContent ?? "").toMatch(/Expected|Unexpected/i);
+    cleanup();
+  });
+
+  it("re-synchronizes the draft when the committed value changes externally", () => {
+    const { container, root, cleanup } = mount();
+    const onChange = vi.fn();
+    const desc: FormDescriptor = {
+      kind: "json",
+      required: true,
+      reason: "union test",
+    };
+    act(() => {
+      root.render(
+        <ActionForm descriptor={desc} value={{ a: 1 }} onChange={onChange} label="raw" />,
+      );
+    });
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    act(() => {
+      fireInput(textarea, "{invalid");
+    });
+    expect(container.textContent ?? "").toMatch(/Expected|Unexpected/i);
+    act(() => {
+      root.render(
+        <ActionForm descriptor={desc} value={{ b: 2 }} onChange={onChange} label="raw" />,
+      );
+    });
+    const nextTextarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    expect(nextTextarea.value).toMatch(/"b": 2/);
+    expect(container.textContent ?? "").not.toMatch(/Expected|Unexpected/i);
     cleanup();
   });
 });

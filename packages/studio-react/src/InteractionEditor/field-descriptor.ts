@@ -320,6 +320,33 @@ export function defaultValueFor(descriptor: FormDescriptor): unknown {
   }
 }
 
+export function createInitialFormValue(
+  descriptor: FormDescriptor,
+  options: { readonly sparseOptional?: boolean } = {},
+): unknown {
+  const { sparseOptional = true } = options;
+  if (descriptor.defaultValue !== undefined) return descriptor.defaultValue;
+  switch (descriptor.kind) {
+    case "string":
+    case "number":
+    case "boolean":
+    case "null":
+    case "enum":
+    case "array":
+    case "record":
+    case "json":
+      return defaultValueFor(descriptor);
+    case "object": {
+      const obj: Record<string, unknown> = {};
+      for (const field of descriptor.fields) {
+        if (sparseOptional && !field.descriptor.required) continue;
+        obj[field.name] = createInitialFormValue(field.descriptor, options);
+      }
+      return obj;
+    }
+  }
+}
+
 function primitiveKindOf(type: string): PrimitiveKind | null {
   switch (type) {
     case "string":
