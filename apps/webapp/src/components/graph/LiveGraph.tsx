@@ -412,6 +412,7 @@ export function LiveGraph({
 
           if (node.kind === "state") {
             const typeLabel = typeOfStateField(module, node.name);
+            const typeDef = typeDefOfStateField(module, node.name);
             const value = (
               effectiveSnapshot?.data as Record<string, unknown> | undefined
             )?.[node.name];
@@ -426,6 +427,7 @@ export function LiveGraph({
                   id={node.id}
                   name={node.name}
                   typeLabel={typeLabel}
+                  typeDef={typeDef}
                   value={value}
                   rect={rect}
                   highlighted={highlighted}
@@ -437,6 +439,7 @@ export function LiveGraph({
           }
           if (node.kind === "computed") {
             const typeLabel = typeOfComputed(module, node.name);
+            const typeDef = typeDefOfComputed(module, node.name);
             const value = effectiveSnapshot?.computed?.[node.name];
             return (
               <InteractiveCard
@@ -449,6 +452,7 @@ export function LiveGraph({
                   id={node.id}
                   name={node.name}
                   typeLabel={typeLabel}
+                  typeDef={typeDef}
                   value={value}
                   rect={rect}
                   highlighted={highlighted}
@@ -592,14 +596,18 @@ function typeOfStateField(
   name: string,
 ): string {
   if (module === null) return "";
-  const field = module.schema.state?.fields?.[name];
+  // Prefer the TypeDefinition (newer IR) so unions and arrays render
+  // with proper wrapping.
+  const def = typeDefOfStateField(module, name);
+  if (def !== undefined) {
+    const label = formatType(def);
+    if (label !== "") return label;
+  }
+  const field = module.schema.state?.fields?.[name] as
+    | { readonly type?: unknown }
+    | undefined;
   if (field === undefined) return "";
-  if ((field as { typeDef?: unknown }).typeDef !== undefined) {
-    return formatType((field as { typeDef: unknown }).typeDef);
-  }
-  if (typeof (field as { type?: unknown }).type === "string") {
-    return (field as { type: string }).type;
-  }
+  if (typeof field.type === "string") return field.type;
   return "";
 }
 
@@ -614,6 +622,63 @@ function typeOfComputed(
     return formatType((spec as { returnType: unknown }).returnType);
   }
   return "derived";
+}
+
+function typeDefOfStateField(
+  module: ReturnType<typeof useStudio>["module"],
+  name: string,
+): unknown {
+  if (module === null) return undefined;
+  const state = module.schema.state as
+    | {
+        readonly fieldTypes?: Record<string, unknown>;
+        readonly fields?: Record<string, unknown>;
+      }
+    | undefined;
+  // Newer IR carries a fieldTypes map with TypeDefinition nodes.
+  const fromNewIR = state?.fieldTypes?.[name];
+  if (fromNewIR !== undefined) return fromNewIR;
+  // Older FieldSpec shape: { type: "string" | { enum: [...] }, ... }.
+  // Adapt enum-style types back to TypeDefinition so ValueView's
+  // enum extraction has a single code path.
+  const field = state?.fields?.[name] as
+    | { readonly type?: unknown; readonly typeDef?: unknown }
+    | undefined;
+  if (field === undefined) return undefined;
+  if (field.typeDef !== undefined) return field.typeDef;
+  const t = field.type;
+  if (
+    t !== null &&
+    typeof t === "object" &&
+    Array.isArray((t as { enum?: unknown[] }).enum)
+  ) {
+    const options = (t as { enum: unknown[] }).enum;
+    return {
+      kind: "union",
+      types: options.map((v) => ({ kind: "literal", value: v })),
+    };
+  }
+  return undefined;
+}
+
+function typeDefOfComputed(
+  module: ReturnType<typeof useStudio>["module"],
+  name: string,
+): unknown {
+  if (module === null) return undefined;
+  // Computed can be either the raw record OR a { fields: {...} } wrapper
+  // depending on IR generation; probe both.
+  const computed = module.schema.computed as
+    | Record<string, unknown>
+    | { readonly fields?: Record<string, unknown> }
+    | undefined;
+  const spec =
+    (computed as Record<string, unknown>)?.[name] ??
+    (computed as { fields?: Record<string, unknown> })?.fields?.[name];
+  if (spec === undefined || spec === null || typeof spec !== "object")
+    return undefined;
+  const s = spec as { readonly returnType?: unknown; readonly type?: unknown };
+  return s.returnType ?? s.type;
 }
 
 function describeActionArg(

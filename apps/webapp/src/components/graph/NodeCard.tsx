@@ -2,6 +2,7 @@ import { motion } from "motion/react";
 import { Zap } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { formatType, formatValue } from "./formatValue";
+import { ValueView } from "./ValueView";
 import type { Rect } from "./layout";
 
 /**
@@ -162,6 +163,7 @@ export function StateCard(props: {
   readonly id: string;
   readonly name: string;
   readonly typeLabel: string;
+  readonly typeDef?: unknown;
   readonly value: unknown;
   readonly rect: Rect;
   readonly highlighted: boolean;
@@ -182,19 +184,14 @@ export function StateCard(props: {
       onDoubleClick={props.onDoubleClick}
     >
       <CardHeader name={props.name} tone="state" />
-      <div className="flex flex-col justify-between flex-1 min-h-0 px-3 pb-2">
+      <div className="flex flex-col justify-between flex-1 min-h-0 px-3 pb-2 gap-1">
         <div
           className="font-mono text-[10px] text-[var(--color-ink-mute)] truncate"
           title={props.typeLabel}
         >
           {props.typeLabel || "—"}
         </div>
-        <div
-          className="font-mono text-[11.5px] text-[var(--color-sig-state)] truncate"
-          title={typeof props.value === "string" ? props.value : undefined}
-        >
-          {formatValue(props.value)}
-        </div>
+        <ValueView tone="state" value={props.value} typeDef={props.typeDef} />
       </div>
     </CardShell>
   );
@@ -208,6 +205,7 @@ export function ComputedCard(props: {
   readonly id: string;
   readonly name: string;
   readonly typeLabel: string;
+  readonly typeDef?: unknown;
   readonly value: unknown;
   readonly rect: Rect;
   readonly highlighted: boolean;
@@ -228,13 +226,15 @@ export function ComputedCard(props: {
       onDoubleClick={props.onDoubleClick}
     >
       <CardHeader name={props.name} tone="computed" />
-      <div className="flex flex-col justify-between flex-1 min-h-0 px-3 pb-2">
+      <div className="flex flex-col justify-between flex-1 min-h-0 px-3 pb-2 gap-1">
         <div className="font-mono text-[10px] text-[var(--color-ink-mute)] truncate">
           {props.typeLabel || "derived"}
         </div>
-        <div className="font-mono text-[11.5px] text-[var(--color-sig-computed)] truncate">
-          = {formatValue(props.value)}
-        </div>
+        <ValueView
+          tone="computed"
+          value={props.value}
+          typeDef={props.typeDef}
+        />
       </div>
     </CardShell>
   );
