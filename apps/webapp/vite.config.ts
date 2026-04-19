@@ -8,6 +8,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
+      "@manifesto-ai/studio-react": fileURLToPath(
+        new URL("../../packages/studio-react/src/index.ts", import.meta.url),
+      ),
     },
   },
   build: {

@@ -161,6 +161,18 @@ describe("InteractionEditor — todo.mel end-to-end", () => {
     expect(text).toMatch(/simulate preview/i);
     expect(text).toMatch(/data\.todos\[0\]/i);
     expect(text).toMatch(/computed\.todoCount/i);
+    expect(text).toMatch(/Execution Trace/i);
+    const traceSummary = container.querySelector(
+      '[data-testid="simulation-trace-summary"]',
+    ) as HTMLElement;
+    expect(traceSummary).not.toBeNull();
+    await act(async () => {
+      traceSummary.click();
+    });
+    const traceRoot = container.querySelector(
+      '[data-testid="simulation-trace-root-node"]',
+    ) as HTMLElement;
+    expect(traceRoot?.textContent ?? "").toMatch(/actions\.addTodo\.flow/i);
     cleanup();
   });
 

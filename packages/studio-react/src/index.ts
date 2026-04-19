@@ -83,6 +83,10 @@ export {
   type SimulatePreviewProps,
 } from "./InteractionEditor/SimulatePreview.js";
 export {
+  SimulationTraceView,
+  type SimulationTraceViewProps,
+} from "./InteractionEditor/SimulationTraceView.js";
+export {
   collectSimulationDiffs,
   diffSnapshots,
   extractSimulationSnapshot,

@@ -151,6 +151,34 @@ describe("ActionDispatchPopover", () => {
     cleanup();
   });
 
+  it("renders compact execution trace details after simulate", async () => {
+    const { cleanup } = await mountPopover();
+    const input = document.body.querySelector("input[type=text]") as HTMLInputElement;
+    expect(input).not.toBeNull();
+    await act(async () => {
+      fireInput(input, "buy milk");
+    });
+    const simulateBtn = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim().startsWith("Simulate"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      simulateBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    const traceSummary = document.body.querySelector(
+      '[data-testid="simulation-trace-summary"]',
+    ) as HTMLElement;
+    expect(traceSummary?.textContent ?? "").toMatch(/Execution Trace/i);
+    await act(async () => {
+      traceSummary.click();
+    });
+    const traceRoot = document.body.querySelector(
+      '[data-testid="simulation-trace-root-node"]',
+    ) as HTMLElement;
+    expect(traceRoot?.textContent ?? "").toMatch(/actions\.addTodo\.flow/i);
+    cleanup();
+  });
+
   it("does not break hooks when the anchor disappears", async () => {
     const { root, core, adapter, cleanup } = await mountPopover();
     let error: unknown = null;

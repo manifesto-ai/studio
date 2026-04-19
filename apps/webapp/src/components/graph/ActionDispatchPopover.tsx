@@ -8,6 +8,7 @@ import {
   createIntentArgsForValue,
   createInitialFormValue,
   descriptorForAction,
+  SimulationTraceView,
   summarizePreviewValue,
   useStudio,
   type FormDescriptor,
@@ -298,46 +299,53 @@ function CompactSimulatePreview({
     [currentSnapshot, result],
   );
 
-  if (diffs.length === 0) {
-    return (
-      <div className="flex items-center gap-1.5 rounded-md border border-[var(--color-glass-edge)] bg-[var(--color-glass)] px-2 py-1.5">
-        <Sparkles className="h-3 w-3 text-[var(--color-ink-mute)]" />
-        <span className="font-sans text-[10.5px] text-[var(--color-ink-mute)]">
-          no observable change
-        </span>
-      </div>
-    );
-  }
-
   return (
     <div className="rounded-md border border-[var(--color-glass-edge)] bg-[var(--color-glass)] p-2 flex flex-col gap-0.5">
-      <div className="flex items-center gap-1.5 mb-0.5">
-        <Sparkles className="h-3 w-3 text-[var(--color-violet-hot)]" />
-        <span className="font-sans text-[9.5px] font-medium uppercase tracking-[0.06em] text-[var(--color-ink-mute)]">
-          will change {diffs.length}
-        </span>
-      </div>
-      {diffs.slice(0, 4).map((diff) => (
-        <div
-          key={diff.path}
-          className="flex items-center gap-1.5 font-mono text-[10.5px] min-w-0"
-        >
-          <span className="text-[var(--color-ink-dim)] truncate">
-            {diff.path}
-          </span>
-          <span className="text-[var(--color-ink-mute)]">
-            {summarizePreviewValue(diff.before, 16)}
-          </span>
-          <span className="text-[var(--color-ink-mute)]">→</span>
-          <span className="text-[var(--color-violet-hot)] truncate">
-            {summarizePreviewValue(diff.after, 16)}
+      {diffs.length === 0 ? (
+        <div className="flex items-center gap-1.5">
+          <Sparkles className="h-3 w-3 text-[var(--color-ink-mute)]" />
+          <span className="font-sans text-[10.5px] text-[var(--color-ink-mute)]">
+            no observable change
           </span>
         </div>
-      ))}
-      {diffs.length > 4 ? (
-        <span className="font-mono text-[10px] text-[var(--color-ink-mute)]">
-          +{diffs.length - 4} more
-        </span>
+      ) : null}
+      {diffs.length > 0 ? (
+        <>
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <Sparkles className="h-3 w-3 text-[var(--color-violet-hot)]" />
+            <span className="font-sans text-[9.5px] font-medium uppercase tracking-[0.06em] text-[var(--color-ink-mute)]">
+              will change {diffs.length}
+            </span>
+          </div>
+          {diffs.slice(0, 4).map((diff) => (
+            <div
+              key={diff.path}
+              className="flex items-center gap-1.5 font-mono text-[10.5px] min-w-0"
+            >
+              <span className="text-[var(--color-ink-dim)] truncate">
+                {diff.path}
+              </span>
+              <span className="text-[var(--color-ink-mute)]">
+                {summarizePreviewValue(diff.before, 16)}
+              </span>
+              <span className="text-[var(--color-ink-mute)]">→</span>
+              <span className="text-[var(--color-violet-hot)] truncate">
+                {summarizePreviewValue(diff.after, 16)}
+              </span>
+            </div>
+          ))}
+          {diffs.length > 4 ? (
+            <span className="font-mono text-[10px] text-[var(--color-ink-mute)]">
+              +{diffs.length - 4} more
+            </span>
+          ) : null}
+        </>
+      ) : null}
+      {result.diagnostics?.trace !== undefined ? (
+        <SimulationTraceView
+          trace={result.diagnostics.trace}
+          density="compact"
+        />
       ) : null}
     </div>
   );

@@ -11,6 +11,7 @@ import {
   sortPaths,
   summarizePreviewValue,
 } from "./snapshot-diff.js";
+import { SimulationTraceView } from "./SimulationTraceView.js";
 
 export type SimulatePreviewProps = {
   readonly beforeSnapshot: Snapshot<unknown> | null;
@@ -129,6 +130,10 @@ export function SimulatePreview({
       <Section title="Outcome">
         <div style={outcomeStyle}>{insight.outcomeSummary}</div>
       </Section>
+
+      {result?.diagnostics?.trace !== undefined ? (
+        <SimulationTraceView trace={result.diagnostics.trace} />
+      ) : null}
     </div>
   );
 }
