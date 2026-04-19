@@ -132,7 +132,10 @@ export function SimulatePreview({
       </Section>
 
       {result?.diagnostics?.trace !== undefined ? (
-        <SimulationTraceView trace={result.diagnostics.trace} />
+        <SimulationTraceView
+          trace={result.diagnostics.trace}
+          playbackSource="interaction-editor"
+        />
       ) : null}
     </div>
   );

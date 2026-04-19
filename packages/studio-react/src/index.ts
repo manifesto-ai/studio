@@ -3,6 +3,10 @@ export {
   StudioContext,
   type StudioProviderProps,
   type StudioContextValue,
+  type SimulationPlayback,
+  type SimulationPlaybackEvent,
+  type SimulationPlaybackMode,
+  type SimulationPlaybackSource,
 } from "./StudioProvider.js";
 
 export {

@@ -22,6 +22,10 @@ import { ActionDispatchPopover } from "./ActionDispatchPopover";
 import { formatType } from "./formatValue";
 import { computeLayout, type LayoutResult, type Rect } from "./layout";
 import { useLivePulse } from "./useLivePulse";
+import {
+  computePlaybackScrollTarget,
+  useSimulationPlayback,
+} from "./useSimulationPlayback";
 import { GraphSearch } from "./GraphSearch";
 
 /**
@@ -52,10 +56,17 @@ export function LiveGraph({
     | undefined;
   readonly disableDispatch?: boolean;
 }): JSX.Element {
-  const { module, snapshot: liveSnapshot, whyNot, createIntent } = useStudio();
+  const {
+    module,
+    snapshot: liveSnapshot,
+    whyNot,
+    createIntent,
+    simulationPlayback,
+  } = useStudio();
   const effectiveSnapshot = snapshotOverride ?? liveSnapshot ?? null;
 
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const lastScrolledPlaybackGenerationRef = useRef<number>(0);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
 
   useLayoutEffect(() => {
@@ -214,18 +225,70 @@ export function LiveGraph({
   );
 
   // --- Propagation pulse ----------------------------------------------
-  const pulse = useLivePulse(model);
-  const pulsingEdgeIds = useMemo(() => {
-    if (pulse.touched.size === 0) return new Set<string>();
+  const livePulse = useLivePulse(model);
+  const simulatePulse = useSimulationPlayback(model, simulationPlayback, {
+    disabled: disableDispatch,
+  });
+  const livePulsingEdgeIds = useMemo(() => {
+    if (livePulse.touched.size === 0) return new Set<string>();
     const ids = new Set<string>();
     for (const edge of model.edges) {
-      if (pulse.touched.has(edge.source) && pulse.touched.has(edge.target)) {
+      if (
+        livePulse.touched.has(edge.source) &&
+        livePulse.touched.has(edge.target)
+      ) {
         ids.add(edge.id);
       }
     }
     return ids;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pulse.generation, pulse.touched, model.edges]);
+  }, [livePulse.generation, livePulse.touched, model.edges]);
+  const pulsingEdgeIds = useMemo(() => {
+    if (
+      livePulsingEdgeIds.size === 0 &&
+      simulatePulse.activeEdges.size === 0
+    ) {
+      return new Set<string>();
+    }
+    const ids = new Set<string>(livePulsingEdgeIds);
+    for (const edgeId of simulatePulse.activeEdges) {
+      ids.add(edgeId);
+    }
+    return ids;
+  }, [livePulsingEdgeIds, simulatePulse.activeEdges]);
+
+  useEffect(() => {
+    if (disableDispatch) return;
+    if (simulatePulse.generation === 0 || simulatePulse.originAction === null) {
+      return;
+    }
+    if (lastScrolledPlaybackGenerationRef.current === simulatePulse.generation) {
+      return;
+    }
+    const host = hostRef.current;
+    const originRect = layout.bounds.get(simulatePulse.originAction);
+    if (host === null || originRect === undefined) return;
+    const target = computePlaybackScrollTarget(originRect, {
+      left: host.scrollLeft,
+      top: host.scrollTop,
+      width: host.clientWidth,
+      height: host.clientHeight,
+      scrollWidth: host.scrollWidth,
+      scrollHeight: host.scrollHeight,
+    });
+    if (target === null) return;
+    lastScrolledPlaybackGenerationRef.current = simulatePulse.generation;
+    host.scrollTo({
+      left: target.left,
+      top: target.top,
+      behavior: "smooth",
+    });
+  }, [
+    disableDispatch,
+    layout.bounds,
+    simulatePulse.generation,
+    simulatePulse.originAction,
+  ]);
 
   // --- Action dispatch popover ----------------------------------------
   const [popoverAction, setPopoverAction] = useState<{
@@ -406,7 +469,9 @@ export function LiveGraph({
           const searchOk =
             matchedNodeIds === null || matchedNodeIds.has(node.id);
           const highlighted = focusOk && searchOk;
-          const pulsing = pulse.touched.has(node.id);
+          const pulsing =
+            livePulse.touched.has(node.id) ||
+            simulatePulse.activeNodes.has(node.id);
           const commonHandlers = {
             onPointerDown: (e: React.PointerEvent<HTMLElement>) =>
               onNodePointerDown(node, e),

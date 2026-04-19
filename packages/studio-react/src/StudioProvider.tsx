@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -17,6 +18,30 @@ import type {
   StudioDispatchResult,
   StudioSimulateResult,
 } from "@manifesto-ai/studio-core";
+
+export type SimulationPlaybackSource =
+  | "interaction-editor"
+  | "graph-popover";
+
+export type SimulationPlaybackMode = "sequence" | "step";
+
+type SimulationTrace = NonNullable<
+  NonNullable<StudioSimulateResult["diagnostics"]>["trace"]
+>;
+
+export type SimulationPlaybackEvent = {
+  readonly actionName: string;
+  readonly trace: SimulationTrace;
+  readonly source: SimulationPlaybackSource;
+  readonly mode?: SimulationPlaybackMode;
+  readonly traceNodeId?: string | null;
+};
+
+export type SimulationPlayback = SimulationPlaybackEvent & {
+  readonly generation: number;
+  readonly mode: SimulationPlaybackMode;
+  readonly traceNodeId: string | null;
+};
 
 export type StudioContextValue = {
   readonly core: StudioCore;
@@ -42,6 +67,8 @@ export type StudioContextValue = {
   readonly createIntent: (action: string, ...args: unknown[]) => Intent;
   readonly setSource: (source: string) => void;
   readonly requestBuild: () => void;
+  readonly simulationPlayback: SimulationPlayback | null;
+  readonly publishSimulationPlayback: (event: SimulationPlaybackEvent) => void;
 };
 
 export const StudioContext = createContext<StudioContextValue | null>(null);
@@ -77,6 +104,9 @@ export function StudioProvider({
 }: StudioProviderProps): JSX.Element {
   const [version, setVersion] = useState(0);
   const [history, setHistory] = useState<readonly EditIntentEnvelope[]>([]);
+  const [simulationPlayback, setSimulationPlayback] =
+    useState<SimulationPlayback | null>(null);
+  const simulationPlaybackGenerationRef = useRef(0);
 
   // One-time attach. Re-attaching on adapter identity change is a caller
   // decision: if they swap adapters they must remount the provider.
@@ -164,6 +194,18 @@ export function StudioProvider({
     if (adapter === null) return;
     adapter.requestBuild();
   }, [adapter]);
+  const publishSimulationPlayback = useCallback(
+    (event: SimulationPlaybackEvent): void => {
+      simulationPlaybackGenerationRef.current += 1;
+      setSimulationPlayback({
+        ...event,
+        generation: simulationPlaybackGenerationRef.current,
+        mode: event.mode ?? "sequence",
+        traceNodeId: event.traceNodeId ?? null,
+      });
+    },
+    [],
+  );
 
   const value = useMemo<StudioContextValue>(
     () => ({
@@ -180,6 +222,8 @@ export function StudioProvider({
       createIntent,
       setSource,
       requestBuild,
+      simulationPlayback,
+      publishSimulationPlayback,
     }),
     [
       core,
@@ -195,6 +239,8 @@ export function StudioProvider({
       createIntent,
       setSource,
       requestBuild,
+      simulationPlayback,
+      publishSimulationPlayback,
     ],
   );
 

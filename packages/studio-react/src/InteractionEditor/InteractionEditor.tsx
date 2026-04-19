@@ -44,6 +44,7 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
     simulate,
     dispatch,
     createIntent,
+    publishSimulationPlayback,
   } = useStudio();
 
   const actionNames = useMemo(() => {
@@ -178,6 +179,13 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
         return;
       }
       const result = simulate(intent);
+      if (result.diagnostics?.trace !== undefined) {
+        publishSimulationPlayback({
+          actionName: intent.type,
+          trace: result.diagnostics.trace,
+          source: "interaction-editor",
+        });
+      }
       updateActiveSession((prev) => ({
         ...prev,
         runtimeError: null,
@@ -194,7 +202,13 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
     } finally {
       setPending(null);
     }
-  }, [buildIntent, explainIntent, simulate, updateActiveSession]);
+  }, [
+    buildIntent,
+    explainIntent,
+    publishSimulationPlayback,
+    simulate,
+    updateActiveSession,
+  ]);
 
   const onDispatch = useCallback(async () => {
     const intent = buildIntent();

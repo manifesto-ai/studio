@@ -1,6 +1,13 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useMemo,
+  useState,
+  type CSSProperties,
+} from "react";
 import type { StudioSimulateResult } from "@manifesto-ai/studio-core";
+import type { SimulationPlaybackSource } from "../StudioProvider.js";
 import { COLORS, FONT_STACK, MONO_STACK } from "../style-tokens.js";
+import { useStudio } from "../useStudio.js";
 import { summarizePreviewValue } from "./snapshot-diff.js";
 
 type SimulationTrace = NonNullable<
@@ -12,6 +19,7 @@ export type SimulationTraceViewProps = {
   readonly trace: SimulationTrace;
   readonly density?: "regular" | "compact";
   readonly defaultOpen?: boolean;
+  readonly playbackSource?: SimulationPlaybackSource | null;
 };
 
 const SUMMARY_INPUT_KEYS = ["op", "path", "type", "reason", "flow", "target"] as const;
@@ -20,10 +28,35 @@ export function SimulationTraceView({
   trace,
   density = "regular",
   defaultOpen = false,
+  playbackSource = null,
 }: SimulationTraceViewProps): JSX.Element {
+  const { publishSimulationPlayback } = useStudio();
   const [open, setOpen] = useState(defaultOpen);
   const nodeCount = useMemo(() => countTraceNodes(trace), [trace]);
   const compact = density === "compact";
+  const replayEnabled = playbackSource !== null;
+  const replayAll = useCallback(() => {
+    if (playbackSource === null) return;
+    publishSimulationPlayback({
+      actionName: trace.intent.type,
+      trace,
+      source: playbackSource,
+      mode: "sequence",
+    });
+  }, [playbackSource, publishSimulationPlayback, trace]);
+  const replayNode = useCallback(
+    (node: SimulationTraceNode) => {
+      if (playbackSource === null) return;
+      publishSimulationPlayback({
+        actionName: trace.intent.type,
+        trace,
+        source: playbackSource,
+        mode: "step",
+        traceNodeId: node.id,
+      });
+    },
+    [playbackSource, publishSimulationPlayback, trace],
+  );
 
   return (
     <details
@@ -39,7 +72,23 @@ export function SimulationTraceView({
           setOpen((current) => !current);
         }}
       >
-        <span style={summaryTitleStyle(compact)}>Execution Trace</span>
+        <span style={summaryHeaderStyle()}>
+          <span style={summaryTitleStyle(compact)}>Execution Trace</span>
+          {replayEnabled ? (
+            <button
+              type="button"
+              style={replayButtonStyle(compact)}
+              data-testid="simulation-trace-replay-all"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                replayAll();
+              }}
+            >
+              Replay
+            </button>
+          ) : null}
+        </span>
         <span style={summaryMetaStyle(compact)}>
           {trace.terminatedBy}
           {" · "}
@@ -54,6 +103,8 @@ export function SimulationTraceView({
             node={trace.root}
             depth={0}
             density={density}
+            replayEnabled={replayEnabled}
+            onReplayNode={replayNode}
             isRoot
           />
         </div>
@@ -66,11 +117,15 @@ function TraceTreeNode({
   node,
   depth,
   density,
+  replayEnabled,
+  onReplayNode,
   isRoot = false,
 }: {
   readonly node: SimulationTraceNode;
   readonly depth: number;
   readonly density: "regular" | "compact";
+  readonly replayEnabled: boolean;
+  readonly onReplayNode: (node: SimulationTraceNode) => void;
   readonly isRoot?: boolean;
 }): JSX.Element {
   const compact = density === "compact";
@@ -79,12 +134,23 @@ function TraceTreeNode({
   const outputSummary = hasOutput
     ? summarizePreviewValue(node.output, compact ? 42 : 72)
     : null;
+  const replayable = replayEnabled && isReplayableTraceNode(node);
 
   return (
     <div style={treeNodeStyle(depth, compact)} data-testid={isRoot ? "simulation-trace-root-node" : undefined}>
       <div style={rowStyle(compact)}>
         <span style={kindStyle(node.kind, compact)}>{node.kind}</span>
         <code style={pathStyle(compact)}>{node.sourcePath}</code>
+        {replayable ? (
+          <button
+            type="button"
+            style={replayButtonStyle(compact)}
+            data-testid={`simulation-trace-replay-${node.id}`}
+            onClick={() => onReplayNode(node)}
+          >
+            Play
+          </button>
+        ) : null}
       </div>
       {inputSummary !== null ? (
         <div style={metaLineStyle(compact)}>
@@ -106,6 +172,8 @@ function TraceTreeNode({
               node={child}
               depth={depth + 1}
               density={density}
+              replayEnabled={replayEnabled}
+              onReplayNode={onReplayNode}
             />
           ))}
         </div>
@@ -131,6 +199,18 @@ function summarizeInputs(inputs: SimulationTraceNode["inputs"]): string | null {
     return [`${key}=${summarizePreviewValue(value, 28)}`];
   });
   return entries.length > 0 ? entries.join(" ") : null;
+}
+
+function isReplayableTraceNode(node: SimulationTraceNode): boolean {
+  if (node.sourcePath.startsWith("actions.")) return true;
+  if (node.sourcePath.startsWith("computed.")) return true;
+  if (node.kind !== "patch") return false;
+  const patchPath = node.inputs.path;
+  return (
+    typeof patchPath === "string" &&
+    patchPath.length > 0 &&
+    !patchPath.startsWith("$")
+  );
 }
 
 function kindColor(kind: SimulationTraceNode["kind"]): string {
@@ -175,6 +255,14 @@ function summaryStyle(compact: boolean): CSSProperties {
   };
 }
 
+function summaryHeaderStyle(): CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  };
+}
+
 function summaryTitleStyle(compact: boolean): CSSProperties {
   return {
     fontSize: compact ? 10 : 11,
@@ -203,6 +291,24 @@ function bodyStyle(compact: boolean): CSSProperties {
     padding: compact ? "8px 9px" : "10px",
     maxHeight: compact ? 180 : 260,
     overflow: "auto",
+  };
+}
+
+function replayButtonStyle(compact: boolean): CSSProperties {
+  return {
+    marginLeft: "auto",
+    borderRadius: 999,
+    border: `1px solid ${COLORS.line}`,
+    background: COLORS.panel,
+    color: COLORS.textDim,
+    fontFamily: FONT_STACK,
+    fontSize: compact ? 9.5 : 10,
+    fontWeight: 700,
+    lineHeight: 1,
+    padding: compact ? "4px 7px" : "5px 8px",
+    cursor: "pointer",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   };
 }
 

@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { createStudioCore } from "@manifesto-ai/studio-core";
 import { createHeadlessAdapter } from "@manifesto-ai/studio-adapter-headless";
 import { StudioProvider } from "../../StudioProvider.js";
+import { useStudio } from "../../useStudio.js";
 import { InteractionEditor } from "../InteractionEditor.js";
 import { buildGraphModel } from "../../SchemaGraphView/graph-model.js";
 
@@ -55,6 +56,7 @@ async function mountBattleship() {
     root.render(
       <StudioProvider core={core} adapter={adapter} historyPollMs={0}>
         <InteractionEditor />
+        <SimulationPlaybackProbe />
       </StudioProvider>,
     );
   });
@@ -67,6 +69,17 @@ async function mountBattleship() {
       container.remove();
     },
   };
+}
+
+function SimulationPlaybackProbe(): JSX.Element {
+  const { simulationPlayback } = useStudio();
+  return (
+    <output hidden data-testid="simulation-playback-probe">
+      {simulationPlayback === null
+        ? ""
+        : `${simulationPlayback.generation}:${simulationPlayback.source}:${simulationPlayback.mode}:${simulationPlayback.actionName}:${simulationPlayback.traceNodeId ?? ""}`}
+    </output>
+  );
 }
 
 describe("P1-SC-6 — battleship parity", () => {
@@ -145,6 +158,10 @@ describe("P1-SC-7 — blocker UX", () => {
     expect(container.querySelector('[data-testid="intent-insight"]')?.textContent ?? "").toMatch(/simulate blocked/i);
     expect(container.querySelector('[data-testid="simulation-trace"]')).toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="simulation-playback-probe"]')
+        ?.textContent ?? "",
+    ).toBe("");
     cleanup();
   });
 

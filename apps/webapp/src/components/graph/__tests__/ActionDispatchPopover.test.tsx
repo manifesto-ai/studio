@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createStudioCore } from "@manifesto-ai/studio-core";
 import { createHeadlessAdapter } from "@manifesto-ai/studio-adapter-headless";
-import { StudioProvider } from "@manifesto-ai/studio-react";
+import { StudioProvider, useStudio } from "@manifesto-ai/studio-react";
 import { describe, expect, it } from "vitest";
 import { ActionDispatchPopover } from "../ActionDispatchPopover";
 
@@ -82,6 +82,7 @@ async function mountPopover(opts: {
   await act(async () => {
     root.render(
       <StudioProvider core={core} adapter={adapter} historyPollMs={0}>
+        <SimulationPlaybackProbe />
         <ActionDispatchPopover
           actionName={opts.actionName ?? "addTodo"}
           anchor={anchor}
@@ -104,6 +105,17 @@ async function mountPopover(opts: {
       anchor.remove();
     },
   };
+}
+
+function SimulationPlaybackProbe(): JSX.Element {
+  const { simulationPlayback } = useStudio();
+  return (
+    <output hidden data-testid="simulation-playback-probe">
+      {simulationPlayback === null
+        ? ""
+        : `${simulationPlayback.generation}:${simulationPlayback.source}:${simulationPlayback.mode}:${simulationPlayback.actionName}:${simulationPlayback.traceNodeId ?? ""}`}
+    </output>
+  );
 }
 
 describe("ActionDispatchPopover", () => {
@@ -176,6 +188,48 @@ describe("ActionDispatchPopover", () => {
       '[data-testid="simulation-trace-root-node"]',
     ) as HTMLElement;
     expect(traceRoot?.textContent ?? "").toMatch(/actions\.addTodo\.flow/i);
+    expect(
+      document.body.querySelector('[data-testid="simulation-playback-probe"]')
+        ?.textContent ?? "",
+    ).toMatch(/graph-popover:sequence:addTodo/i);
+    const replayRoot = document.body.querySelector(
+      '[data-testid="simulation-trace-replay-trace-3"]',
+    ) as HTMLButtonElement;
+    expect(replayRoot).not.toBeNull();
+    await act(async () => {
+      replayRoot.click();
+    });
+    expect(
+      document.body.querySelector('[data-testid="simulation-playback-probe"]')
+        ?.textContent ?? "",
+    ).toMatch(/graph-popover:step:addTodo:trace-3/i);
+    cleanup();
+  });
+
+  it("publishes playback only for explicit simulate, not debounce preview", async () => {
+    const { cleanup } = await mountPopover();
+    const input = document.body.querySelector("input[type=text]") as HTMLInputElement;
+    expect(input).not.toBeNull();
+    await act(async () => {
+      fireInput(input, "buy milk");
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    });
+    expect(
+      document.body.querySelector('[data-testid="simulation-playback-probe"]')
+        ?.textContent ?? "",
+    ).toBe("");
+
+    const simulateBtn = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim().startsWith("Simulate"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      simulateBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(
+      document.body.querySelector('[data-testid="simulation-playback-probe"]')
+        ?.textContent ?? "",
+    ).toMatch(/graph-popover:sequence:addTodo/i);
     cleanup();
   });
 
