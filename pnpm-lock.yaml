@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@manifesto-ai/sdk@3.15.1':
+    hash: 7a6c48ccc0d9b7c294bee6dc5e20d6e20cf4ad7b27db65e34815b730dac671d6
+    path: patches/@manifesto-ai__sdk@3.15.1.patch
+
 importers:
 
   .:
@@ -90,6 +95,9 @@ importers:
         specifier: ^1.4.0
         version: 1.4.0
     devDependencies:
+      '@manifesto-ai/studio-adapter-headless':
+        specifier: workspace:*
+        version: link:../../packages/studio-adapter-headless
       '@types/react':
         specifier: ^18.3.12
         version: 18.3.28
@@ -138,8 +146,8 @@ importers:
         specifier: ^3.10.3
         version: 3.10.3(@manifesto-ai/core@2.12.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
       '@manifesto-ai/sdk':
-        specifier: ^3.15.0
-        version: 3.15.1(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
+        specifier: ^3.15.1
+        version: 3.15.1(patch_hash=7a6c48ccc0d9b7c294bee6dc5e20d6e20cf4ad7b27db65e34815b730dac671d6)(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
       better-sqlite3:
         specifier: ^12.5.0
         version: 12.9.0
@@ -2990,7 +2998,7 @@ snapshots:
       - vite
       - zod
 
-  '@manifesto-ai/sdk@3.15.1(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)':
+  '@manifesto-ai/sdk@3.15.1(patch_hash=7a6c48ccc0d9b7c294bee6dc5e20d6e20cf4ad7b27db65e34815b730dac671d6)(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)':
     dependencies:
       '@manifesto-ai/compiler': 3.7.0(@manifesto-ai/core@2.12.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
       '@manifesto-ai/core': 2.12.0(zod@4.3.6)

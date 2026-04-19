@@ -16,8 +16,9 @@ import type {
 import { ActionForm } from "./ActionForm.js";
 import { BlockerList } from "./BlockerList.js";
 import { SimulatePreview } from "./SimulatePreview.js";
+import { createIntentArgsForValue } from "./action-intent.js";
 import {
-  defaultValueFor,
+  createInitialFormValue,
   descriptorForAction,
   type FormDescriptor,
 } from "./field-descriptor.js";
@@ -77,7 +78,9 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
 
   const defaultSession = useMemo(
     () => createInteractionSession(
-      descriptor === null ? {} : defaultValueFor(descriptor),
+      descriptor === null
+        ? {}
+        : createInitialFormValue(descriptor, { sparseOptional: true }),
     ),
     [descriptor],
   );
@@ -145,9 +148,10 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
   const buildIntent = useCallback((): ReturnType<typeof createIntent> | null => {
     if (selectedAction === null) return null;
     try {
-      // createIntent accepts `(action, ...args)`. For an object-shaped
-      // input we pass the full value as a single arg.
-      return createIntent(selectedAction, value);
+      return createIntent(
+        selectedAction,
+        ...createIntentArgsForValue(descriptor, value),
+      );
     } catch (err) {
       updateActiveSession((prev) => ({
         ...prev,
@@ -155,7 +159,7 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
       }));
       return null;
     }
-  }, [createIntent, selectedAction, updateActiveSession, value]);
+  }, [createIntent, descriptor, selectedAction, updateActiveSession, value]);
 
   const onSimulate = useCallback(() => {
     const intent = buildIntent();

@@ -11,7 +11,8 @@ import type {
   GraphNode,
 } from "@manifesto-ai/studio-react";
 import {
-  defaultValueFor,
+  createIntentArgsForValue,
+  createInitialFormValue,
   descriptorForAction,
   useStudio,
 } from "@manifesto-ai/studio-react";
@@ -313,8 +314,13 @@ export function LiveGraph({
       try {
         const descriptor = descriptorForAction(module.schema, node.name);
         const defaults =
-          descriptor === null ? undefined : defaultValueFor(descriptor);
-        const intent = createIntent(node.name, defaults);
+          descriptor === null
+            ? undefined
+            : createInitialFormValue(descriptor, { sparseOptional: true });
+        const intent = createIntent(
+          node.name,
+          ...createIntentArgsForValue(descriptor, defaults),
+        );
         const blockers = whyNot(intent);
         if (blockers === null || blockers.length === 0) {
           map.set(node.id, { dispatchable: true, blockerCount: 0 });

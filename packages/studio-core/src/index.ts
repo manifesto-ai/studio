@@ -37,6 +37,7 @@ export type {
   IntentAdmissionFailure,
   IntentExplanation,
   ProjectedDiff,
+  SimulationDiagnostics,
   Snapshot,
 } from "@manifesto-ai/sdk";
 // Also re-export the DomainModule from the compiler since it shows up on

@@ -68,6 +68,13 @@ export {
   type ActionFormProps,
 } from "./InteractionEditor/ActionForm.js";
 export {
+  createIntentArgsForValue,
+  toCreateIntentArg,
+} from "./InteractionEditor/action-intent.js";
+export {
+  collectBlockerPaths,
+} from "./InteractionEditor/blocker-paths.js";
+export {
   BlockerList,
   type BlockerListProps,
 } from "./InteractionEditor/BlockerList.js";
@@ -76,7 +83,38 @@ export {
   type SimulatePreviewProps,
 } from "./InteractionEditor/SimulatePreview.js";
 export {
+  SimulationTraceView,
+  type SimulationTraceViewProps,
+} from "./InteractionEditor/SimulationTraceView.js";
+export {
+  collectSimulationDiffs,
+  diffSnapshots,
+  extractSimulationSnapshot,
+  resolveValueAtPath,
+  sortPaths,
+  summarizePreviewValue,
+  tokenizePath,
+  type SnapshotDiff,
+  type SnapshotLike,
+} from "./InteractionEditor/snapshot-diff.js";
+export {
+  useJsonDraft,
+  type UseJsonDraftOptions,
+  type UseJsonDraftValue,
+} from "./InteractionEditor/useJsonDraft.js";
+export {
+  ensureAtPath,
+  getAtPath,
+  isPresentAtPath,
+  pathToKey,
+  removeAtPath,
+  setAtPath,
+  type FormPath,
+  type FormPathSegment,
+} from "./InteractionEditor/form-path-utils.js";
+export {
   defaultValueFor,
+  createInitialFormValue,
   descriptorForAction,
   descriptorForActionSpec,
   fromFieldSpec,

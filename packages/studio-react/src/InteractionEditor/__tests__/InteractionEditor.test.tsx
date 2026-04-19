@@ -43,9 +43,21 @@ async function mountWithCoreBuilt(opts?: { build?: boolean }): Promise<{
   core: ReturnType<typeof createStudioCore>;
   cleanup: () => void;
 }> {
+  return mountWithSource(todoSource, opts);
+}
+
+async function mountWithSource(
+  source: string,
+  opts?: { build?: boolean },
+): Promise<{
+  container: HTMLDivElement;
+  root: Root;
+  core: ReturnType<typeof createStudioCore>;
+  cleanup: () => void;
+}> {
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const adapter = createHeadlessAdapter({ initialSource: todoSource });
+  const adapter = createHeadlessAdapter({ initialSource: source });
   const core = createStudioCore();
   if (opts?.build !== false) {
     // Attach, build, detach so StudioProvider can re-attach cleanly.
@@ -72,6 +84,29 @@ async function mountWithCoreBuilt(opts?: { build?: boolean }): Promise<{
     },
   };
 }
+
+const optionalSource = `domain OptionalInput {
+  type Payload = { title: string, note?: string }
+
+  state {
+    title: string = ""
+    note: string = ""
+  }
+
+  action reset() {
+    onceIntent {
+      patch title = ""
+      patch note = ""
+    }
+  }
+
+  action save(payload: Payload) {
+    onceIntent {
+      patch title = payload.title
+      patch note = coalesce(payload.note, "")
+    }
+  }
+}`;
 
 describe("InteractionEditor — todo.mel end-to-end", () => {
   it("renders the action picker with every action sorted", async () => {
@@ -126,6 +161,18 @@ describe("InteractionEditor — todo.mel end-to-end", () => {
     expect(text).toMatch(/simulate preview/i);
     expect(text).toMatch(/data\.todos\[0\]/i);
     expect(text).toMatch(/computed\.todoCount/i);
+    expect(text).toMatch(/Execution Trace/i);
+    const traceSummary = container.querySelector(
+      '[data-testid="simulation-trace-summary"]',
+    ) as HTMLElement;
+    expect(traceSummary).not.toBeNull();
+    await act(async () => {
+      traceSummary.click();
+    });
+    const traceRoot = container.querySelector(
+      '[data-testid="simulation-trace-root-node"]',
+    ) as HTMLElement;
+    expect(traceRoot?.textContent ?? "").toMatch(/actions\.addTodo\.flow/i);
     cleanup();
   });
 
@@ -222,6 +269,61 @@ describe("InteractionEditor — todo.mel end-to-end", () => {
     });
     expect(container.querySelector('[data-testid="interaction-stale"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="intent-insight"]')).toBeNull();
+    cleanup();
+  });
+
+  it("restores optional field presence when switching away and back", async () => {
+    const { container, cleanup } = await mountWithSource(optionalSource);
+    const select = container.querySelector("#ie-action-select") as HTMLSelectElement;
+    expect(select.value).toBe("reset");
+    await act(async () => {
+      fireInput(select, "save");
+    });
+    expect(container.querySelectorAll("input[type=text]").length).toBe(1);
+    const addNoteBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("+ note"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      addNoteBtn.click();
+    });
+    const inputsAfterAdd = container.querySelectorAll("input[type=text]");
+    expect(inputsAfterAdd.length).toBe(2);
+    await act(async () => {
+      fireInput(inputsAfterAdd[1] as HTMLInputElement, "memo");
+    });
+    await act(async () => {
+      fireInput(select, "reset");
+    });
+    await act(async () => {
+      fireInput(select, "save");
+    });
+    const restoredInputs = container.querySelectorAll("input[type=text]");
+    expect(restoredInputs.length).toBe(2);
+    expect((restoredInputs[1] as HTMLInputElement).value).toBe("memo");
+    cleanup();
+  });
+
+  it("dispatches sparse optional payloads without materializing hidden fields", async () => {
+    const { container, core, cleanup } = await mountWithSource(optionalSource);
+    const select = container.querySelector("#ie-action-select") as HTMLSelectElement;
+    await act(async () => {
+      fireInput(select, "save");
+    });
+    const titleInput = container.querySelector("input[type=text]") as HTMLInputElement;
+    await act(async () => {
+      fireInput(titleInput, "hello");
+    });
+    const dispatchBtn = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim().startsWith("Dispatch"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      dispatchBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    const snap = core.getSnapshot();
+    const data = snap?.data as { title?: string; note?: string };
+    expect(data.title).toBe("hello");
+    expect(data.note).toBe("");
     cleanup();
   });
 

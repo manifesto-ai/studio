@@ -143,6 +143,7 @@ describe("P1-SC-7 — blocker UX", () => {
       await new Promise((r) => setTimeout(r, 30));
     });
     expect(container.querySelector('[data-testid="intent-insight"]')?.textContent ?? "").toMatch(/simulate blocked/i);
+    expect(container.querySelector('[data-testid="simulation-trace"]')).toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
     cleanup();
   });

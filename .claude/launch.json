@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "studio-webapp (vite dev)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@manifesto-ai/studio-webapp", "dev"],
+      "port": 5180
+    }
+  ]
+}

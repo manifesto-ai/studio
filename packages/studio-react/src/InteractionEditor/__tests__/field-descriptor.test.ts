@@ -6,6 +6,7 @@ import { createStudioCore } from "@manifesto-ai/studio-core";
 import { createHeadlessAdapter } from "@manifesto-ai/studio-adapter-headless";
 import type { DomainSchema, FieldSpec, TypeDefinition } from "@manifesto-ai/studio-core";
 import {
+  createInitialFormValue,
   defaultValueFor,
   descriptorForAction,
   fromFieldSpec,
@@ -283,5 +284,40 @@ describe("defaultValueFor", () => {
       defaultValue: "hello",
     };
     expect(defaultValueFor(d)).toBe("hello");
+  });
+});
+
+describe("createInitialFormValue", () => {
+  it("omits optional object fields by default", () => {
+    const d: FormDescriptor = {
+      kind: "object",
+      required: true,
+      fields: [
+        { name: "title", descriptor: { kind: "string", required: true } },
+        { name: "note", descriptor: { kind: "string", required: false } },
+      ],
+    };
+    expect(createInitialFormValue(d)).toEqual({ title: "" });
+  });
+
+  it("keeps nested required fields while omitting nested optional fields", () => {
+    const d: FormDescriptor = {
+      kind: "object",
+      required: true,
+      fields: [
+        {
+          name: "payload",
+          descriptor: {
+            kind: "object",
+            required: true,
+            fields: [
+              { name: "title", descriptor: { kind: "string", required: true } },
+              { name: "note", descriptor: { kind: "string", required: false } },
+            ],
+          },
+        },
+      ],
+    };
+    expect(createInitialFormValue(d)).toEqual({ payload: { title: "" } });
   });
 });
