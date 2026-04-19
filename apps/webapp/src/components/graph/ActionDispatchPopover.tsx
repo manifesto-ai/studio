@@ -33,7 +33,15 @@ export function ActionDispatchPopover({
   readonly open: boolean;
   readonly onOpenChange: (next: boolean) => void;
 }): JSX.Element | null {
-  const { module, snapshot, createIntent, dispatch, simulate, whyNot } =
+  const {
+    module,
+    snapshot,
+    createIntent,
+    dispatch,
+    simulate,
+    whyNot,
+    publishSimulationPlayback,
+  } =
     useStudio();
 
   const descriptor: FormDescriptor | null = useMemo(() => {
@@ -130,7 +138,15 @@ export function ActionDispatchPopover({
         actionName,
         ...createIntentArgsForValue(descriptor, value),
       );
-      setLiveSim(simulate(intent));
+      const result = simulate(intent);
+      setLiveSim(result);
+      if (!isBlocked && result.diagnostics?.trace !== undefined) {
+        publishSimulationPlayback({
+          actionName: intent.type,
+          trace: result.diagnostics.trace,
+          source: "graph-popover",
+        });
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -345,6 +361,7 @@ function CompactSimulatePreview({
         <SimulationTraceView
           trace={result.diagnostics.trace}
           density="compact"
+          playbackSource="graph-popover"
         />
       ) : null}
     </div>

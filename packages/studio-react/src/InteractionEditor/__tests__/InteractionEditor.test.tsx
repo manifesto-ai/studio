@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { createStudioCore } from "@manifesto-ai/studio-core";
 import { createHeadlessAdapter } from "@manifesto-ai/studio-adapter-headless";
 import { StudioProvider } from "../../StudioProvider.js";
+import { useStudio } from "../../useStudio.js";
 import { InteractionEditor } from "../InteractionEditor.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -71,6 +72,7 @@ async function mountWithSource(
     root.render(
       <StudioProvider core={core} adapter={adapter} historyPollMs={0}>
         <InteractionEditor />
+        <SimulationPlaybackProbe />
       </StudioProvider>,
     );
   });
@@ -107,6 +109,17 @@ const optionalSource = `domain OptionalInput {
     }
   }
 }`;
+
+function SimulationPlaybackProbe(): JSX.Element {
+  const { simulationPlayback } = useStudio();
+  return (
+    <output hidden data-testid="simulation-playback-probe">
+      {simulationPlayback === null
+        ? ""
+        : `${simulationPlayback.generation}:${simulationPlayback.source}:${simulationPlayback.mode}:${simulationPlayback.actionName}:${simulationPlayback.traceNodeId ?? ""}`}
+    </output>
+  );
+}
 
 describe("InteractionEditor — todo.mel end-to-end", () => {
   it("renders the action picker with every action sorted", async () => {
@@ -173,6 +186,22 @@ describe("InteractionEditor — todo.mel end-to-end", () => {
       '[data-testid="simulation-trace-root-node"]',
     ) as HTMLElement;
     expect(traceRoot?.textContent ?? "").toMatch(/actions\.addTodo\.flow/i);
+    const playbackProbe = container.querySelector(
+      '[data-testid="simulation-playback-probe"]',
+    ) as HTMLElement;
+    expect(playbackProbe?.textContent ?? "").toMatch(
+      /interaction-editor:sequence:addTodo/i,
+    );
+    const replayRoot = container.querySelector(
+      '[data-testid="simulation-trace-replay-trace-3"]',
+    ) as HTMLButtonElement;
+    expect(replayRoot).not.toBeNull();
+    await act(async () => {
+      replayRoot.click();
+    });
+    expect(playbackProbe?.textContent ?? "").toMatch(
+      /interaction-editor:step:addTodo:trace-3/i,
+    );
     cleanup();
   });
 
