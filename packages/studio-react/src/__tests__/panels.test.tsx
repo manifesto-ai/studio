@@ -12,7 +12,9 @@ import { DiagnosticsPanel } from "../DiagnosticsPanel.js";
 import { PlanPanel } from "../PlanPanel.js";
 import { SnapshotTree } from "../SnapshotTree.js";
 import { HistoryTimeline } from "../HistoryTimeline.js";
+import { DispatchTimeline } from "../DispatchTimeline.js";
 import { StudioHotkeys } from "../StudioHotkeys.js";
+import { useStudio } from "../useStudio.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..", "..");
@@ -107,6 +109,53 @@ describe("studio-react panels — jsdom smoke", () => {
     const { container, cleanup } = await mountWithCore(<HistoryTimeline />);
     expect(container.textContent).toMatch(/No edit history/);
     cleanup();
+  });
+
+  it("DispatchTimeline shows empty state before any dispatch", async () => {
+    const { container, cleanup } = await mountWithCore(<DispatchTimeline />);
+    expect(container.textContent).toMatch(/No dispatches/);
+    cleanup();
+  });
+
+  it("DispatchTimeline appends an entry after a successful dispatch via useStudio", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const adapter = createHeadlessAdapter({ initialSource: todoSource });
+    const core = createStudioCore();
+
+    let fire: (() => Promise<void>) | null = null;
+    function Harness(): JSX.Element {
+      const studio = useStudio();
+      fire = async () => {
+        const intent = studio.createIntent("addTodo", { title: "from-dispatch" });
+        await studio.dispatch(intent);
+      };
+      return <DispatchTimeline />;
+    }
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <StudioProvider core={core} adapter={adapter} historyPollMs={0}>
+          <Harness />
+        </StudioProvider>,
+      );
+    });
+    await act(async () => {
+      adapter.requestBuild();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await act(async () => {
+      await fire!();
+    });
+
+    const rows = container.querySelectorAll('[data-testid="dispatch-row"]');
+    expect(rows.length).toBe(1);
+    expect(container.textContent).toContain("addTodo");
+    expect(container.textContent).toContain("completed");
+
+    act(() => root.unmount());
+    container.remove();
   });
 
   it("Panels reflect live module / snapshot / plan / history after a build + dispatch", async () => {

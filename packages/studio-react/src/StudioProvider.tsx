@@ -43,6 +43,29 @@ export type SimulationPlayback = SimulationPlaybackEvent & {
   readonly traceNodeId: string | null;
 };
 
+/**
+ * Dispatch history — a per-provider log of every dispatch flown through
+ * this provider. Unlike `EditIntentEnvelope` (schema edits, SE-HIST-1)
+ * and `getTraceHistory()` (host-trace records, which only exist when
+ * an effect ran), this log records **every** dispatch by call site so
+ * the UI has a stable, always-populated timeline. See UX philosophy
+ * Pillar 4: "Time is first-class — snapshot transitions deserve their
+ * own surface, not just schema edits."
+ *
+ * It is NOT a replacement for the SDK's Merkle lineage — that belongs
+ * upstream. This is a pragmatic projection for the Dispatch lens.
+ */
+export type DispatchHistoryEntry = {
+  readonly id: string;
+  readonly intentType: string;
+  readonly schemaHash: string | null;
+  readonly status: "completed" | "rejected" | "failed";
+  readonly changedPaths: readonly string[];
+  readonly recordedAt: number;
+  readonly rejectionCode?: string;
+  readonly failureMessage?: string;
+};
+
 export type StudioContextValue = {
   readonly core: StudioCore;
   /**
@@ -58,6 +81,12 @@ export type StudioContextValue = {
    */
   readonly version: number;
   readonly history: readonly EditIntentEnvelope[];
+  /**
+   * Append-only log of dispatches flown through this provider. See
+   * `DispatchHistoryEntry`. Always-populated; does not depend on host
+   * traces being emitted. Consumed by `<DispatchTimeline />`.
+   */
+  readonly dispatchHistory: readonly DispatchHistoryEntry[];
   readonly build: () => Promise<BuildResult>;
   readonly explainIntent: (intent: Intent) => IntentExplanation;
   readonly why: (intent: Intent) => IntentExplanation;
@@ -104,6 +133,10 @@ export function StudioProvider({
 }: StudioProviderProps): JSX.Element {
   const [version, setVersion] = useState(0);
   const [history, setHistory] = useState<readonly EditIntentEnvelope[]>([]);
+  const [dispatchHistory, setDispatchHistory] = useState<
+    readonly DispatchHistoryEntry[]
+  >([]);
+  const dispatchSeqRef = useRef(0);
   const [simulationPlayback, setSimulationPlayback] =
     useState<SimulationPlayback | null>(null);
   const simulationPlaybackGenerationRef = useRef(0);
@@ -158,9 +191,48 @@ export function StudioProvider({
   );
 
   const build = useCallback(() => bump(() => core.build()), [bump, core]);
+  const recordDispatch = useCallback(
+    (intent: Intent, result: StudioDispatchResult): void => {
+      dispatchSeqRef.current += 1;
+      const id = `d${dispatchSeqRef.current}`;
+      const schemaHash = core.getModule()?.schema.hash ?? null;
+      const common = {
+        id,
+        intentType: intent.type,
+        schemaHash,
+        recordedAt: Date.now(),
+      };
+      const entry: DispatchHistoryEntry =
+        result.kind === "completed"
+          ? {
+              ...common,
+              status: "completed",
+              changedPaths: result.outcome.projected.changedPaths ?? [],
+            }
+          : result.kind === "rejected"
+            ? {
+                ...common,
+                status: "rejected",
+                changedPaths: [],
+                rejectionCode: result.rejection.code,
+              }
+            : {
+                ...common,
+                status: "failed",
+                changedPaths: [],
+                failureMessage: result.error.message,
+              };
+      setDispatchHistory((prev) => [...prev, entry]);
+    },
+    [core],
+  );
   const dispatch = useCallback(
-    (intent: Intent) => bump(() => core.dispatchAsync(intent)),
-    [bump, core],
+    async (intent: Intent): Promise<StudioDispatchResult> => {
+      const result = await bump(() => core.dispatchAsync(intent));
+      recordDispatch(intent, result);
+      return result;
+    },
+    [bump, core, recordDispatch],
   );
   const explainIntent = useCallback(
     (intent: Intent) => core.explainIntent(intent),
@@ -213,6 +285,7 @@ export function StudioProvider({
       adapter,
       version,
       history,
+      dispatchHistory,
       build,
       explainIntent,
       why,
@@ -230,6 +303,7 @@ export function StudioProvider({
       adapter,
       version,
       history,
+      dispatchHistory,
       build,
       explainIntent,
       why,

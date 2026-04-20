@@ -9,7 +9,7 @@ import {
 import { AnimatePresence, motion } from "motion/react";
 import {
   DiagnosticsPanel,
-  HistoryTimeline,
+  DispatchTimeline,
   InteractionEditor,
   PlanPanel,
   SnapshotTree,
@@ -58,8 +58,8 @@ const LENSES: readonly LensMeta[] = [
   },
   {
     id: "history",
-    label: "History",
-    hint: "Snapshot timeline · replay",
+    label: "Dispatches",
+    hint: "Dispatch timeline · snapshot transitions",
     Icon: History,
     channel: "determ",
   },
@@ -142,7 +142,7 @@ export function LensPane({
               </div>
               {value === "snapshot" ? <SnapshotTree /> : null}
               {value === "plan" ? <PlanPanel /> : null}
-              {value === "history" ? <HistoryTimeline /> : null}
+              {value === "history" ? <DispatchTimeline /> : null}
               {value === "diagnostics" ? (
                 <DiagnosticsPanel onSelect={onRevealMarker} />
               ) : null}

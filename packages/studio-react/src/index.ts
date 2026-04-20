@@ -3,6 +3,7 @@ export {
   StudioContext,
   type StudioProviderProps,
   type StudioContextValue,
+  type DispatchHistoryEntry,
   type SimulationPlayback,
   type SimulationPlaybackEvent,
   type SimulationPlaybackMode,
@@ -26,6 +27,10 @@ export {
   HistoryTimeline,
   type HistoryTimelineProps,
 } from "./HistoryTimeline.js";
+export {
+  DispatchTimeline,
+  type DispatchTimelineProps,
+} from "./DispatchTimeline.js";
 
 export { COLORS, FONT_STACK, MONO_STACK } from "./style-tokens.js";
 
