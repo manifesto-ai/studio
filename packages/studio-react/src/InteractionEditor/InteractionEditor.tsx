@@ -282,18 +282,19 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
   // `inputInvalid` is inferred from the presence of a buildIntent /
   // explainIntent runtime error that the SDK ordering guarantees only
   // fires AFTER availability passes (sdk.md §"Intent Explanation").
+  // NOTE: do NOT wrap in useMemo — this block sits after an early
+  // `return` for `module === null`. Any hook added here changes the
+  // hook count across the null→non-null transition and trips Rules
+  // of Hooks. `deriveLadderState` is a pure, branch-only projection,
+  // so re-running it on every render is cheap.
   const ladderInputInvalid =
     runtimeError !== null && visibleExplanation === null && !isStale;
-  const ladderState = useMemo(
-    () =>
-      deriveLadderState({
-        explanation: visibleExplanation,
-        simulate: visibleSimulateResult,
-        inputInvalid: ladderInputInvalid,
-        stale: isStale,
-      }),
-    [visibleExplanation, visibleSimulateResult, ladderInputInvalid, isStale],
-  );
+  const ladderState = deriveLadderState({
+    explanation: visibleExplanation,
+    simulate: visibleSimulateResult,
+    inputInvalid: ladderInputInvalid,
+    stale: isStale,
+  });
 
   return (
     <div style={rootStyle}>
