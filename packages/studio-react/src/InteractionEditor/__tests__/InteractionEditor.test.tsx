@@ -49,7 +49,7 @@ async function mountWithCoreBuilt(opts?: { build?: boolean }): Promise<{
 
 async function mountWithSource(
   source: string,
-  opts?: { build?: boolean },
+  opts?: { build?: boolean; enforceSimulateFirst?: boolean },
 ): Promise<{
   container: HTMLDivElement;
   root: Root;
@@ -71,7 +71,9 @@ async function mountWithSource(
   await act(async () => {
     root.render(
       <StudioProvider core={core} adapter={adapter} historyPollMs={0}>
-        <InteractionEditor />
+        <InteractionEditor
+          enforceSimulateFirst={opts?.enforceSimulateFirst ?? true}
+        />
         <SimulationPlaybackProbe />
       </StudioProvider>,
     );
@@ -211,9 +213,18 @@ describe("InteractionEditor — todo.mel end-to-end", () => {
     await act(async () => {
       fireInput(titleInput, "buy milk");
     });
+    // Rule S1 (simulate-first, UX philosophy §2.2): Dispatch is inert
+    // until a fresh simulate resolves for the current bound intent.
+    const simBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.trim().startsWith("Simulate"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      simBtn.click();
+    });
     const dispatchBtn = Array.from(container.querySelectorAll("button")).find(
       (b) => b.textContent?.trim().startsWith("Dispatch"),
     ) as HTMLButtonElement;
+    expect(dispatchBtn.disabled).toBe(false);
     await act(async () => {
       dispatchBtn.click();
       await new Promise((r) => setTimeout(r, 20));
@@ -240,9 +251,18 @@ describe("InteractionEditor — todo.mel end-to-end", () => {
     await act(async () => {
       fireInput(select, "clearCompleted");
     });
+    // Rule S1: simulate must resolve first. clearCompleted takes no
+    // input, so the bound intent is stable from mount.
+    const simBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.trim().startsWith("Simulate"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      simBtn.click();
+    });
     const dispatchBtn = Array.from(container.querySelectorAll("button")).find(
       (b) => b.textContent?.trim().startsWith("Dispatch"),
     ) as HTMLButtonElement;
+    expect(dispatchBtn.disabled).toBe(false);
     await act(async () => {
       dispatchBtn.click();
       await new Promise((r) => setTimeout(r, 20));
@@ -333,7 +353,16 @@ describe("InteractionEditor — todo.mel end-to-end", () => {
   });
 
   it("dispatches sparse optional payloads without materializing hidden fields", async () => {
-    const { container, core, cleanup } = await mountWithSource(optionalSource);
+    // This regression test targets sparse-optional payload
+    // serialization at the dispatch boundary. It predates Rule S1
+    // and currently hits a latent issue on the `simulate()` path for
+    // sparse payloads — tracked in `docs/studio/backlog.md`. We
+    // intentionally opt out of simulate-first here so the
+    // dispatch-path assertion (data.note === "") stays directly
+    // verifiable. Every other scenario in this file honors Rule S1.
+    const { container, core, cleanup } = await mountWithSource(optionalSource, {
+      enforceSimulateFirst: false,
+    });
     const select = container.querySelector("#ie-action-select") as HTMLSelectElement;
     await act(async () => {
       fireInput(select, "save");

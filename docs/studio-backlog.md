@@ -92,3 +92,28 @@
 2. Interact 입력/결과 유지
 3. Graph / Legend 의미 강화
 4. Dispatch event model 설계
+
+---
+
+## 5. Phase 2 (Intent Insight Ladder)에서 발견된 후속 항목
+
+### 5.1 Sparse-optional payload의 simulate() 실패 (의심)
+
+- 증상: `type Payload = { title: string, note?: string }` 같은 optional 필드를 갖는 action에 대해 sparse form value(`{title: "hello"}`, note 생략)로 `simulate()` 호출 시, `simulate()`가 throw하거나 `admitted` 가 아닌 결과를 반환하는 것으로 관찰됨. 동일한 sparse intent의 `dispatchAsync()`는 성공 (기존 regression 테스트로 검증).
+- 재현: `packages/studio-react/src/InteractionEditor/__tests__/InteractionEditor.test.tsx` → "dispatches sparse optional payloads" 테스트. 현재 이 테스트는 `<InteractionEditor enforceSimulateFirst={false} />` 로 Rule S1을 opt-out하여 dispatch 경로만 검증한다. Rule S1을 enforce하면 `expect(dispatchBtn.disabled).toBe(false)`에서 실패 (disabled=true).
+- 원인 가설: `createIntentArgsForValue` 또는 SDK `createIntent()`가 sparse object를 intent input으로 packing하는 방식이 simulate 경로에서만 문제를 일으킴. 또는 `simulate()` 내부의 canonical snapshot projection 단계에서 undefined 필드 접근 에러.
+- 영향: `InteractionEditor.enforceSimulateFirst` prop의 escape hatch가 이 버그 해결까지 유지되어야 함. 해결 후 해당 테스트를 다시 Rule S1 경로로 전환 + prop 제거.
+- 우선순위: Medium — production에서 optional 필드를 포함한 schema를 빌드하는 순간 사다리 Step 4가 스스로 블록됨. 유저가 "왜 Dispatch가 안 열리지" 상태로 멈춤.
+
+### 5.2 Pillar 1 (Harness > Guardrail)의 Studio UI 구현
+
+- 현재 상태: 철학 문서 Rule H1/H2/H3 전체 미구현. 액션 셀렉터가 `getAvailableActions()` 필터를 적용하지 않고 `schema.actions` 전체를 나열.
+- 필요 작업: 셀렉터를 두 레지스터로 분할 — "지금 할 수 있는 일" (default 열림) + "현재 불가능" (default 접힘, 각 액션에 대해 `available when` guard의 정적 counterfactual 동반).
+- 의존: Rule H3은 SDK 반환을 DOM에 직접 매핑해야 함 — 현재 `useStudio` 훅이 `getAvailableActions`를 노출하는지 확인 후 진행.
+- 우선순위: High — Pillar 1이 철학 문서에서 가장 강한 주장이면서 UI 침묵이 가장 심함.
+
+### 5.3 Pillar 4 (Time is first-class)의 Studio UI 구현
+
+- 현재 상태: 완전 silent. `HistoryTimeline`은 schema edit log이지 Merkle World 체인이 아님.
+- 의존: `docs/studio/ux-philosophy.md` §5 Deferred D1 — Studio Core가 lineage-decorated runtime을 wrapping해야 함. 현재 base runtime만 사용.
+- 우선순위: High after D1 해결.

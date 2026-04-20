@@ -9,6 +9,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/Tooltip";
 import type { FixtureId, Fixture } from "@/fixtures";
 
 /**
@@ -171,21 +177,53 @@ function DeterminismIndicator({
             label: "idle",
             ink: "text-[var(--color-ink-mute)]",
           };
+  // Rule P2 (UX philosophy §2.5): the tooltip cites the SDK/MEL
+  // fact that underwrites the determinism claim. Wording is not
+  // invented — it is a direct restatement of MEL's
+  // Non-Turing-completeness guarantee and the SDK legality ladder
+  // being reproducible against the current snapshot.
+  const explanation =
+    status === "ok"
+      ? "MEL은 비-튜링 완전 언어입니다. 현 스냅샷에 대한 가용성·디스패치가능성·시뮬레이션 판정은 모두 정적으로 결정되며 재현 가능합니다."
+      : status === "err"
+        ? "컴파일러가 오류를 보고했습니다. 합법성 판정은 오류가 해결되기 전까지 유효하지 않습니다."
+        : "아직 빌드된 모듈이 없습니다. 소스를 빌드하면 결정적 판정이 가능해집니다.";
   return (
-    <div className="flex items-center gap-1.5 h-7 px-2">
-      <span
-        aria-hidden
-        className="h-[6px] w-[6px] rounded-full"
-        style={{
-          background: tone.dot,
-          boxShadow: `0 0 8px ${tone.dot}`,
-        }}
-      />
-      <span
-        className={`font-sans text-[11px] tracking-tight font-medium ${tone.ink}`}
-      >
-        {tone.label}
-      </span>
-    </div>
+    <TooltipProvider delayDuration={250}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={`determinism status: ${tone.label}`}
+            data-testid="determinism-indicator"
+            className="flex items-center gap-1.5 h-7 px-2 rounded-md outline-none focus-visible:outline-2 focus-visible:outline-[var(--color-violet-hot)]"
+          >
+            <span
+              aria-hidden
+              className="h-[6px] w-[6px] rounded-full"
+              style={{
+                background: tone.dot,
+                boxShadow: `0 0 8px ${tone.dot}`,
+              }}
+            />
+            <span
+              className={`font-sans text-[11px] tracking-tight font-medium ${tone.ink}`}
+            >
+              {tone.label}
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={8} className="max-w-[320px]">
+          <div className="flex flex-col gap-1">
+            <span className="font-sans text-[11px] font-semibold">
+              {tone.label}
+            </span>
+            <span className="font-sans text-[10.5px] leading-relaxed text-[var(--color-ink-dim)]">
+              {explanation}
+            </span>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }

@@ -121,9 +121,18 @@ describe("P1-SC-6 — battleship parity", () => {
     await act(async () => {
       fireInput(numberInput, "20");
     });
+    // Rule S1 (simulate-first): Dispatch is inert until a fresh
+    // simulate resolves for the current bound intent. UX philosophy §2.2.
+    const simBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.trim().startsWith("Simulate"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      simBtn.click();
+    });
     const dispatchBtn = Array.from(container.querySelectorAll("button")).find(
       (b) => b.textContent?.trim().startsWith("Dispatch"),
     ) as HTMLButtonElement;
+    expect(dispatchBtn.disabled).toBe(false);
     await act(async () => {
       dispatchBtn.click();
       await new Promise((r) => setTimeout(r, 30));
@@ -165,32 +174,47 @@ describe("P1-SC-7 — blocker UX", () => {
     cleanup();
   });
 
-  it("dispatching shoot before initCells rejects with an action-level blocker", async () => {
+  it("shoot before initCells: Dispatch stays locked; ladder surfaces the available-layer blocker (Rule S1 + L2)", async () => {
     const { container, cleanup } = await mountBattleship();
     const select = container.querySelector("#ie-action-select") as HTMLSelectElement;
     await act(async () => {
       fireInput(select, "shoot");
     });
-    // shoot takes { cellId: string }. Fill any value — admission will
-    // fail on the `available when canShoot` gate because phase is still
-    // "idle".
+    // shoot takes { cellId: string }. Fill any value — availability
+    // (`available when canShoot`) will fail because phase is "idle".
     const textInput = container.querySelector("input[type=text]") as HTMLInputElement;
     expect(textInput).not.toBeNull();
     await act(async () => {
       fireInput(textInput, "cell-0-0");
     });
+    // Rule S1: Dispatch must be inert from mount — no simulate yet.
     const dispatchBtn = Array.from(container.querySelectorAll("button")).find(
       (b) => b.textContent?.trim().startsWith("Dispatch"),
     ) as HTMLButtonElement;
+    expect(dispatchBtn.disabled).toBe(true);
+
+    // Simulate surfaces the blocker through the legality ladder.
+    const simBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.trim().startsWith("Simulate"),
+    ) as HTMLButtonElement;
     await act(async () => {
-      dispatchBtn.click();
+      simBtn.click();
       await new Promise((r) => setTimeout(r, 30));
     });
+    // Ladder's step 1 is blocked-here; downstream steps are
+    // demoted but still visible (Rule L1).
+    const step1 = container.querySelector('[data-testid="ladder-step-available"]') as HTMLElement;
+    expect(step1?.dataset.status).toBe("blocked-here");
+    for (const id of ["input-valid", "dispatchable", "simulated", "admitted"]) {
+      const el = container.querySelector(`[data-testid="ladder-step-${id}"]`) as HTMLElement;
+      expect(el?.dataset.status).toBe("not-yet-evaluated");
+    }
+    // Existing BlockerList still renders the blocker for UX continuity.
     const text = (container.textContent ?? "").toLowerCase();
-    // BlockerList header + at least one of the layer labels (available /
-    // dispatchable) should appear.
     expect(text).toMatch(/blocked/);
-    expect(text).toMatch(/available|dispatchable/);
+    expect(text).toMatch(/available/);
+    // Dispatch still locked after blocker is surfaced.
+    expect(dispatchBtn.disabled).toBe(true);
     cleanup();
   });
 });

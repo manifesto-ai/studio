@@ -83,6 +83,23 @@ export {
   type BlockerListProps,
 } from "./InteractionEditor/BlockerList.js";
 export {
+  IntentLadder,
+  type IntentLadderProps,
+} from "./InteractionEditor/IntentLadder.js";
+export {
+  deriveLadderState,
+  type LadderInputs,
+  type LadderState,
+  type LadderStep,
+  type LadderStepId,
+  type LadderStepStatus,
+} from "./InteractionEditor/ladder-state.js";
+export {
+  deriveCounterfactualHint,
+  firstProvableHint,
+  type CounterfactualHint,
+} from "./InteractionEditor/counterfactual.js";
+export {
   SimulatePreview,
   type SimulatePreviewProps,
 } from "./InteractionEditor/SimulatePreview.js";

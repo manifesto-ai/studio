@@ -15,6 +15,7 @@ import type {
 } from "@manifesto-ai/studio-core";
 import { ActionForm } from "./ActionForm.js";
 import { BlockerList } from "./BlockerList.js";
+import { IntentLadder } from "./IntentLadder.js";
 import { SimulatePreview } from "./SimulatePreview.js";
 import { createIntentArgsForValue } from "./action-intent.js";
 import {
@@ -22,6 +23,7 @@ import {
   descriptorForAction,
   type FormDescriptor,
 } from "./field-descriptor.js";
+import { deriveLadderState } from "./ladder-state.js";
 
 export type InteractionEditorProps = {
   /**
@@ -29,6 +31,18 @@ export type InteractionEditorProps = {
    * schema is selected.
    */
   readonly initialAction?: string;
+  /**
+   * Whether Dispatch is gated behind a resolved simulate for the
+   * current bound intent (UX philosophy Rule S1).
+   *
+   * Defaults to `true` — this is the philosophical stance of the
+   * Studio. Production callers should NOT override this. The override
+   * exists as an escape hatch for regression tests that specifically
+   * target code paths orthogonal to legality (e.g. sparse-optional
+   * payload serialization) and predate Rule S1. Every override site
+   * must be justified in `docs/studio/backlog.md`.
+   */
+  readonly enforceSimulateFirst?: boolean;
 };
 
 /**
@@ -36,7 +50,8 @@ export type InteractionEditorProps = {
  * against the currently-built domain. Reads `module`, `snapshot`, and
  * `dispatch` / `simulate` / `createIntent` from `useStudio()`.
  */
-export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Element {
+export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Element {
+  const enforceSimulateFirst = props.enforceSimulateFirst ?? true;
   const {
     module,
     snapshot,
@@ -53,7 +68,7 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
   }, [module]);
 
   const [selectedAction, setSelectedAction] = useState<string | null>(
-    _props.initialAction ?? null,
+    props.initialAction ?? null,
   );
   const [sessions, setSessions] = useState<Record<string, InteractionSession>>({});
   const [currentSession, setCurrentSession] = useState<InteractionSession>(() =>
@@ -258,6 +273,28 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
     (lastInteraction !== "dispatch" || visibleDispatchResult?.kind !== "failed") &&
     (visibleExplanation !== null || visibleSimulateResult !== null || visibleDispatchResult !== null);
 
+  // --- Legality ladder state (UX philosophy §2.2, §2.3) ---------------
+  // We derive the 5-step ladder from already-in-flight signals:
+  // the last explanation, the last fresh simulate, and whether
+  // buildIntent threw (→ input invalid for the SDK's schema). This is
+  // a pure projection; see `ladder-state.ts` for semantics.
+  //
+  // `inputInvalid` is inferred from the presence of a buildIntent /
+  // explainIntent runtime error that the SDK ordering guarantees only
+  // fires AFTER availability passes (sdk.md §"Intent Explanation").
+  const ladderInputInvalid =
+    runtimeError !== null && visibleExplanation === null && !isStale;
+  const ladderState = useMemo(
+    () =>
+      deriveLadderState({
+        explanation: visibleExplanation,
+        simulate: visibleSimulateResult,
+        inputInvalid: ladderInputInvalid,
+        stale: isStale,
+      }),
+    [visibleExplanation, visibleSimulateResult, ladderInputInvalid, isStale],
+  );
+
   return (
     <div style={rootStyle}>
       <div style={headerStyle}>
@@ -317,7 +354,25 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
         <button
           type="button"
           onClick={onDispatch}
-          disabled={pending !== null || selectedAction === null}
+          disabled={
+            pending !== null ||
+            selectedAction === null ||
+            // Rule S1 (simulate-first): Dispatch is inert until a
+            // fresh simulate has resolved for the current bound
+            // intent. `simulateReadyForDispatch` goes true only when
+            // all 5 legality steps passed AND the form value has not
+            // drifted since simulate resolved. Production callers keep
+            // `enforceSimulateFirst` at its default `true`; tests
+            // covering unrelated paths may opt out.
+            (enforceSimulateFirst && !ladderState.simulateReadyForDispatch)
+          }
+          title={
+            enforceSimulateFirst && !ladderState.simulateReadyForDispatch
+              ? "Simulate-first: run Simulate for the current inputs to unlock Dispatch (Rule S1)"
+              : undefined
+          }
+          data-testid="ie-dispatch-btn"
+          data-simulate-ready={ladderState.simulateReadyForDispatch ? "1" : "0"}
           style={primaryBtnStyle}
         >
           {pending === "dispatch" ? "Dispatching…" : "Dispatch"}
@@ -334,6 +389,22 @@ export function InteractionEditor(_props: InteractionEditorProps = {}): JSX.Elem
         <div style={staleBoxStyle} data-testid="interaction-stale">
           input changed — rerun simulate/dispatch
         </div>
+      ) : null}
+
+      {/* Legality ladder — visible whenever the ladder carries
+       * actionable information. We show it when:
+       *  - a simulate has resolved (either blocked or admitted), or
+       *  - a dispatch was rejected (blockers surface via the same
+       *    ladder shape).
+       * A *completed* dispatch is a post-hoc success narrative; the
+       * ladder has no failing step to surface, so we defer to
+       * SimulatePreview's "dispatch completed" view.
+       * See UX philosophy Pillar 3 (sadari first). */}
+      {!isStale &&
+      (lastInteraction === "simulate" ||
+        (lastInteraction === "dispatch" &&
+          visibleDispatchResult?.kind === "rejected")) ? (
+        <IntentLadder state={ladderState} />
       ) : null}
 
       {showInsight ? (
