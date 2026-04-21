@@ -71,16 +71,33 @@ export function computeLayout(
   // Cluster ordering: preserve the ClusterMap order (largest first).
   // If no clusters provided, pretend everything's a single cluster so
   // the existing column math still runs unchanged.
-  const stateGroups = clusters
+  const initialStateGroups = clusters
     ? clusters.clusters.map((c) =>
         states.filter((s) => c.states.includes(s.id)),
       )
     : [states];
-  const computedGroups = clusters
+  const initialComputedGroups = clusters
     ? clusters.clusters.map((c) =>
         computeds.filter((cn) => c.computeds.includes(cn.id)),
       )
     : [computeds];
+
+  // Reorder within each cluster + the action strip so neighbours line
+  // up across columns. Barycenter heuristic (a lightweight slice of
+  // dagre's Sugiyama pass) — each node's score is the mean rank of its
+  // connected neighbours in the adjacent columns; sort within-cluster
+  // by that score; repeat 3× to propagate. This is the standard
+  // crossing-minimisation step every layered layout toolkit runs.
+  const reordered = reorderForCrossings(
+    model,
+    initialStateGroups,
+    initialComputedGroups,
+    actions,
+    3,
+  );
+  const stateGroups = reordered.stateGroups;
+  const computedGroups = reordered.computedGroups;
+  const orderedActions = reordered.actions;
 
   // Zone x-coordinates. State column is fixed on the left. The action
   // strip occupies the middle channel; computed column is pushed out to
@@ -117,7 +134,7 @@ export function computeLayout(
   const bounds = new Map<GraphNode["id"], Rect>();
 
   // --- Actions strip ----------------------------------------------------
-  actions.forEach((node, i) => {
+  orderedActions.forEach((node, i) => {
     const x =
       actionCols <= 1
         ? actionZoneLeft + (actionZoneWidth - CARD_WIDTH) / 2
@@ -236,6 +253,131 @@ export function computeLayout(
     canvasHeight: maxY,
     clusterRects,
   };
+}
+
+/**
+ * Minimise edge crossings between adjacent columns via barycenter sort.
+ *
+ * For each kind-column we compute `rank(node) = mean rank of connected
+ * neighbours in the other columns`, then stable-sort within cluster by
+ * that score. Three iterations propagate the effect across action ↔
+ * state ↔ computed so the whole layered graph settles.
+ *
+ * This is the exact heuristic dagre / ELK / Graphviz-dot use as their
+ * crossing-minimisation step — dropping it in directly (rather than
+ * importing dagre) keeps the project's cluster concept and 3-zone
+ * grammar intact and avoids the 50kB dependency.
+ */
+export function reorderForCrossings(
+  model: GraphModel,
+  stateGroups: readonly (readonly GraphNode[])[],
+  computedGroups: readonly (readonly GraphNode[])[],
+  actions: readonly GraphNode[],
+  iterations: number,
+): {
+  readonly stateGroups: readonly GraphNode[][];
+  readonly computedGroups: readonly GraphNode[][];
+  readonly actions: readonly GraphNode[];
+} {
+  const neighbours = buildNeighbourIndex(model);
+  let stateOrder = stateGroups.map((g) => [...g]);
+  let compOrder = computedGroups.map((g) => [...g]);
+  let actionOrder = [...actions];
+
+  for (let i = 0; i < iterations; i += 1) {
+    // Rank snapshots before this pass — sorting reads ranks computed
+    // from the previous pass, not the in-progress one, so the pass is
+    // deterministic regardless of iteration order.
+    const stateRank = rankMap(stateOrder.flat());
+    const compRank = rankMap(compOrder.flat());
+    const actionRank = rankMap(actionOrder);
+
+    // Re-sort state clusters by mean rank of connected actions (above)
+    // and computeds (right). Both contribute equally.
+    stateOrder = stateOrder.map((group) =>
+      stableSortBy(group, (s) =>
+        meanRank(s.id, neighbours, [actionRank, compRank]),
+      ),
+    );
+
+    const nextStateRank = rankMap(stateOrder.flat());
+
+    // Re-sort computed clusters by mean state rank.
+    compOrder = compOrder.map((group) =>
+      stableSortBy(group, (c) =>
+        meanRank(c.id, neighbours, [nextStateRank]),
+      ),
+    );
+
+    // Re-sort actions globally by mean state rank (state is the
+    // primary target column for "mutates"). Cluster boundaries aren't
+    // enforced for actions — the strip is a flat horizontal channel.
+    actionOrder = stableSortBy(actionOrder, (a) =>
+      meanRank(a.id, neighbours, [nextStateRank]),
+    );
+  }
+
+  return {
+    stateGroups: stateOrder,
+    computedGroups: compOrder,
+    actions: actionOrder,
+  };
+}
+
+function buildNeighbourIndex(
+  model: GraphModel,
+): ReadonlyMap<GraphNode["id"], readonly GraphNode["id"][]> {
+  const map = new Map<GraphNode["id"], GraphNode["id"][]>();
+  const push = (a: GraphNode["id"], b: GraphNode["id"]): void => {
+    const list = map.get(a);
+    if (list === undefined) map.set(a, [b]);
+    else list.push(b);
+  };
+  for (const e of model.edges) {
+    push(e.source, e.target);
+    push(e.target, e.source);
+  }
+  return map;
+}
+
+function rankMap(
+  nodes: readonly GraphNode[],
+): ReadonlyMap<GraphNode["id"], number> {
+  const map = new Map<GraphNode["id"], number>();
+  nodes.forEach((n, i) => map.set(n.id, i));
+  return map;
+}
+
+function meanRank(
+  id: GraphNode["id"],
+  neighbours: ReadonlyMap<GraphNode["id"], readonly GraphNode["id"][]>,
+  ranks: readonly ReadonlyMap<GraphNode["id"], number>[],
+): number {
+  const nbs = neighbours.get(id);
+  if (nbs === undefined || nbs.length === 0) return Number.POSITIVE_INFINITY;
+  let sum = 0;
+  let count = 0;
+  for (const nb of nbs) {
+    for (const m of ranks) {
+      const r = m.get(nb);
+      if (r !== undefined) {
+        sum += r;
+        count += 1;
+        break;
+      }
+    }
+  }
+  if (count === 0) return Number.POSITIVE_INFINITY;
+  return sum / count;
+}
+
+function stableSortBy<T>(arr: readonly T[], key: (t: T) => number): T[] {
+  // Map to (value, origIndex) so ties retain input order — V8's sort
+  // is stable but belt-and-suspenders for older engines / tests.
+  return arr
+    .map((v, i) => ({ v, i, k: key(v) }))
+    .sort((a, b) => (a.k === b.k ? a.i - b.i : a.k - b.k))
+    .map((x) => x.v);
 }
 
 /**
