@@ -27,6 +27,7 @@ import { SnapshotRipple } from "@/components/motion/SnapshotRipple";
 import { TimeScrubProvider } from "@/hooks/useTimeScrub";
 import { FocusProvider } from "@/hooks/useFocus";
 import { FocusSync } from "@/hooks/useFocusSync";
+import { ViewportProvider } from "@/hooks/useViewport";
 import { SourcePane } from "@/components/panes/SourcePane";
 import { ObservatoryPane } from "@/components/panes/ObservatoryPane";
 import { LensPane, type LensId } from "@/components/panes/LensPane";
@@ -178,6 +179,7 @@ export function App(): JSX.Element {
     <div className="flex flex-col h-screen relative">
       <StudioProvider core={core} adapter={adapter} historyPollMs={500}>
         <FocusProvider>
+        <ViewportProvider>
         <FocusSync editor={editor} />
         <TimeScrubProvider>
         <StudioHotkeys />
@@ -231,6 +233,7 @@ export function App(): JSX.Element {
         <NowLine />
         <SnapshotRipple />
         </TimeScrubProvider>
+        </ViewportProvider>
         </FocusProvider>
       </StudioProvider>
     </div>

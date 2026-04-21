@@ -184,7 +184,10 @@ export function StateCard(props: {
       onDoubleClick={props.onDoubleClick}
     >
       <CardHeader name={props.name} tone="state" />
-      <div className="flex flex-col justify-between flex-1 min-h-0 px-3 pb-2 gap-1">
+      <div
+        className="flex flex-col justify-between flex-1 min-h-0 px-3 pb-2 gap-1"
+        data-card-detail
+      >
         <div
           className="font-mono text-[10px] text-[var(--color-ink-mute)] truncate"
           title={props.typeLabel}
@@ -226,7 +229,10 @@ export function ComputedCard(props: {
       onDoubleClick={props.onDoubleClick}
     >
       <CardHeader name={props.name} tone="computed" />
-      <div className="flex flex-col justify-between flex-1 min-h-0 px-3 pb-2 gap-1">
+      <div
+        className="flex flex-col justify-between flex-1 min-h-0 px-3 pb-2 gap-1"
+        data-card-detail
+      >
         <div className="font-mono text-[10px] text-[var(--color-ink-mute)] truncate">
           {props.typeLabel || "derived"}
         </div>
@@ -297,7 +303,10 @@ export function ActionCard(props: {
           />
         }
       />
-      <div className="flex flex-col justify-between flex-1 min-h-0 px-3 pb-2">
+      <div
+        className="flex flex-col justify-between flex-1 min-h-0 px-3 pb-2"
+        data-card-detail
+      >
         <div className="font-mono text-[10px] text-[var(--color-ink-mute)] truncate">
           {props.argLabel || "no input"}
         </div>

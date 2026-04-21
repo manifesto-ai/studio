@@ -279,6 +279,16 @@
     );
   }
 
+  /* Semantic zoom — when the LiveGraph camera drops below k=0.5 the
+   * card-internal detail (value previews, type labels, footer rows)
+   * becomes unreadable. Hide those rows so the card reads as a
+   * structural token: kind + name only. Cards themselves remain at
+   * world-scale; the transform renders them smaller but still
+   * perceivable.  */
+  [data-zoom-state="low"] [data-card-detail] {
+    display: none;
+  }
+
   /* Focus pulse — Monaco whole-line decoration applied when the user
    * lands on a graph node from outside the editor (graph click,
    * diagnostic click). Quick violet wash that fades out so the eye

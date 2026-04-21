@@ -17,19 +17,20 @@ import {
   useStudio,
 } from "@manifesto-ai/studio-react";
 import { useFocus } from "@/hooks/useFocus";
+import {
+  computeFitCamera,
+  useViewport,
+  zoomAroundPointer,
+  MAX_ZOOM,
+  MIN_ZOOM,
+} from "@/hooks/useViewport";
 import { ActionCard, ComputedCard, StateCard } from "./NodeCard";
 import { EdgeLayer } from "./EdgeLayer";
 import { ActionDispatchPopover } from "./ActionDispatchPopover";
 import { formatType } from "./formatValue";
 import { computeLayout, type LayoutResult, type Rect } from "./layout";
 import { useLivePulse } from "./useLivePulse";
-import {
-  computePlaybackScrollTarget,
-  useSimulationPlayback,
-} from "./useSimulationPlayback";
-// computePlaybackScrollTarget handles the single-rect → viewport math
-// we need for the focus bounding-box too; feeding it a union rect gives
-// us the same "center if it fits, clamp otherwise" behaviour.
+import { useSimulationPlayback } from "./useSimulationPlayback";
 import { GraphSearch } from "./GraphSearch";
 
 /**
@@ -71,6 +72,12 @@ export function LiveGraph({
   const lastScrolledPlaybackGenerationRef = useRef<number>(0);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
 
+  const { camera, setCamera } = useViewport();
+  // Keep a ref to the latest camera so pointer handlers registered once
+  // can read current zoom without being re-bound on every tween step.
+  const cameraRef = useRef(camera);
+  cameraRef.current = camera;
+
   useLayoutEffect(() => {
     const el = hostRef.current;
     if (el === null) return;
@@ -82,8 +89,41 @@ export function LiveGraph({
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(el);
+    // measure() is recreated on every render but ResizeObserver only
+    // needs one subscription, so we don't redo this in the return.
     return () => ro.disconnect();
   }, []);
+
+  // --- Wheel pan / ctrl+wheel zoom ------------------------------------
+  // Attach natively (not via React's synthetic onWheel) so we can
+  // preventDefault — required to suppress native page zoom on
+  // ctrl+wheel and page scroll on plain wheel inside the canvas.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (host === null) return;
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault();
+      const cam = cameraRef.current;
+      if (e.ctrlKey || e.metaKey) {
+        const hostRect = host.getBoundingClientRect();
+        const screenPoint = {
+          x: e.clientX - hostRect.left,
+          y: e.clientY - hostRect.top,
+        };
+        // Exponential factor feels uniform across trackpads and mice.
+        const factor = Math.exp(-e.deltaY * 0.0015);
+        setCamera(zoomAroundPointer(cam, screenPoint, factor));
+      } else {
+        setCamera({
+          tx: cam.tx - e.deltaX,
+          ty: cam.ty - e.deltaY,
+          k: cam.k,
+        });
+      }
+    };
+    host.addEventListener("wheel", onWheel, { passive: false });
+    return () => host.removeEventListener("wheel", onWheel);
+  }, [setCamera]);
 
   const baseLayout: LayoutResult = useMemo(
     () =>
@@ -182,9 +222,13 @@ export function LiveGraph({
     (e: React.PointerEvent<HTMLElement>): void => {
       const drag = dragStateRef.current;
       if (drag === null || drag.pointerId !== e.pointerId) return;
-      const dx = e.clientX - drag.startPointerX;
-      const dy = e.clientY - drag.startPointerY;
-      if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+      // Pointer deltas are screen-space; divide by camera.k to get the
+      // matching world-space delta for the card's x/y in layout coords.
+      // (React Flow's #1 bug category — don't skip this division.)
+      const scale = cameraRef.current.k || 1;
+      const dx = (e.clientX - drag.startPointerX) / scale;
+      const dy = (e.clientY - drag.startPointerY) / scale;
+      if (!drag.moved && Math.hypot(dx, dy) < 4 / scale) return;
       drag.moved = true;
       const nextX = Math.max(0, drag.startX + dx);
       const nextY = Math.max(0, drag.startY + dy);
@@ -244,27 +288,27 @@ export function LiveGraph({
     [model, focusNodeId],
   );
 
-  // --- Focus viewport follow ------------------------------------------
-  // When focus lands on a node, scroll so the focus node + its 1-hop
-  // neighbours are all in view. This is the "bounding-box viewing
-  // focus" behaviour: it keeps the highlighted sub-graph on screen
-  // even when focus is driven from outside the canvas (Monaco cursor,
-  // diagnostic click). We skip the scroll if the sub-graph is already
-  // fully visible so typing/clicking doesn't constantly bounce the
-  // viewport. Runs on both origins — the source cursor is the primary
-  // reason this effect exists.
-  const lastScrolledFocusRef = useRef<GraphNode["id"] | null>(null);
+  // --- Focus camera follow --------------------------------------------
+  // Focus change → animate camera to fit (focus ∪ 1-hop neighbours) in
+  // the viewport. If the sub-graph is larger than the viewport, k drops
+  // below 1 to zoom out; otherwise k stays at 1 and only translate
+  // moves. This is the "bounding-box viewing focus" behaviour. When
+  // focus clears, return to identity.
+  //
+  // Keyed on node id so re-publishing the same focus from a different
+  // origin (source cursor echoing a graph click) doesn't re-animate.
+  const lastFitFocusRef = useRef<GraphNode["id"] | null>(null);
   useEffect(() => {
     if (focusNodeId === null) {
-      lastScrolledFocusRef.current = null;
+      if (lastFitFocusRef.current !== null) {
+        lastFitFocusRef.current = null;
+        setCamera({ tx: 0, ty: 0, k: 1 }, { animate: true });
+      }
       return;
     }
+    if (lastFitFocusRef.current === focusNodeId) return;
     const host = hostRef.current;
     if (host === null) return;
-    // Guard against re-scrolling when only the origin changed (e.g. the
-    // double-click path that re-publishes the same id). We key on node
-    // id — a genuine focus shift always carries a different id.
-    if (lastScrolledFocusRef.current === focusNodeId) return;
 
     const ids = new Set<GraphNode["id"]>([focusNodeId]);
     for (const id of neighbourhood.nodeIds) ids.add(id);
@@ -282,25 +326,14 @@ export function LiveGraph({
     }
     if (!Number.isFinite(minX)) return;
 
-    const target = computePlaybackScrollTarget(
+    const next = computeFitCamera(
       { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
-      {
-        left: host.scrollLeft,
-        top: host.scrollTop,
-        width: host.clientWidth,
-        height: host.clientHeight,
-        scrollWidth: host.scrollWidth,
-        scrollHeight: host.scrollHeight,
-      },
+      { width: host.clientWidth, height: host.clientHeight },
+      { padding: 72 },
     );
-    lastScrolledFocusRef.current = focusNodeId;
-    if (target === null) return;
-    host.scrollTo({
-      left: target.left,
-      top: target.top,
-      behavior: "smooth",
-    });
-  }, [focusNodeId, neighbourhood.nodeIds, layout.bounds]);
+    lastFitFocusRef.current = focusNodeId;
+    setCamera(next, { animate: true });
+  }, [focusNodeId, neighbourhood.nodeIds, layout.bounds, setCamera]);
 
   // --- Propagation pulse ----------------------------------------------
   const livePulse = useLivePulse(model);
@@ -346,26 +379,35 @@ export function LiveGraph({
     const host = hostRef.current;
     const originRect = layout.bounds.get(simulatePulse.originAction);
     if (host === null || originRect === undefined) return;
-    const target = computePlaybackScrollTarget(originRect, {
-      left: host.scrollLeft,
-      top: host.scrollTop,
-      width: host.clientWidth,
-      height: host.clientHeight,
-      scrollWidth: host.scrollWidth,
-      scrollHeight: host.scrollHeight,
-    });
-    if (target === null) return;
+    // Fit the origin action + touched downstream nodes in the camera.
+    // Falls back to just the origin rect if the pulse hasn't populated
+    // yet (first frame of a new generation).
+    let minX = originRect.x;
+    let minY = originRect.y;
+    let maxX = originRect.x + originRect.width;
+    let maxY = originRect.y + originRect.height;
+    for (const id of simulatePulse.activeNodes) {
+      const r = layout.bounds.get(id);
+      if (r === undefined) continue;
+      if (r.x < minX) minX = r.x;
+      if (r.y < minY) minY = r.y;
+      if (r.x + r.width > maxX) maxX = r.x + r.width;
+      if (r.y + r.height > maxY) maxY = r.y + r.height;
+    }
+    const target = computeFitCamera(
+      { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
+      { width: host.clientWidth, height: host.clientHeight },
+      { padding: 96 },
+    );
     lastScrolledPlaybackGenerationRef.current = simulatePulse.generation;
-    host.scrollTo({
-      left: target.left,
-      top: target.top,
-      behavior: "smooth",
-    });
+    setCamera(target, { animate: true });
   }, [
     disableDispatch,
     layout.bounds,
     simulatePulse.generation,
     simulatePulse.originAction,
+    simulatePulse.activeNodes,
+    setCamera,
   ]);
 
   // --- Action dispatch popover ----------------------------------------
@@ -516,16 +558,20 @@ export function LiveGraph({
     <>
     <div
       ref={hostRef}
-      className="absolute inset-0 overflow-auto"
+      className="absolute inset-0 overflow-hidden"
       onClick={(e) => {
         if (e.target === e.currentTarget) handleBackgroundClick();
       }}
+      data-zoom-state={camera.k < 0.5 ? "low" : "normal"}
     >
       <div
         className="relative"
         style={{
           width: layout.canvasWidth,
           height: layout.canvasHeight,
+          transform: `translate3d(${camera.tx}px, ${camera.ty}px, 0) scale(${camera.k})`,
+          transformOrigin: "0 0",
+          willChange: "transform",
         }}
         onClick={(e) => {
           if (e.target === e.currentTarget) handleBackgroundClick();
