@@ -102,6 +102,14 @@ export function App(): JSX.Element {
     adapter.requestBuild();
   }, [adapter, fixtureId, fixture.source]);
 
+  // Initial auto-build: when the adapter first becomes non-null, kick off
+  // a build so the Observatory graph populates without requiring the user
+  // to hit Ctrl+S first. Fires exactly once per adapter instance.
+  useEffect(() => {
+    if (adapter === null) return;
+    adapter.requestBuild();
+  }, [adapter]);
+
   const revealSpan = (line: number, column: number): void => {
     if (editor === null) return;
     const l = Math.max(1, line);
