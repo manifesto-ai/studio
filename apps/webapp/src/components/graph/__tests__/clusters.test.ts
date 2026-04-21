@@ -92,6 +92,38 @@ describe("detectClusters", () => {
     expect(sorted[1].states).toEqual(["state:s3"]);
   });
 
+  it("excludes universal bridge actions (reset, clear-all) from clustering", () => {
+    // Two genuinely separate slices: (a, s1, s2) and (b, s3, s4).
+    // A universal `reset` action mutates all four states. Without the
+    // bridge-action heuristic, `reset` would make every state look
+    // related and the whole schema would collapse into one cluster.
+    const g = model(
+      [
+        node("action:reset", "action"),
+        node("action:setA", "action"),
+        node("action:setB", "action"),
+        node("state:s1", "state"),
+        node("state:s2", "state"),
+        node("state:s3", "state"),
+        node("state:s4", "state"),
+      ],
+      [
+        edge("action:reset", "state:s1", "mutates"),
+        edge("action:reset", "state:s2", "mutates"),
+        edge("action:reset", "state:s3", "mutates"),
+        edge("action:reset", "state:s4", "mutates"),
+        edge("action:setA", "state:s1", "mutates"),
+        edge("action:setA", "state:s2", "mutates"),
+        edge("action:setB", "state:s3", "mutates"),
+        edge("action:setB", "state:s4", "mutates"),
+      ],
+    );
+    const { clusters } = detectClusters(g);
+    // Expect 2 clusters, not 1 — the bridge `reset` is filtered out.
+    const withStates = clusters.filter((c) => c.states.length > 0);
+    expect(withStates).toHaveLength(2);
+  });
+
   it("does not collapse weakly-bridging single actions", () => {
     // `reset` touches every state, but each state also has a dedicated
     // action. The Jaccard vs the dedicated mutator pair is low → we

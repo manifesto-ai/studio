@@ -39,6 +39,16 @@ export type ClusterMap = {
 /** Jaccard threshold for merging two state nodes into the same cluster. */
 const JACCARD_THRESHOLD = 0.3;
 
+/**
+ * Bridge-action heuristic: an action mutating ≥ this fraction of all
+ * state nodes is treated as a "universal" action (e.g. `reset`) and
+ * excluded from Jaccard comparisons. Without this, one reset-style
+ * action collapses every unrelated state into a single cluster.
+ * 0.6 chosen empirically — below that, domain-specific actions like
+ * `placeShip` that touch several states don't get mis-classified.
+ */
+const BRIDGE_ACTION_THRESHOLD = 0.6;
+
 export function detectClusters(model: GraphModel): ClusterMap {
   const stateNodes = model.nodes.filter((n) => n.kind === "state");
   const computedNodes = model.nodes.filter((n) => n.kind === "computed");
@@ -53,6 +63,35 @@ export function detectClusters(model: GraphModel): ClusterMap {
     if (set === undefined) continue;
     set.add(e.source);
   }
+
+  // Identify bridge actions (mutate most/all states). These inflate
+  // Jaccard similarity across unrelated domain slices and would
+  // collapse the whole schema into one cluster.
+  const bridgeActions = new Set<GraphNode["id"]>();
+  if (stateNodes.length >= 3) {
+    const mutationCount = new Map<GraphNode["id"], number>();
+    for (const set of mutators.values()) {
+      for (const actionId of set) {
+        mutationCount.set(actionId, (mutationCount.get(actionId) ?? 0) + 1);
+      }
+    }
+    const bridgeMin = Math.ceil(stateNodes.length * BRIDGE_ACTION_THRESHOLD);
+    for (const [actionId, count] of mutationCount) {
+      if (count >= bridgeMin) bridgeActions.add(actionId);
+    }
+  }
+  const exceptBridges = (set: ReadonlySet<GraphNode["id"]>): Set<GraphNode["id"]> => {
+    if (bridgeActions.size === 0) return set as Set<GraphNode["id"]>;
+    const filtered = new Set<GraphNode["id"]>();
+    for (const a of set) if (!bridgeActions.has(a)) filtered.add(a);
+    // Fallback: if filtering strips every mutator, the state only had
+    // bridge actions driving it — in that case keep the originals so
+    // the state still has a signal to cluster on (otherwise states
+    // mutated exclusively by a universal action would all become
+    // lonely singletons).
+    if (filtered.size === 0) return new Set(set);
+    return filtered;
+  };
 
   // Union-Find over state ids keyed by shared-mutator affinity.
   const parent = new Map<GraphNode["id"], GraphNode["id"]>();
@@ -74,15 +113,21 @@ export function detectClusters(model: GraphModel): ClusterMap {
   };
 
   // Pairwise merge on Jaccard ≥ threshold. O(S²) where S = state count;
-  // fine for Studio-scale schemas (<50 states).
+  // fine for Studio-scale schemas (<50 states). Bridge actions are
+  // filtered out of the similarity comparison so they don't glue
+  // unrelated slices together.
   for (let i = 0; i < stateNodes.length; i += 1) {
     const a = stateNodes[i];
-    const ma = mutators.get(a.id);
-    if (ma === undefined || ma.size === 0) continue;
+    const rawA = mutators.get(a.id);
+    if (rawA === undefined || rawA.size === 0) continue;
+    const ma = exceptBridges(rawA);
+    if (ma.size === 0) continue;
     for (let j = i + 1; j < stateNodes.length; j += 1) {
       const b = stateNodes[j];
-      const mb = mutators.get(b.id);
-      if (mb === undefined || mb.size === 0) continue;
+      const rawB = mutators.get(b.id);
+      if (rawB === undefined || rawB.size === 0) continue;
+      const mb = exceptBridges(rawB);
+      if (mb.size === 0) continue;
       const jaccard = jaccardSimilarity(ma, mb);
       if (jaccard >= JACCARD_THRESHOLD) union(a.id, b.id);
     }

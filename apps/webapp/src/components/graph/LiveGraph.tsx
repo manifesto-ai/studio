@@ -14,6 +14,8 @@ import {
   createIntentArgsForValue,
   createInitialFormValue,
   descriptorForAction,
+  FONT_STACK,
+  MONO_STACK,
   useStudio,
 } from "@manifesto-ai/studio-react";
 import { motion } from "motion/react";
@@ -171,22 +173,67 @@ export function LiveGraph({
     });
   }, [model.schemaHash]);
 
+  // Which clusters the user has collapsed. Collapsing re-homes every
+  // member rect to the cluster centre so cards converge into a single
+  // supernode overlay (FLIP carries them); edges still resolve
+  // correctly because endpoints share the supernode's rect.
+  const [collapsedClusters, setCollapsedClusters] = useState<
+    ReadonlySet<string>
+  >(new Set());
+  // Drop collapsed state when the schema changes — cluster ids are
+  // schema-scoped and may not match after a rebuild.
+  useEffect(() => {
+    setCollapsedClusters((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [model.schemaHash]);
+
   const layout: LayoutResult = useMemo(() => {
-    if (overrides.size === 0) return baseLayout;
+    if (overrides.size === 0 && collapsedClusters.size === 0) return baseLayout;
     let maxX = baseLayout.canvasWidth;
     let maxY = baseLayout.canvasHeight;
     const merged = new Map<GraphNode["id"], Rect>();
+
+    // Resolve collapsed cluster centres once.
+    const collapsedCentres = new Map<string, { x: number; y: number }>();
+    if (collapsedClusters.size > 0) {
+      for (const r of baseLayout.clusterRects ?? []) {
+        if (collapsedClusters.has(r.clusterId)) {
+          collapsedCentres.set(r.clusterId, {
+            x: r.x + r.width / 2,
+            y: r.y + r.height / 2,
+          });
+        }
+      }
+    }
+
     for (const [id, rect] of baseLayout.bounds) {
-      const o = overrides.get(overridesKey(id));
-      const finalRect: Rect =
-        o === undefined ? rect : { ...rect, x: o.x, y: o.y };
+      const clusterId = clusters.byNode.get(id);
+      const centre =
+        clusterId !== undefined ? collapsedCentres.get(clusterId) : undefined;
+      let finalRect: Rect;
+      if (centre !== undefined) {
+        // Homed to cluster centre so the cards converge visually.
+        finalRect = {
+          x: centre.x - rect.width / 2,
+          y: centre.y - rect.height / 2,
+          width: rect.width,
+          height: rect.height,
+        };
+      } else {
+        const o = overrides.get(overridesKey(id));
+        finalRect = o === undefined ? rect : { ...rect, x: o.x, y: o.y };
+      }
       merged.set(id, finalRect);
       maxX = Math.max(maxX, finalRect.x + finalRect.width + 28);
       maxY = Math.max(maxY, finalRect.y + finalRect.height + 28);
     }
-    return { bounds: merged, canvasWidth: maxX, canvasHeight: maxY };
+    return {
+      bounds: merged,
+      canvasWidth: maxX,
+      canvasHeight: maxY,
+      clusterRects: baseLayout.clusterRects,
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseLayout, overrides, model.schemaHash]);
+  }, [baseLayout, overrides, collapsedClusters, clusters, model.schemaHash]);
 
   // --- Focus / neighbourhood ------------------------------------------
   // Focus is global (see `useFocus`) so that the Monaco cursor can move
@@ -598,26 +645,133 @@ export function LiveGraph({
           if (e.target === e.currentTarget) handleBackgroundClick();
         }}
       >
-        {/* Cluster boundaries — subtle dashed rectangles behind the
-         * state+computed columns. Hidden while focus layout is active
-         * (clusters don't map onto the focus sub-graph). */}
-        {!focusActive && effectiveLayout.clusterRects?.map((r) => (
-          <div
-            key={r.clusterId}
-            aria-hidden
-            style={{
-              position: "absolute",
-              left: r.x,
-              top: r.y,
-              width: r.width,
-              height: r.height,
-              borderRadius: 12,
-              border: "1px dashed color-mix(in oklch, var(--color-violet) 30%, transparent)",
-              pointerEvents: "none",
-              opacity: 0.65,
-            }}
-          />
-        ))}
+        {/* Cluster boundaries — dashed rectangles behind the column
+         * group, with a chevron toggle to collapse/expand. Hidden
+         * while focus layout is active. Collapsed clusters render
+         * their member cards at the cluster centre (handled in layout)
+         * and a supernode overlay on top. */}
+        {!focusActive && effectiveLayout.clusterRects?.map((r) => {
+          const cluster = clusters.clusters.find((c) => c.id === r.clusterId);
+          if (cluster === undefined) return null;
+          const isCollapsed = collapsedClusters.has(r.clusterId);
+          const memberCount =
+            cluster.states.length + cluster.computeds.length + cluster.actions.length;
+          return (
+            <div
+              key={r.clusterId}
+              style={{
+                position: "absolute",
+                left: r.x,
+                top: r.y,
+                width: r.width,
+                height: r.height,
+              }}
+            >
+              <div
+                aria-hidden
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  borderRadius: 12,
+                  border: "1px dashed color-mix(in oklch, var(--color-violet) 30%, transparent)",
+                  pointerEvents: "none",
+                  opacity: isCollapsed ? 0 : 0.65,
+                  transition: "opacity 250ms ease-out",
+                }}
+              />
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCollapsedClusters((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(r.clusterId)) next.delete(r.clusterId);
+                    else next.add(r.clusterId);
+                    return next;
+                  });
+                }}
+                title={isCollapsed ? "Expand cluster" : "Collapse cluster"}
+                style={{
+                  position: "absolute",
+                  top: -10,
+                  left: 12,
+                  height: 20,
+                  padding: "0 8px",
+                  borderRadius: 10,
+                  border: "1px solid color-mix(in oklch, var(--color-violet) 45%, transparent)",
+                  background: "var(--color-void-hi, #1A2036)",
+                  color: "var(--color-ink-dim, #95A3B8)",
+                  fontFamily: MONO_STACK,
+                  fontSize: 10,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
+                <span style={{ color: "var(--color-violet, #9f7bff)" }}>
+                  {isCollapsed ? "▸" : "▾"}
+                </span>
+                <span>{cluster.label}</span>
+                <span style={{ color: "var(--color-ink-mute, #607089)" }}>
+                  · {memberCount}
+                </span>
+              </button>
+              {isCollapsed ? (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.28, delay: 0.18 }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCollapsedClusters((prev) => {
+                      const next = new Set(prev);
+                      next.delete(r.clusterId);
+                      return next;
+                    });
+                  }}
+                  style={{
+                    position: "absolute",
+                    left: r.width / 2 - 90,
+                    top: r.height / 2 - 28,
+                    width: 180,
+                    height: 56,
+                    borderRadius: 10,
+                    border: "1px solid color-mix(in oklch, var(--color-violet) 55%, transparent)",
+                    background: "color-mix(in oklch, var(--color-void-hi, #1A2036) 92%, var(--color-violet, #9f7bff))",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 2,
+                    cursor: "pointer",
+                    boxShadow: "0 4px 24px color-mix(in oklch, var(--color-violet, #9f7bff) 20%, transparent)",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: FONT_STACK,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: "var(--color-ink, #E6EBF8)",
+                    }}
+                  >
+                    {cluster.label}
+                  </span>
+                  <span
+                    style={{
+                      fontFamily: MONO_STACK,
+                      fontSize: 10,
+                      color: "var(--color-ink-mute, #607089)",
+                    }}
+                  >
+                    {cluster.states.length}s · {cluster.computeds.length}c · {cluster.actions.length}a
+                  </span>
+                </motion.div>
+              ) : null}
+            </div>
+          );
+        })}
 
         <EdgeLayer
           model={effectiveModel}
@@ -626,6 +780,8 @@ export function LiveGraph({
           pulsingEdgeIds={pulsingEdgeIds}
           dimmed={dimmed}
           focusActive={focusActive}
+          clusters={clusters}
+          bundlingEnabled={!focusActive && clusters.clusters.length > 1}
         />
 
         {model.nodes.map((node) => {
@@ -900,10 +1056,17 @@ function typeOfComputed(
   name: string,
 ): string {
   if (module === null) return "derived";
-  const spec = module.schema.computed?.[name];
+  // ComputedSpec shape is `{ fields: Record<string, ComputedFieldSpec> }`
+  // — index through `fields`, not the ComputedSpec itself.
+  const spec = module.schema.computed.fields?.[name];
   if (spec === undefined) return "derived";
-  if ((spec as { returnType?: unknown }).returnType !== undefined) {
-    return formatType((spec as { returnType: unknown }).returnType);
+  // `ComputedFieldSpec` doesn't currently declare a returnType field,
+  // but the MEL compiler may expose one in the future — double-cast via
+  // `unknown` to read it opportunistically without lying to TS about
+  // the static shape.
+  const withReturnType = spec as unknown as { returnType?: unknown };
+  if (withReturnType.returnType !== undefined) {
+    return formatType(withReturnType.returnType);
   }
   return "derived";
 }

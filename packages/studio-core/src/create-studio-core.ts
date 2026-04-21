@@ -151,6 +151,23 @@ export function createStudioCore(options?: StudioCoreOptions): StudioCore {
     return runtime.whyNot(intent as never) as readonly DispatchBlocker[] | null;
   }
 
+  function isActionAvailable(name: string): boolean {
+    if (state.runtime === null) return false;
+    const runtimeApi = state.runtime as unknown as {
+      readonly isActionAvailable?: (n: string) => boolean;
+    };
+    if (typeof runtimeApi.isActionAvailable !== "function") return true;
+    try {
+      return runtimeApi.isActionAvailable(name);
+    } catch {
+      // If the runtime throws (e.g. unknown action), treat as
+      // unavailable rather than propagating — callers (UI) only need
+      // a yes/no and can show the raw action in a "possibly broken"
+      // state through their own diagnostics path.
+      return false;
+    }
+  }
+
   async function dispatchAsync(intent: Intent): Promise<StudioDispatchResult> {
     const runtime = requireRuntime("dispatchAsync");
     const schemaHash = state.currentSchemaHash;
@@ -191,7 +208,24 @@ export function createStudioCore(options?: StudioCoreOptions): StudioCore {
     if (actionRef === undefined) {
       throw new Error(`[studio-core] unknown action: ${intent.type}`);
     }
-    const simulateArgs = intent.input === undefined ? [] : [intent.input];
+    // `intent.input` is keyed by parameter name (SDK createIntent
+    // convention), e.g. `{ payload: { title: "…" } }`. The SDK's
+    // `simulate` takes positional args per action `params`, so we
+    // unwrap by schema-declared order. Handing `intent.input` through
+    // verbatim throws "Unknown field: payload" on single-parameter
+    // actions like `save(payload: Payload)`. (`dispatchAsyncWithReport`
+    // takes the whole intent and does this unwrap internally — simulate
+    // does not, hence the asymmetry.)
+    const actionSpec = (runtime.schema.actions as Record<string, { params?: readonly string[] }> | undefined)?.[intent.type];
+    const paramNames = actionSpec?.params ?? [];
+    const simulateArgs =
+      intent.input === undefined
+        ? []
+        : paramNames.length === 0
+          ? []
+          : paramNames.map((name) =>
+              (intent.input as Record<string, unknown>)[name],
+            );
     const typedSimulate = runtime.simulate as unknown as (
       ref: unknown,
       ...rest: unknown[]
@@ -210,6 +244,7 @@ export function createStudioCore(options?: StudioCoreOptions): StudioCore {
     whyNot,
     dispatchAsync,
     simulate,
+    isActionAvailable,
     getTraceHistory,
     getLastReconciliationPlan,
     getModule,

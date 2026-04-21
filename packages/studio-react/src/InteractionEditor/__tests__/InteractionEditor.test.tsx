@@ -352,17 +352,14 @@ describe("InteractionEditor — todo.mel end-to-end", () => {
     cleanup();
   });
 
-  it("dispatches sparse optional payloads without materializing hidden fields", async () => {
-    // This regression test targets sparse-optional payload
-    // serialization at the dispatch boundary. It predates Rule S1
-    // and currently hits a latent issue on the `simulate()` path for
-    // sparse payloads — tracked in `docs/studio/backlog.md`. We
-    // intentionally opt out of simulate-first here so the
-    // dispatch-path assertion (data.note === "") stays directly
-    // verifiable. Every other scenario in this file honors Rule S1.
-    const { container, core, cleanup } = await mountWithSource(optionalSource, {
-      enforceSimulateFirst: false,
-    });
+  it("dispatches sparse optional payloads via Simulate-first (Rule S1)", async () => {
+    // Sparse-optional regression: `save({ title: "hello" })` with the
+    // `note?` field omitted used to throw "Unknown field: payload" on
+    // the simulate() path because studio-core didn't unwrap
+    // intent.input by parameter name. Fixed in create-studio-core.ts;
+    // this test now exercises the full Rule S1 flow (Simulate unlocks
+    // Dispatch) to guard the regression.
+    const { container, core, cleanup } = await mountWithSource(optionalSource);
     const select = container.querySelector("#ie-action-select") as HTMLSelectElement;
     await act(async () => {
       fireInput(select, "save");
@@ -371,9 +368,17 @@ describe("InteractionEditor — todo.mel end-to-end", () => {
     await act(async () => {
       fireInput(titleInput, "hello");
     });
+    const simulateBtn = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim().startsWith("Simulate"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      simulateBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     const dispatchBtn = Array.from(container.querySelectorAll("button")).find(
       (b) => b.textContent?.trim().startsWith("Dispatch"),
     ) as HTMLButtonElement;
+    expect(dispatchBtn.disabled).toBe(false);
     await act(async () => {
       dispatchBtn.click();
       await new Promise((resolve) => setTimeout(resolve, 20));

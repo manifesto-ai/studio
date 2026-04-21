@@ -1,7 +1,13 @@
 import { useMemo } from "react";
 import { motion } from "motion/react";
 import type { GraphEdge, GraphModel } from "@manifesto-ai/studio-react";
-import { attachPoint, edgePath, type LayoutResult } from "./layout";
+import {
+  attachPoint,
+  bundledEdgePath,
+  edgePath,
+  type LayoutResult,
+} from "./layout";
+import type { ClusterMap } from "./clusters";
 
 type EdgeRelation = "feeds" | "mutates" | "unlocks";
 
@@ -41,6 +47,8 @@ export function EdgeLayer({
   pulsingEdgeIds,
   dimmed,
   focusActive = false,
+  clusters,
+  bundlingEnabled = false,
 }: {
   readonly model: GraphModel;
   readonly layout: LayoutResult;
@@ -54,12 +62,35 @@ export function EdgeLayer({
    * — a clean fade-swap instead of jittery path jumps.
    */
   readonly focusActive?: boolean;
+  /**
+   * Cluster map driving bundling. Edges crossing cluster boundaries
+   * share a rendezvous point (per src-cluster / tgt-cluster pair), so
+   * parallel connections between the same two clusters visually merge
+   * into a trunk. Intra-cluster edges use the regular straight bezier.
+   */
+  readonly clusters?: ClusterMap;
+  /** Bundling is gated by the graph — we disable it during focus mode
+   * since the subgraph is meant to be read as individual connections. */
+  readonly bundlingEnabled?: boolean;
 }): JSX.Element {
   const paths = useMemo(() => {
     const out: {
       readonly edge: GraphEdge;
       readonly d: string;
     }[] = [];
+
+    // Pre-compute cluster centres once — rendezvous for a src/tgt
+    // cluster pair is the midpoint of those centres.
+    const clusterCentres = new Map<string, { x: number; y: number }>();
+    if (bundlingEnabled && layout.clusterRects !== undefined) {
+      for (const r of layout.clusterRects) {
+        clusterCentres.set(r.clusterId, {
+          x: r.x + r.width / 2,
+          y: r.y + r.height / 2,
+        });
+      }
+    }
+
     for (const edge of model.edges) {
       const source = layout.bounds.get(edge.source);
       const target = layout.bounds.get(edge.target);
@@ -74,10 +105,31 @@ export function EdgeLayer({
       };
       const fromPoint = attachPoint(source, targetCenter.x, targetCenter.y);
       const toPoint = attachPoint(target, sourceCenter.x, sourceCenter.y);
-      out.push({ edge, d: edgePath(fromPoint, toPoint) });
+
+      let d = edgePath(fromPoint, toPoint);
+      if (bundlingEnabled && clusters !== undefined) {
+        const srcCluster = clusters.byNode.get(edge.source);
+        const tgtCluster = clusters.byNode.get(edge.target);
+        if (
+          srcCluster !== undefined &&
+          tgtCluster !== undefined &&
+          srcCluster !== tgtCluster
+        ) {
+          const srcCentre = clusterCentres.get(srcCluster);
+          const tgtCentre = clusterCentres.get(tgtCluster);
+          if (srcCentre !== undefined && tgtCentre !== undefined) {
+            const rendezvous = {
+              x: (srcCentre.x + tgtCentre.x) / 2,
+              y: (srcCentre.y + tgtCentre.y) / 2,
+            };
+            d = bundledEdgePath(fromPoint, toPoint, rendezvous);
+          }
+        }
+      }
+      out.push({ edge, d });
     }
     return out;
-  }, [layout, model.edges]);
+  }, [layout, model.edges, bundlingEnabled, clusters]);
 
   return (
     <motion.svg

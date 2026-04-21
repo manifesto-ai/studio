@@ -97,20 +97,16 @@
 
 ## 5. Phase 2 (Intent Insight Ladder)에서 발견된 후속 항목
 
-### 5.1 Sparse-optional payload의 simulate() 실패 (의심)
+### 5.1 Sparse-optional payload의 simulate() 실패 — ✅ 해결됨
 
-- 증상: `type Payload = { title: string, note?: string }` 같은 optional 필드를 갖는 action에 대해 sparse form value(`{title: "hello"}`, note 생략)로 `simulate()` 호출 시, `simulate()`가 throw하거나 `admitted` 가 아닌 결과를 반환하는 것으로 관찰됨. 동일한 sparse intent의 `dispatchAsync()`는 성공 (기존 regression 테스트로 검증).
-- 재현: `packages/studio-react/src/InteractionEditor/__tests__/InteractionEditor.test.tsx` → "dispatches sparse optional payloads" 테스트. 현재 이 테스트는 `<InteractionEditor enforceSimulateFirst={false} />` 로 Rule S1을 opt-out하여 dispatch 경로만 검증한다. Rule S1을 enforce하면 `expect(dispatchBtn.disabled).toBe(false)`에서 실패 (disabled=true).
-- 원인 가설: `createIntentArgsForValue` 또는 SDK `createIntent()`가 sparse object를 intent input으로 packing하는 방식이 simulate 경로에서만 문제를 일으킴. 또는 `simulate()` 내부의 canonical snapshot projection 단계에서 undefined 필드 접근 에러.
-- 영향: `InteractionEditor.enforceSimulateFirst` prop의 escape hatch가 이 버그 해결까지 유지되어야 함. 해결 후 해당 테스트를 다시 Rule S1 경로로 전환 + prop 제거.
-- 우선순위: Medium — production에서 optional 필드를 포함한 schema를 빌드하는 순간 사다리 Step 4가 스스로 블록됨. 유저가 "왜 Dispatch가 안 열리지" 상태로 멈춤.
+- 원인 확인: `studio-core.simulate(intent)`가 `intent.input` 전체(`{payload: {...}}`)를 SDK runtime.simulate의 positional arg로 그대로 넘겨서 `"Unknown field: payload"` throw. `dispatchAsyncWithReport`는 intent 직접 받아 내부에서 unwrap하므로 영향 없었음.
+- 수정: `simulate()` 내부에서 `schema.actions[intent.type].params` 순서로 intent.input을 positional args로 spread.
+- 테스트: InteractionEditor 회귀 테스트를 Rule S1 경로 (Simulate → Dispatch)로 되돌리고 `enforceSimulateFirst={false}` opt-out 제거.
 
-### 5.2 Pillar 1 (Harness > Guardrail)의 Studio UI 구현
+### 5.2 Pillar 1 (Harness > Guardrail) Studio UI — ✅ 부분 해결됨
 
-- 현재 상태: 철학 문서 Rule H1/H2/H3 전체 미구현. 액션 셀렉터가 `getAvailableActions()` 필터를 적용하지 않고 `schema.actions` 전체를 나열.
-- 필요 작업: 셀렉터를 두 레지스터로 분할 — "지금 할 수 있는 일" (default 열림) + "현재 불가능" (default 접힘, 각 액션에 대해 `available when` guard의 정적 counterfactual 동반).
-- 의존: Rule H3은 SDK 반환을 DOM에 직접 매핑해야 함 — 현재 `useStudio` 훅이 `getAvailableActions`를 노출하는지 확인 후 진행.
-- 우선순위: High — Pillar 1이 철학 문서에서 가장 강한 주장이면서 UI 침묵이 가장 심함.
+- 구현: `studio-core.isActionAvailable(name)` surface 추가. InteractionEditor의 액션 `<select>`를 `<optgroup>` 두 개로 분할 — "Available now" + "Currently unavailable"(∅ prefix).
+- 남은 부분: H3 정적 counterfactual (unavailable 액션별로 "이렇게 하면 가능" 힌트). `available when` expression에 `firstProvableHint` 적용 필요. 다음 사이클.
 
 ### 5.3 Pillar 4 (Time is first-class)의 Studio UI 구현
 
@@ -124,30 +120,20 @@
 
 Phase 1 (`detectClusters` + cluster-aware column layout + dashed 경계)이 landing됨. 다음은 사용자 요청으로 백로그 이관.
 
-### 6.1 Collapsible cluster (Phase 2)
+### 6.1 Collapsible cluster — ✅ 해결됨
 
-- 목적: cluster 당 헤더를 추가해 클릭 시 내부 전체 카드를 하나의 축약 "supernode" 카드로 접고, 재클릭 시 펼침.
-- 설계 스케치:
-  - `useState<Set<ClusterId>>` 로컬 관리(collapsed set).
-  - 접힌 cluster의 member 카드는 렌더 스킵, supernode 1개를 cluster rect 중앙에 렌더.
-  - 외부(다른 cluster 또는 orphans)에서 들어오는/나가는 edge는 supernode 앵커로 redirect.
-  - 내부 edge는 숨김.
-- Tradeoff: 상태 관리 + edge redirect 로직 추가. 상호작용 디자인(hover vs click, shift+click로 전체 collapse 등) 필요.
-- 우선순위: Medium — Battleship 같이 cluster가 3–4개 있는 시나리오에서 체감 효과 큼. 작은 도메인(todo)에서는 over-engineering 위험.
+- 구현: cluster 경계에 chevron 토글 버튼, 접힘 상태 `collapsedClusters: Set<ClusterId>` 로컬 관리. 접힌 cluster는 member rect를 cluster 중앙으로 override → FLIP 애니메이션이 카드를 중앙으로 모음 + supernode overlay 1개를 중앙에 렌더. Edge endpoint가 member rect를 따라가므로 자동으로 supernode로 수렴(explicit reroute 없이도 시각 효과 확보).
+- 남은 부분: 접힌 상태에서 내부 edge가 0-length로 그려짐(시각상 안 보여도 DOM에 남음). Phase 3 edge reroute와 함께 정리 고려.
 
-### 6.2 Hierarchical edge bundling (Phase 3)
+### 6.2 Hierarchical edge bundling — ✅ 해결됨
 
-- 목적: 같은 source-cluster → target-cluster edges를 trunk 하나로 수렴시켜 시각 소음 감소.
-- 설계: Holten 2006 방식의 간이 구현 — cluster 중심으로의 control point를 bezier에 주입해 edges가 가운데로 휘도록. hover 시 해당 edge만 untangle.
-- Tradeoff: SVG path 계산 복잡도 moderate. EdgeLayer를 확장하거나 별도 `BundledEdgeLayer` 도입.
-- 의존: Phase 2와 독립적으로 구현 가능. Phase 1 출력(ClusterMap)만 있으면 됨.
-- 우선순위: Low — Phase 1/2 이후 여전히 edge 밀도가 문제로 남으면 착수.
+- 구현: `bundledEdgePath(from, to, rendezvous)` helper — source/target attach에서 perpendicular로 나와 rendezvous(두 cluster 중심의 midpoint)에서 만나는 2-segment bezier. 같은 src/tgt cluster pair edges는 같은 rendezvous를 통과해 "trunk" 효과. `EdgeLayer`에 `bundlingEnabled` prop. focus mode에서는 비활성.
+- 남은 부분: hover 시 해당 edge만 un-bundle하는 인터랙션 (복잡도 높음, 후속).
 
-### 6.3 Cluster 알고리즘 튜닝
+### 6.3 Cluster 알고리즘 튜닝 — ✅ 해결됨
 
-- Jaccard threshold 0.3이 battleship 실사용에서 어떻게 보이는지 관찰 후 조정.
-- `reset` 같은 universal action이 너무 많은 cluster를 묶는 경우 "degree > N 이상 action은 bridge로 제외" 같은 heuristic 추가 검토.
-- 현재는 action share만 봄. computed dependency가 실제 cluster membership과 어긋나는 경우(예: unused computed)에 대한 처리 검토.
+- 구현: bridge-action heuristic. 전체 state의 60% 이상을 mutate하는 action은 "universal"로 간주하고 Jaccard 비교에서 제외. 단, 어떤 state가 bridge action 만으로 mutation된다면 fallback으로 bridge 포함 (그래야 singleton으로 떨어지지 않음). 테스트 케이스 추가.
+- 남은 부분: threshold 값(0.3 / 0.6)이 실사용에서 어떻게 보이는지 관찰 후 조정. computed affinity가 실제 cluster membership과 어긋나는 경우 추가 검토.
 
 ---
 

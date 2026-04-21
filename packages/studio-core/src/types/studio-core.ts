@@ -44,6 +44,14 @@ export type StudioCore = {
   readonly whyNot: (intent: Intent) => readonly DispatchBlocker[] | null;
   readonly dispatchAsync: (intent: Intent) => Promise<StudioDispatchResult>;
   readonly simulate: (intent: Intent) => StudioSimulateResult;
+  /**
+   * Coarse availability check — `true` when the action's `available
+   * when` guard holds on the current snapshot. Does NOT evaluate
+   * `dispatchable when` (that needs a constructed intent). Drives the
+   * Harness UI split (Pillar 1) between "things you can do now" and
+   * "things that are currently unavailable".
+   */
+  readonly isActionAvailable: (name: string) => boolean;
   readonly getTraceHistory: () => readonly TraceRecord[];
   readonly getLastReconciliationPlan: () => ReconciliationPlan | null;
   readonly getModule: () => DomainModule | null;

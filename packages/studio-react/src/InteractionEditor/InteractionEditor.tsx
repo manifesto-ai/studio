@@ -53,8 +53,10 @@ export type InteractionEditorProps = {
 export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Element {
   const enforceSimulateFirst = props.enforceSimulateFirst ?? true;
   const {
+    core,
     module,
     snapshot,
+    version,
     explainIntent,
     simulate,
     dispatch,
@@ -66,6 +68,24 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
     if (module === null) return [] as readonly string[];
     return Object.keys(module.schema.actions).sort();
   }, [module]);
+
+  // Pillar 1 — Harness > Guardrail. Actions split into "available now"
+  // vs "currently unavailable" based on the coarse `available when`
+  // guard. The unavailable set isn't hidden (users still need to find
+  // an action to understand why it's locked), but it's rendered in a
+  // separate `<optgroup>` so the primary register is what the user
+  // CAN do. `version` participates in the deps so the split re-runs
+  // on snapshot changes.
+  const actionSplits = useMemo(() => {
+    const available: string[] = [];
+    const unavailable: string[] = [];
+    for (const name of actionNames) {
+      if (core.isActionAvailable(name)) available.push(name);
+      else unavailable.push(name);
+    }
+    return { available, unavailable };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actionNames, core, version]);
 
   const [selectedAction, setSelectedAction] = useState<string | null>(
     props.initialAction ?? null,
@@ -312,11 +332,26 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
           {actionNames.length === 0 ? (
             <option value="">(no actions)</option>
           ) : (
-            actionNames.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))
+            <>
+              {actionSplits.available.length > 0 ? (
+                <optgroup label="Available now">
+                  {actionSplits.available.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {actionSplits.unavailable.length > 0 ? (
+                <optgroup label="Currently unavailable">
+                  {actionSplits.unavailable.map((name) => (
+                    <option key={name} value={name}>
+                      ∅ {name}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+            </>
           )}
         </select>
       </div>
