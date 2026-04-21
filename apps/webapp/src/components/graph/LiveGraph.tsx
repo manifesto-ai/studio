@@ -16,6 +16,7 @@ import {
   descriptorForAction,
   useStudio,
 } from "@manifesto-ai/studio-react";
+import { useFocus } from "@/hooks/useFocus";
 import { ActionCard, ComputedCard, StateCard } from "./NodeCard";
 import { EdgeLayer } from "./EdgeLayer";
 import { ActionDispatchPopover } from "./ActionDispatchPopover";
@@ -41,12 +42,10 @@ import { GraphSearch } from "./GraphSearch";
  */
 export function LiveGraph({
   model,
-  onRevealNode,
   snapshotOverride,
   disableDispatch = false,
 }: {
   readonly model: GraphModel;
-  readonly onRevealNode: (node: GraphNode) => void;
   readonly snapshotOverride?:
     | {
         readonly data?: unknown;
@@ -218,7 +217,25 @@ export function LiveGraph({
   const wasDraggedSinceLastClickRef = useRef(false);
 
   // --- Focus / neighbourhood ------------------------------------------
-  const [focusNodeId, setFocusNodeId] = useState<GraphNode["id"] | null>(null);
+  // Focus is global (see `useFocus`) so that the Monaco cursor can move
+  // the graph's focus and vice versa. Local "which node is focused" is
+  // a read-through on that state.
+  const { focus, setFocus, clear: clearFocus } = useFocus();
+  const focusNodeId: GraphNode["id"] | null =
+    focus !== null && focus.kind === "node" ? focus.id : null;
+  const focusNode = useCallback(
+    (id: GraphNode["id"]): void => {
+      setFocus({ kind: "node", id, origin: "graph" });
+    },
+    [setFocus],
+  );
+  const toggleFocus = useCallback(
+    (id: GraphNode["id"]): void => {
+      if (focusNodeId === id) clearFocus();
+      else setFocus({ kind: "node", id, origin: "graph" });
+    },
+    [focusNodeId, setFocus, clearFocus],
+  );
   const neighbourhood = useMemo(
     () => computeNeighbourhood(model, focusNodeId),
     [model, focusNodeId],
@@ -297,10 +314,13 @@ export function LiveGraph({
   } | null>(null);
   const closePopover = useCallback(() => setPopoverAction(null), []);
 
-  // Reset transient UI on schema change
+  // Reset transient UI on schema change. Focus is cleared too — node
+  // ids are schema-scoped, so the old focus target may not exist any
+  // more after a rebuild.
   useEffect(() => {
     setPopoverAction(null);
-    setFocusNodeId(null);
+    clearFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model.schemaHash]);
 
   // Close popover when dispatching is disabled (past mode)
@@ -340,7 +360,7 @@ export function LiveGraph({
           setSearchOpen(false);
           setSearchQuery("");
         } else {
-          setFocusNodeId(null);
+          clearFocus();
           setPopoverAction(null);
         }
         return;
@@ -415,18 +435,18 @@ export function LiveGraph({
       }
       if (node.kind === "action" && !disableDispatch) {
         setPopoverAction({ name: node.name, anchor: el });
-        setFocusNodeId(node.id);
+        focusNode(node.id);
       } else {
-        setFocusNodeId((prev) => (prev === node.id ? null : node.id));
+        toggleFocus(node.id);
       }
     },
-    [disableDispatch],
+    [disableDispatch, focusNode, toggleFocus],
   );
 
   const handleBackgroundClick = useCallback(() => {
-    setFocusNodeId(null);
+    clearFocus();
     setPopoverAction(null);
-  }, []);
+  }, [clearFocus]);
 
   const searchActive = searchOpen && searchQuery.trim() !== "";
   const dimmed = focusNodeId !== null || searchActive;
@@ -478,7 +498,10 @@ export function LiveGraph({
             onPointerMove: onNodePointerMove,
             onPointerUp: onNodePointerUp,
             onActivate: (el: HTMLElement) => handleNodeActivate(node, el),
-            onRevealSource: () => onRevealNode(node),
+            // Double-click routes to Focus (origin=graph). `useFocusSync`
+            // then reveals + pulses the span in Monaco. For action cards
+            // this path is handy: single=popover, double=jump to source.
+            onRevealSource: () => focusNode(node.id),
           };
 
           if (node.kind === "state") {

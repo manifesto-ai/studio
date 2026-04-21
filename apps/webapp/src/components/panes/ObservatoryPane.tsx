@@ -1,10 +1,8 @@
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import { Orbit, Clock } from "lucide-react";
-import * as monaco from "monaco-editor";
 import {
   buildGraphModel,
   useStudio,
-  type GraphNode,
 } from "@manifesto-ai/studio-react";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/Panel";
 import { Button } from "@/components/ui/Button";
@@ -18,11 +16,7 @@ import { useTimeScrub } from "@/hooks/useTimeScrub";
  * opens a dispatch popover; a new envelope animates a propagation
  * pulse from the origin through its downstream cascade.
  */
-export function ObservatoryPane({
-  editor,
-}: {
-  readonly editor: monaco.editor.IStandaloneCodeEditor | null;
-}): JSX.Element {
+export function ObservatoryPane(): JSX.Element {
   const { module: liveModule, plan } = useStudio();
   const { state: scrub, returnToNow } = useTimeScrub();
 
@@ -37,19 +31,6 @@ export function ObservatoryPane({
   const graphModel = useMemo(
     () => buildGraphModel(effectiveModule, effectivePlan),
     [effectiveModule, effectivePlan],
-  );
-
-  const revealNode = useCallback(
-    (node: GraphNode): void => {
-      if (editor === null || node.sourceSpan === null) return;
-      editor.revealLineInCenterIfOutsideViewport(node.sourceSpan.start.line);
-      editor.setPosition({
-        lineNumber: node.sourceSpan.start.line,
-        column: node.sourceSpan.start.column,
-      });
-      editor.focus();
-    },
-    [editor],
   );
 
   const hasGraph =
@@ -81,7 +62,6 @@ export function ObservatoryPane({
         {hasGraph ? (
           <LiveGraph
             model={graphModel}
-            onRevealNode={revealNode}
             snapshotOverride={
               scrub.mode === "past" ? scrub.snapshot : undefined
             }

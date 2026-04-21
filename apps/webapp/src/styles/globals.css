@@ -278,6 +278,25 @@
       transparent 100%
     );
   }
+
+  /* Focus pulse — Monaco whole-line decoration applied when the user
+   * lands on a graph node from outside the editor (graph click,
+   * diagnostic click). Quick violet wash that fades out so the eye
+   * catches the landing zone without leaving permanent visual noise. */
+  .mf-focus-pulse {
+    animation: mf-focus-pulse 720ms ease-out forwards;
+  }
+  @keyframes mf-focus-pulse {
+    0% {
+      background: color-mix(in oklch, var(--color-violet-hot) 44%, transparent);
+    }
+    55% {
+      background: color-mix(in oklch, var(--color-violet-hot) 22%, transparent);
+    }
+    100% {
+      background: transparent;
+    }
+  }
 }
 
 /* ---------------------------------------------------------------------------
