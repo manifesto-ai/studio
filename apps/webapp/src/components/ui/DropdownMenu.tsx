@@ -11,6 +11,8 @@ export const DropdownMenu = DropdownMenuPrimitive.Root;
 export const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
 export const DropdownMenuGroup = DropdownMenuPrimitive.Group;
 export const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
+export const DropdownMenuSub = DropdownMenuPrimitive.Sub;
+export const DropdownMenuSubTrigger = DropdownMenuPrimitive.SubTrigger;
 
 export const DropdownMenuContent = forwardRef<
   ElementRef<typeof DropdownMenuPrimitive.Content>,
@@ -99,6 +101,28 @@ export const DropdownMenuLabel = forwardRef<
       )}
       {...props}
     />
+  );
+});
+
+export const DropdownMenuSubContent = forwardRef<
+  ElementRef<typeof DropdownMenuPrimitive.SubContent>,
+  ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubContent>
+>(function DropdownMenuSubContent({ className, ...props }, ref) {
+  return (
+    <DropdownMenuPrimitive.Portal>
+      <DropdownMenuPrimitive.SubContent
+        ref={ref}
+        className={cn(
+          "z-50 min-w-[10rem] overflow-hidden rounded-lg p-1",
+          "bg-[var(--color-void-hi)]/95 backdrop-blur-xl",
+          "border border-[var(--color-glass-edge)]",
+          "shadow-[var(--shadow-glass)]",
+          "text-[12px] font-sans text-[var(--color-ink)]",
+          className,
+        )}
+        {...props}
+      />
+    </DropdownMenuPrimitive.Portal>
   );
 });
 

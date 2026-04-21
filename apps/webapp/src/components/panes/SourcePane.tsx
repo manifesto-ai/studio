@@ -3,7 +3,6 @@ import { CircleAlert, Command, TriangleAlert } from "lucide-react";
 import { useStudio } from "@manifesto-ai/studio-react";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/Panel";
 import { Button } from "@/components/ui/Button";
-import type { Fixture } from "@/fixtures";
 
 /**
  * SourcePane — wraps the Monaco host div in a glass viewport.
@@ -13,8 +12,8 @@ import type { Fixture } from "@/fixtures";
  * stable across adapter transitions. We only reparent the *chrome*,
  * not the editor surface.
  */
-export const SourcePane = forwardRef<HTMLDivElement, { readonly fixture: Fixture }>(
-  function SourcePane({ fixture }, hostRef) {
+export const SourcePane = forwardRef<HTMLDivElement, object>(
+  function SourcePane(_props, hostRef) {
     const { module, diagnostics } = useStudio();
 
     const { errors, warnings } = useMemo(() => {
