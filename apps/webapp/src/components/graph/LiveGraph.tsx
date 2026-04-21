@@ -388,10 +388,39 @@ export function LiveGraph({
   // re-focus within a session.
   const lastFocusActiveRef = useRef<boolean>(false);
   useEffect(() => {
-    if (focusActive === lastFocusActiveRef.current) return;
+    const wasActive = lastFocusActiveRef.current;
     lastFocusActiveRef.current = focusActive;
-    setCamera({ tx: 0, ty: 0, k: 1 }, { animate: true });
-  }, [focusActive, setCamera]);
+    if (!focusActive) {
+      // Focus cleared — return to identity camera.
+      if (wasActive) {
+        setCamera({ tx: 0, ty: 0, k: 1 }, { animate: true });
+      }
+      return;
+    }
+    const host = hostRef.current;
+    if (host === null || focusLayout === null) return;
+    // Fit the entire focus-layout bounding box into the viewport so
+    // dense neighbourhoods zoom out instead of overlapping. Canvas
+    // grows with neighbour count (see computeFocusLayout), and
+    // semantic zoom handles text legibility at low k.
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const rect of focusLayout.bounds.values()) {
+      if (rect.x < minX) minX = rect.x;
+      if (rect.y < minY) minY = rect.y;
+      if (rect.x + rect.width > maxX) maxX = rect.x + rect.width;
+      if (rect.y + rect.height > maxY) maxY = rect.y + rect.height;
+    }
+    if (!Number.isFinite(minX)) return;
+    const next = computeFitCamera(
+      { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
+      { width: host.clientWidth, height: host.clientHeight },
+      { padding: 48 },
+    );
+    setCamera(next, { animate: true });
+  }, [focusActive, focusLayout, setCamera]);
 
   // --- Propagation pulse ----------------------------------------------
   const livePulse = useLivePulse(model);

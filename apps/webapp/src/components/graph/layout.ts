@@ -410,8 +410,27 @@ export function computeFocusLayout(
   const leftStates = others.filter((n) => n.kind === "state");
   const rightComputeds = others.filter((n) => n.kind === "computed");
 
-  const W = Math.max(containerWidth, CARD_WIDTH * 3 + GAP * 8);
-  const H = Math.max(containerHeight, CARD_HEIGHT * 4 + GAP * 8);
+  // Adaptive canvas — grow with neighbour count so cards never overlap
+  // even when a single focus has many connections. The camera fit pass
+  // downstream (LiveGraph) zooms the canvas into the viewport, and
+  // semantic zoom collapses card detail at low k, so "big canvas +
+  // zoomed out" is a clean read rather than an overflow.
+  const stackHeight = (count: number): number =>
+    count === 0 ? 0 : count * CARD_HEIGHT + (count - 1) * GAP;
+  const stripWidth = (count: number): number =>
+    count === 0 ? 0 : count * CARD_WIDTH + (count - 1) * GAP;
+
+  const verticalNeed =
+    CARD_HEIGHT + // focus card
+    GAP * 6 + // breathing room around focus
+    Math.max(stackHeight(leftStates.length), stackHeight(rightComputeds.length));
+  const horizontalNeed =
+    CARD_WIDTH + // focus card
+    GAP * 8 + // left gutter + right gutter + separation
+    Math.max(CARD_WIDTH * 2, stripWidth(topActions.length));
+
+  const W = Math.max(containerWidth, horizontalNeed);
+  const H = Math.max(containerHeight, verticalNeed);
   const cx = W / 2;
   const cy = H / 2;
   const focusX = cx - CARD_WIDTH / 2;
