@@ -18,6 +18,7 @@ import { BlockerList } from "./BlockerList.js";
 import { IntentLadder } from "./IntentLadder.js";
 import { SimulatePreview } from "./SimulatePreview.js";
 import { createIntentArgsForValue } from "./action-intent.js";
+import { collectStateArrays, suggestIds } from "./suggest-strings.js";
 import {
   createInitialFormValue,
   descriptorForAction,
@@ -174,6 +175,23 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
   }, [defaultSession, sessionKey]);
 
   const [pending, setPending] = useState<"simulate" | "dispatch" | null>(null);
+
+  // Id-lookup dropdown for action form strings. When a field label ends
+  // in "id" / contains "ref", suggest existing ids pulled from any
+  // array-valued state on the current snapshot. Used to live in the
+  // inline action popover; lifted up when we consolidated all action
+  // dispatch into the Interact lens.
+  const suggestionSource = useMemo(
+    () => collectStateArrays(snapshot),
+    [snapshot],
+  );
+  const getStringSuggestions = useCallback(
+    ({ label }: { readonly label?: string }): readonly string[] => {
+      if (label === undefined) return [];
+      return suggestIds(label, suggestionSource);
+    },
+    [suggestionSource],
+  );
 
   useEffect(() => {
     if (sessionKey === null) return;
@@ -400,6 +418,7 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
             value={value}
             onChange={onValueChange}
             disabled={pending !== null}
+            getStringSuggestions={getStringSuggestions}
           />
         )}
       </div>
