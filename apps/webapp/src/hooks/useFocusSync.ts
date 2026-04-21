@@ -122,7 +122,9 @@ export function useFocusSync(
         },
       },
     ]);
-    const timer = window.setTimeout(() => collection.clear(), 750);
+    // Matches the 1500ms keyframe animation + a small buffer so the
+    // decoration stays alive until the pulse finishes rendering.
+    const timer = window.setTimeout(() => collection.clear(), 1600);
     return () => {
       window.clearTimeout(timer);
       collection.clear();
