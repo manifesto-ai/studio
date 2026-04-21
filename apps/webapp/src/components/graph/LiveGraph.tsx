@@ -29,7 +29,12 @@ import { ActionCard, ComputedCard, StateCard } from "./NodeCard";
 import { EdgeLayer } from "./EdgeLayer";
 import { ActionDispatchPopover } from "./ActionDispatchPopover";
 import { formatType } from "./formatValue";
-import { computeLayout, type LayoutResult, type Rect } from "./layout";
+import {
+  computeFocusLayout,
+  computeLayout,
+  type LayoutResult,
+  type Rect,
+} from "./layout";
 import { useLivePulse } from "./useLivePulse";
 import { useSimulationPlayback } from "./useSimulationPlayback";
 import { GraphSearch } from "./GraphSearch";
@@ -229,11 +234,11 @@ export function LiveGraph({
     return { schemaHash: model.schemaHash, nodes, edges, nodesById };
   }, [focusNodeId, focusedNodeSet, model]);
   const focusLayout = useMemo<LayoutResult | null>(() => {
-    if (focusedModel === null) return null;
+    if (focusedModel === null || focusNodeId === null) return null;
     const W = Math.max(viewport.width, 640);
     const H = Math.max(viewport.height, 440);
-    return computeLayout(focusedModel, W, H);
-  }, [focusedModel, viewport.width, viewport.height]);
+    return computeFocusLayout(focusedModel, focusNodeId, W, H);
+  }, [focusedModel, focusNodeId, viewport.width, viewport.height]);
   const focusActive = focusLayout !== null;
   const effectiveModel: GraphModel = focusedModel ?? model;
   const effectiveLayout: LayoutResult = focusLayout ?? layout;
@@ -433,6 +438,16 @@ export function LiveGraph({
   useEffect(() => {
     if (disableDispatch) setPopoverAction(null);
   }, [disableDispatch]);
+
+  // Close popover whenever focus enters / exits. The anchor DOM moves
+  // with the card's FLIP animation and Radix Popover does NOT auto-
+  // update its floating position — so the popover would visually stay
+  // pinned to the anchor's old viewport coords until the next toggle.
+  // Clean-close beats a stuck popover. The user can re-open at the
+  // new location by clicking the action card again in focus mode.
+  useEffect(() => {
+    setPopoverAction(null);
+  }, [focusActive]);
 
   // --- Search / filter (G6) -------------------------------------------
   const [searchOpen, setSearchOpen] = useState(false);
@@ -807,7 +822,17 @@ function InteractiveCard({
         height: rect.height,
         opacity: faded ? 0 : 1,
       }}
-      transition={{ duration: 0.36, ease: [0.32, 0.72, 0.28, 1] }}
+      transition={{
+        // Layout changes use a critically-damped-ish spring so enter
+        // settles cleanly without overshoot and exit feels organic
+        // rather than mechanical. Opacity tweens separately on a
+        // shorter linear so fading cards don't "hold on" visually.
+        x: { type: "spring", stiffness: 260, damping: 30, mass: 0.9 },
+        y: { type: "spring", stiffness: 260, damping: 30, mass: 0.9 },
+        width: { type: "spring", stiffness: 260, damping: 30, mass: 0.9 },
+        height: { type: "spring", stiffness: 260, damping: 30, mass: 0.9 },
+        opacity: { duration: 0.22, ease: "easeOut" },
+      }}
       style={{
         position: "absolute",
         left: 0,

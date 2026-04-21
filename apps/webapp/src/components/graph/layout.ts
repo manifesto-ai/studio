@@ -143,6 +143,109 @@ export function computeLayout(
 }
 
 /**
+ * Focus-specific layout — the focused node goes to the viewport center;
+ * its 1-hop neighbours fan out by kind into the same spatial grammar
+ * the base layout uses, but rotated around the focus:
+ *
+ *   state neighbours   → left column
+ *   computed neighbours→ right column
+ *   action neighbours  → top strip
+ *
+ * Semantically this mirrors the base "inputs top → truth left →
+ * derivations right" grammar, just re-anchored on whatever the user is
+ * looking at. For any focus kind the neighbours keep their directional
+ * meaning, so the focus card at the center reads as a "junction" and
+ * edges flow in/out at the expected angles.
+ */
+export function computeFocusLayout(
+  model: GraphModel,
+  focusNodeId: GraphNode["id"],
+  containerWidth: number,
+  containerHeight: number,
+): LayoutResult {
+  const focus = model.nodesById.get(focusNodeId);
+  if (focus === undefined) {
+    return computeLayout(model, containerWidth, containerHeight);
+  }
+  const others = model.nodes.filter((n) => n.id !== focusNodeId);
+  const topActions = others.filter((n) => n.kind === "action");
+  const leftStates = others.filter((n) => n.kind === "state");
+  const rightComputeds = others.filter((n) => n.kind === "computed");
+
+  const W = Math.max(containerWidth, CARD_WIDTH * 3 + GAP * 8);
+  const H = Math.max(containerHeight, CARD_HEIGHT * 4 + GAP * 8);
+  const cx = W / 2;
+  const cy = H / 2;
+  const focusX = cx - CARD_WIDTH / 2;
+  const focusY = cy - CARD_HEIGHT / 2;
+
+  const bounds = new Map<GraphNode["id"], Rect>();
+  bounds.set(focus.id, {
+    x: focusX,
+    y: focusY,
+    width: CARD_WIDTH,
+    height: CARD_HEIGHT,
+  });
+
+  // Left column — state neighbours. Separation from the focus uses
+  // GAP*3 so edges have breathing room and arrows don't collide with
+  // the focus card border.
+  const leftColX = Math.max(ZONE_MARGIN, focusX - CARD_WIDTH - GAP * 3);
+  const leftHeight =
+    leftStates.length * CARD_HEIGHT + Math.max(0, leftStates.length - 1) * GAP;
+  const leftStartY = cy - leftHeight / 2;
+  leftStates.forEach((n, i) => {
+    bounds.set(n.id, {
+      x: leftColX,
+      y: leftStartY + i * (CARD_HEIGHT + GAP),
+      width: CARD_WIDTH,
+      height: CARD_HEIGHT,
+    });
+  });
+
+  // Right column — computed neighbours.
+  const rightColX = Math.min(
+    W - CARD_WIDTH - ZONE_MARGIN,
+    focusX + CARD_WIDTH + GAP * 3,
+  );
+  const rightHeight =
+    rightComputeds.length * CARD_HEIGHT +
+    Math.max(0, rightComputeds.length - 1) * GAP;
+  const rightStartY = cy - rightHeight / 2;
+  rightComputeds.forEach((n, i) => {
+    bounds.set(n.id, {
+      x: rightColX,
+      y: rightStartY + i * (CARD_HEIGHT + GAP),
+      width: CARD_WIDTH,
+      height: CARD_HEIGHT,
+    });
+  });
+
+  // Top strip — action neighbours, centered above the focus card.
+  const topCount = topActions.length;
+  const topTotalWidth =
+    topCount * CARD_WIDTH + Math.max(0, topCount - 1) * GAP;
+  const topStartX = cx - topTotalWidth / 2;
+  const topY = Math.max(ZONE_MARGIN, focusY - CARD_HEIGHT - GAP * 3);
+  topActions.forEach((n, i) => {
+    bounds.set(n.id, {
+      x: topStartX + i * (CARD_WIDTH + GAP),
+      y: topY,
+      width: CARD_WIDTH,
+      height: CARD_HEIGHT,
+    });
+  });
+
+  let maxX = W;
+  let maxY = H;
+  for (const rect of bounds.values()) {
+    maxX = Math.max(maxX, rect.x + rect.width + ZONE_MARGIN);
+    maxY = Math.max(maxY, rect.y + rect.height + ZONE_MARGIN);
+  }
+  return { bounds, canvasWidth: maxX, canvasHeight: maxY };
+}
+
+/**
  * Compute an attach point on a rect for edges. Chooses the side of the
  * card closest to the target point, snapped to the card's midpoint on
  * that side so edges always leave cards perpendicularly.
