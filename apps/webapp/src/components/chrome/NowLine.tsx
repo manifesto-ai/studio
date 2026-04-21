@@ -1,7 +1,10 @@
 import { useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { Play } from "lucide-react";
-import { useStudio } from "@manifesto-ai/studio-react";
+import {
+  useStudio,
+  type DispatchHistoryEntry,
+} from "@manifesto-ai/studio-react";
 import type { EditIntentEnvelope } from "@manifesto-ai/studio-core";
 import {
   Tooltip,
@@ -11,6 +14,20 @@ import {
 } from "@/components/ui/Tooltip";
 import { useTimeScrub } from "@/hooks/useTimeScrub";
 import { cn } from "@/lib/cn";
+
+type TimelineTick =
+  | {
+      readonly kind: "edit";
+      readonly key: string;
+      readonly timestamp: number;
+      readonly env: EditIntentEnvelope;
+    }
+  | {
+      readonly kind: "dispatch";
+      readonly key: string;
+      readonly timestamp: number;
+      readonly entry: DispatchHistoryEntry;
+    };
 
 /**
  * NowLine — the signature element of Deterministic Observatory.
@@ -24,17 +41,32 @@ import { cn } from "@/lib/cn";
  * replay-from-here (P1-G8).
  */
 export function NowLine(): JSX.Element {
-  const { history, module } = useStudio();
+  const { history, dispatchHistory, module } = useStudio();
   const { state: scrub, select, returnToNow, selectedEnvelopeId } =
     useTimeScrub();
   const [hovered, setHovered] = useState<string | null>(null);
 
-  const ticks = useMemo(() => {
-    if (history.length === 0) return [] as readonly EditIntentEnvelope[];
-    // Keep the most recent 24 envelopes; the beam is a live status strip,
-    // not an archival view (History lens handles that).
-    return history.slice(-24);
-  }, [history]);
+  const ticks = useMemo<readonly TimelineTick[]>(() => {
+    if (history.length === 0 && dispatchHistory.length === 0) return [];
+    const merged: TimelineTick[] = [
+      ...history.map((env) => ({
+        kind: "edit" as const,
+        key: `edit:${env.id}`,
+        timestamp: env.timestamp,
+        env,
+      })),
+      ...dispatchHistory.map((entry) => ({
+        kind: "dispatch" as const,
+        key: `dispatch:${entry.id}`,
+        timestamp: entry.recordedAt,
+        entry,
+      })),
+    ];
+    merged.sort((a, b) => a.timestamp - b.timestamp);
+    // Keep the most recent 24 ticks; the beam is a live status strip,
+    // not an archival view (Dispatches lens handles the full log).
+    return merged.slice(-24);
+  }, [history, dispatchHistory]);
 
   const now = ticks[ticks.length - 1];
   const scrubbing = scrub.mode === "past";
@@ -57,25 +89,31 @@ export function NowLine(): JSX.Element {
           <div className="measure-line absolute inset-x-0 top-1/2 -translate-y-1/2" />
           <div className="relative flex-1 flex items-center justify-between gap-1">
             {ticks.length === 0 ? null : (
-              ticks.map((env, i) => {
+              ticks.map((tick, i) => {
                 const isNow = i === ticks.length - 1;
-                const isSelected = env.id === selectedEnvelopeId;
+                const isSelected =
+                  tick.kind === "edit" && tick.env.id === selectedEnvelopeId;
                 return (
-                  <Tooltip key={env.id}>
+                  <Tooltip key={tick.key}>
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        onPointerEnter={() => setHovered(env.id)}
+                        onPointerEnter={() => setHovered(tick.key)}
                         onPointerLeave={() =>
-                          setHovered((h) => (h === env.id ? null : h))
+                          setHovered((h) => (h === tick.key ? null : h))
                         }
                         onClick={() => {
-                          if (isSelected) {
+                          if (tick.kind === "dispatch") {
+                            // Dispatch ticks aren't time-scrub anchors —
+                            // SDK replay consumes edit envelopes only.
+                            // Clicking one just drops back to live.
                             returnToNow();
-                          } else if (isNow) {
+                            return;
+                          }
+                          if (isSelected || isNow) {
                             returnToNow();
                           } else {
-                            select(env.id);
+                            select(tick.env.id);
                           }
                         }}
                         className="
@@ -84,22 +122,37 @@ export function NowLine(): JSX.Element {
                           focus-visible:outline-2 focus-visible:outline-[var(--color-violet-hot)]
                           focus-visible:outline-offset-2 rounded-sm
                         "
-                        aria-label={`Envelope ${env.id}`}
+                        aria-label={
+                          tick.kind === "edit"
+                            ? `Envelope ${tick.env.id}`
+                            : `Dispatch ${tick.entry.intentType}`
+                        }
                         aria-pressed={isSelected}
+                        data-tick-kind={tick.kind}
                       >
                         <TickMark
-                          active={hovered === env.id}
+                          active={hovered === tick.key}
                           isNow={isNow}
                           isSelected={isSelected}
+                          kind={tick.kind}
+                          status={
+                            tick.kind === "dispatch"
+                              ? tick.entry.status
+                              : undefined
+                          }
                         />
                       </button>
                     </TooltipTrigger>
                     <TooltipContent side="top" sideOffset={10}>
-                      <TickTooltipBody
-                        env={env}
-                        isNow={isNow}
-                        isSelected={isSelected}
-                      />
+                      {tick.kind === "edit" ? (
+                        <TickTooltipBody
+                          env={tick.env}
+                          isNow={isNow}
+                          isSelected={isSelected}
+                        />
+                      ) : (
+                        <DispatchTooltipBody entry={tick.entry} isNow={isNow} />
+                      )}
                     </TooltipContent>
                   </Tooltip>
                 );
@@ -146,27 +199,50 @@ function TickMark({
   active,
   isNow,
   isSelected,
+  kind,
+  status,
 }: {
   readonly active: boolean;
   readonly isNow: boolean;
   readonly isSelected: boolean;
+  readonly kind: TimelineTick["kind"];
+  readonly status?: DispatchHistoryEntry["status"];
 }): JSX.Element {
+  // Edit ticks use the violet temporal palette (the "time axis" identity).
+  // Dispatch ticks reuse the Observatory status colors so successful /
+  // rejected / failed transitions read at a glance.
+  const baseColor =
+    kind === "edit"
+      ? "var(--color-rule-strong)"
+      : status === "completed"
+        ? "var(--color-sig-action)"
+        : status === "rejected"
+          ? "var(--color-sig-determ)"
+          : "var(--color-sig-effect)";
+  const hotColor =
+    kind === "edit" ? "var(--color-violet-hot)" : baseColor;
   const color = isSelected
     ? "var(--color-violet-hot)"
     : isNow
-      ? "var(--color-violet-hot)"
+      ? hotColor
       : active
-        ? "var(--color-violet)"
-        : "var(--color-rule-strong)";
+        ? kind === "edit"
+          ? "var(--color-violet)"
+          : baseColor
+        : baseColor;
+  // Dispatch ticks render as a small square to visually distinguish from
+  // the circular edit ticks without needing a legend.
+  const isDispatch = kind === "dispatch";
   const size = isSelected ? 8 : isNow ? 7 : active ? 6 : 4;
   return (
     <motion.span
       layout
       aria-hidden
-      className="block rounded-full"
+      className={isDispatch ? "block" : "block rounded-full"}
       style={{
         width: size,
         height: size,
+        borderRadius: isDispatch ? 1 : undefined,
         background: color,
         boxShadow:
           isSelected || isNow
@@ -181,6 +257,57 @@ function TickMark({
       }}
       transition={{ duration: 0.15 }}
     />
+  );
+}
+
+function DispatchTooltipBody({
+  entry,
+  isNow,
+}: {
+  readonly entry: DispatchHistoryEntry;
+  readonly isNow: boolean;
+}): JSX.Element {
+  const statusLabel =
+    entry.status === "completed"
+      ? "completed"
+      : entry.status === "rejected"
+        ? `rejected · ${entry.rejectionCode?.toLowerCase().replace(/_/g, " ") ?? "blocked"}`
+        : "failed";
+  const statusColor =
+    entry.status === "completed"
+      ? "text-[var(--color-sig-action)]"
+      : entry.status === "rejected"
+        ? "text-[var(--color-sig-determ)]"
+        : "text-[var(--color-sig-effect)]";
+  const detail =
+    entry.status === "completed"
+      ? entry.changedPaths.length === 0
+        ? "no state change"
+        : `${entry.changedPaths.length} path${entry.changedPaths.length === 1 ? "" : "s"} changed`
+      : entry.status === "failed"
+        ? entry.failureMessage ?? "execution failed"
+        : "blocked before execution";
+  return (
+    <div className="flex flex-col gap-1 min-w-[200px]">
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-mono text-[10px] text-[var(--color-ink)]">
+          dispatch · {entry.intentType}
+        </span>
+        <span
+          className={`font-sans text-[10px] font-medium tracking-[0.04em] uppercase ${
+            isNow
+              ? "text-[var(--color-violet-hot)]"
+              : "text-[var(--color-ink-mute)]"
+          }`}
+        >
+          {isNow ? "now" : formatTime(entry.recordedAt)}
+        </span>
+      </div>
+      <div className={`font-mono text-[10px] ${statusColor}`}>{statusLabel}</div>
+      <div className="font-mono text-[10px] text-[var(--color-ink-mute)]">
+        {detail}
+      </div>
+    </div>
   );
 }
 

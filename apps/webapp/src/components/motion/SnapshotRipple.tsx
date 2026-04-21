@@ -12,8 +12,22 @@ import { useStudio } from "@manifesto-ai/studio-react";
  * commit triggers exactly one ripple.
  */
 export function SnapshotRipple(): JSX.Element {
-  const { history } = useStudio();
-  const latestId = history[history.length - 1]?.id ?? null;
+  const { history, dispatchHistory } = useStudio();
+  // Ripple fires whenever the world advances — either by a schema edit
+  // (new envelope) or by a dispatch (new snapshot transition). We pick
+  // whichever stream's tail is newer.
+  const lastEdit = history[history.length - 1] ?? null;
+  const lastDispatch = dispatchHistory[dispatchHistory.length - 1] ?? null;
+  const latestId =
+    lastEdit === null && lastDispatch === null
+      ? null
+      : lastDispatch === null
+        ? `edit:${lastEdit!.id}`
+        : lastEdit === null
+          ? `dispatch:${lastDispatch.id}`
+          : lastDispatch.recordedAt >= lastEdit.timestamp
+            ? `dispatch:${lastDispatch.id}`
+            : `edit:${lastEdit.id}`;
   const prevIdRef = useRef<string | null>(latestId);
   const [pulseKey, setPulseKey] = useState<string | null>(null);
 
