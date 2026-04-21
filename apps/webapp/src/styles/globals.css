@@ -1,0 +1,354 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ---------------------------------------------------------------------------
+ * Deterministic Observatory — design tokens
+ *
+ * Visual language for Manifesto Studio.  Manifesto's core strengths
+ * (determinism, snapshot-as-sole-medium, patches-only, effects-as-declarations,
+ * why/whyNot) all collapse to a single idea: *observability of a pure world*.
+ * So the chrome reads as an **instrument panel** — dark void, aurora glow,
+ * glass viewports, signal channels per domain element.
+ * ------------------------------------------------------------------------- */
+@theme inline {
+  /* Surface — the observatory itself */
+  --color-void:         oklch(0.09 0.03 280);
+  --color-void-hi:      oklch(0.14 0.04 282);
+  --color-void-edge:    oklch(0.22 0.06 285);
+
+  /* Glass — observation viewports */
+  --color-glass:        color-mix(in oklch, var(--color-violet) 5%, transparent);
+  --color-glass-hi:     color-mix(in oklch, var(--color-violet) 9%, transparent);
+  --color-glass-edge:   color-mix(in oklch, var(--color-violet) 18%, transparent);
+  --color-glass-edge-hot: color-mix(in oklch, var(--color-violet-hot) 50%, transparent);
+
+  /* Primary — the brand signal */
+  --color-violet:       oklch(0.66 0.22 290);
+  --color-violet-hot:   oklch(0.75 0.22 292);
+  --color-violet-deep:  oklch(0.35 0.18 288);
+
+  /* Signal channels — each domain element has its own frequency */
+  --color-sig-state:    oklch(0.85 0.15 180);  /* cyan — observed */
+  --color-sig-action:   oklch(0.80 0.15 70);   /* amber — intervention */
+  --color-sig-computed: oklch(0.66 0.22 290);  /* violet — derived */
+  --color-sig-effect:   oklch(0.72 0.20 25);   /* coral — beyond-boundary */
+  --color-sig-determ:   oklch(0.85 0.22 150);  /* lime — pure/reproducible */
+
+  /* Text */
+  --color-ink:          oklch(0.92 0.02 290);
+  --color-ink-dim:      oklch(0.66 0.03 285);
+  --color-ink-mute:     oklch(0.46 0.03 285);
+  --color-ink-faint:    oklch(0.32 0.03 285);
+
+  /* Semantic */
+  --color-ok:           oklch(0.85 0.22 150);
+  --color-warn:         oklch(0.80 0.15 70);
+  --color-err:          oklch(0.72 0.22 15);
+
+  /* Border / divider */
+  --color-rule:         color-mix(in oklch, var(--color-violet) 10%, transparent);
+  --color-rule-strong:  color-mix(in oklch, var(--color-violet) 22%, transparent);
+
+  /* Typography — IDE tone: single sans family (Geist) + mono (JetBrains).
+   * No editorial serif. Display weight is heavier but same family. */
+  --font-display:       "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-sans:          "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono:          "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Radii */
+  --radius-chip:        0.375rem;
+  --radius-panel:       0.75rem;
+  --radius-lg:          1rem;
+
+  /* Shadows / glows */
+  --shadow-glass:       0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
+                         0 0 0 1px var(--color-glass-edge),
+                         0 30px 60px -20px rgba(0, 0, 0, 0.5);
+  --shadow-glow-violet: 0 0 24px -4px color-mix(in oklch, var(--color-violet) 50%, transparent);
+  --shadow-glow-hot:    0 0 32px -2px color-mix(in oklch, var(--color-violet-hot) 60%, transparent);
+}
+
+/* ---------------------------------------------------------------------------
+ * Base layer — html/body/root ambient
+ * ------------------------------------------------------------------------- */
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--color-void);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01", "ss03";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    /* Aurora: wide, subtle violet glow bleeding from the top-left. Plus a
+     * second, colder glow from the bottom-right. This is the observatory's
+     * ambient light. */
+    background-image:
+      radial-gradient(1400px 700px at 15% -10%,
+        color-mix(in oklch, var(--color-violet) 22%, transparent) 0%,
+        transparent 55%),
+      radial-gradient(1100px 600px at 110% 110%,
+        color-mix(in oklch, var(--color-sig-state) 14%, transparent) 0%,
+        transparent 55%),
+      linear-gradient(180deg, var(--color-void) 0%, var(--color-void) 100%);
+    background-attachment: fixed;
+  }
+
+  /* Micro coordinate grid — present but restrained. Reinforces the
+   * "everything has a position" idea without shouting. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image:
+      linear-gradient(to right, var(--color-glass-edge) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--color-glass-edge) 1px, transparent 1px);
+    background-size: 48px 48px;
+    opacity: 0.18;
+    mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 0%, transparent 90%);
+  }
+
+  /* Film grain overlay — very subtle, only at high DPI. Instrument feel. */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    opacity: 0.05;
+    mix-blend-mode: overlay;
+  }
+
+  #root {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Focus ring — use the brand signal, not browser default. */
+  :focus-visible {
+    outline: 2px solid var(--color-violet-hot);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* Scrollbars — quiet, instrument-like. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-rule-strong) transparent;
+  }
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-rule-strong);
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--color-violet);
+    background-clip: content-box;
+    border: 2px solid transparent;
+  }
+
+  /* Selection */
+  ::selection {
+    background: color-mix(in oklch, var(--color-violet) 40%, transparent);
+    color: var(--color-ink);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Components — reusable primitives composed from tokens
+ * ------------------------------------------------------------------------- */
+@layer components {
+  /* Glass viewport — the primary surface metaphor. */
+  .glass {
+    background: var(--color-glass);
+    backdrop-filter: blur(24px) saturate(1.4);
+    -webkit-backdrop-filter: blur(24px) saturate(1.4);
+    border: 1px solid var(--color-glass-edge);
+    box-shadow: var(--shadow-glass);
+  }
+  .glass-hi {
+    background: var(--color-glass-hi);
+    backdrop-filter: blur(32px) saturate(1.6);
+    -webkit-backdrop-filter: blur(32px) saturate(1.6);
+    border: 1px solid var(--color-glass-edge);
+    box-shadow: var(--shadow-glass);
+  }
+
+  /* Section label — restrained, IDE-style. Sans, small-caps-feel via
+   * uppercase but with moderate tracking. */
+  .label-channel {
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-ink-dim);
+  }
+
+  /* Hash chip — the Manifesto signature. Shows a snapshot / schema
+   * / module fingerprint. Appears everywhere.  */
+  .hash-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.125rem 0.5rem;
+    background: color-mix(in oklch, var(--color-violet) 8%, transparent);
+    border: 1px solid var(--color-glass-edge);
+    border-radius: var(--radius-chip);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--color-ink);
+  }
+  .hash-chip::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--color-violet-hot);
+    box-shadow: 0 0 8px var(--color-violet-hot);
+  }
+
+  /* Signal dot — colour-coded domain element indicator. */
+  .sig-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+    box-shadow: 0 0 8px currentColor;
+  }
+
+  /* Aurora ring — subtle animated halo for active panels. */
+  .aurora-ring {
+    position: relative;
+  }
+  .aurora-ring::before {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    padding: 1px;
+    background: conic-gradient(
+      from 0deg,
+      var(--color-violet),
+      var(--color-sig-state),
+      var(--color-violet-hot),
+      var(--color-violet)
+    );
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    -webkit-mask-composite: xor;
+    opacity: 0.6;
+    animation: aurora-spin 8s linear infinite;
+    pointer-events: none;
+  }
+
+  @keyframes aurora-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* Measurement line — thin horizontal rule used on the NowLine. */
+  .measure-line {
+    height: 1px;
+    background-image: linear-gradient(
+      to right,
+      transparent 0%,
+      var(--color-rule-strong) 20%,
+      var(--color-rule-strong) 80%,
+      transparent 100%
+    );
+  }
+
+  /* Semantic zoom — when the LiveGraph camera drops below k=0.5 the
+   * card-internal detail (value previews, type labels, footer rows)
+   * becomes unreadable. Hide those rows so the card reads as a
+   * structural token: kind + name only. Cards themselves remain at
+   * world-scale; the transform renders them smaller but still
+   * perceivable.  */
+  [data-zoom-state="low"] [data-card-detail] {
+    display: none;
+  }
+
+  /* Playback bar glow — gentle breathing halo around the simulation
+   * control bar while a playback is playing. Off during paused/done
+   * so the glow itself signals "motion happening right now". */
+  .mf-playback-glow {
+    animation: mf-playback-glow 1800ms ease-in-out infinite;
+  }
+  @keyframes mf-playback-glow {
+    0%,
+    100% {
+      box-shadow:
+        0 8px 28px color-mix(in oklch, var(--color-violet, #9f7bff) 32%, transparent),
+        0 0 0 1px color-mix(in oklch, var(--color-violet-hot, #c79cff) 28%, transparent);
+    }
+    50% {
+      box-shadow:
+        0 10px 36px color-mix(in oklch, var(--color-violet-hot, #c79cff) 44%, transparent),
+        0 0 0 2px color-mix(in oklch, var(--color-violet-hot, #c79cff) 52%, transparent);
+    }
+  }
+
+  /* Focus pulse — Monaco whole-line decoration applied when the user
+   * lands on a graph node from outside the editor (graph click,
+   * diagnostic click). Violet wash that rises, holds, and fades out
+   * — long enough to read as a "landing indicator" rather than a
+   * flash that's gone before the eye arrives. */
+  .mf-focus-pulse {
+    animation: mf-focus-pulse 1500ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+  }
+  @keyframes mf-focus-pulse {
+    0% {
+      background: transparent;
+    }
+    14% {
+      background: color-mix(in oklch, var(--color-violet-hot) 40%, transparent);
+    }
+    55% {
+      background: color-mix(in oklch, var(--color-violet-hot) 26%, transparent);
+    }
+    100% {
+      background: transparent;
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Utilities
+ * ------------------------------------------------------------------------- */
+@layer utilities {
+  .text-balance { text-wrap: balance; }
+
+  /* Signal channel colors as text/bg utilities */
+  .text-sig-state { color: var(--color-sig-state); }
+  .text-sig-action { color: var(--color-sig-action); }
+  .text-sig-computed { color: var(--color-sig-computed); }
+  .text-sig-effect { color: var(--color-sig-effect); }
+  .text-sig-determ { color: var(--color-sig-determ); }
+
+  .bg-sig-state { background-color: var(--color-sig-state); }
+  .bg-sig-action { background-color: var(--color-sig-action); }
+  .bg-sig-computed { background-color: var(--color-sig-computed); }
+  .bg-sig-effect { background-color: var(--color-sig-effect); }
+  .bg-sig-determ { background-color: var(--color-sig-determ); }
+}

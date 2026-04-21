@@ -1,0 +1,36 @@
+{
+  "name": "@manifesto-ai/studio-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Studio Editor for Manifesto MEL domains",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "check:no-widget-deps": "node scripts/check-no-widget-deps.mjs",
+    "dev:webapp": "turbo run dev --filter=webapp"
+  },
+  "devDependencies": {
+    "@manifesto-ai/skills": "^1.2.0",
+    "@types/node": "^24.0.0",
+    "tsup": "^8.5.1",
+    "turbo": "^2.9.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ],
+    "patchedDependencies": {
+      "@manifesto-ai/sdk@3.15.1": "patches/@manifesto-ai__sdk@3.15.1.patch"
+    }
+  }
+}

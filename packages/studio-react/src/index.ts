@@ -1,0 +1,172 @@
+export {
+  StudioProvider,
+  StudioContext,
+  type StudioProviderProps,
+  type StudioContextValue,
+  type DispatchDiff,
+  type DispatchHistoryEntry,
+  type SimulationPlayback,
+  type SimulationPlaybackEvent,
+  type SimulationPlaybackMode,
+  type SimulationPlaybackSource,
+} from "./StudioProvider.js";
+
+export {
+  useStudio,
+  type UseStudioValue,
+} from "./useStudio.js";
+
+export { StudioHotkeys } from "./StudioHotkeys.js";
+export { SourceEditor, type SourceEditorProps } from "./SourceEditor.js";
+export {
+  DiagnosticsPanel,
+  type DiagnosticsPanelProps,
+} from "./DiagnosticsPanel.js";
+export { PlanPanel } from "./PlanPanel.js";
+export {
+  SnapshotTree,
+  type SnapshotFocus,
+  type SnapshotTreeProps,
+} from "./SnapshotTree.js";
+export {
+  HistoryTimeline,
+  type HistoryTimelineProps,
+} from "./HistoryTimeline.js";
+export {
+  DispatchTimeline,
+  type DispatchTimelineProps,
+} from "./DispatchTimeline.js";
+
+export { COLORS, FONT_STACK, MONO_STACK } from "./style-tokens.js";
+
+export {
+  InlineValue,
+  type InlineValueAccent,
+  type InlineValueProps,
+} from "./InlineValue.js";
+export { JsonTree, type JsonTreeProps } from "./JsonTree.js";
+
+export {
+  SchemaGraphView,
+  type SchemaGraphViewProps,
+} from "./SchemaGraphView/SchemaGraphView.js";
+export {
+  buildGraphModel,
+  fromLocalKey,
+  identityFateGlyph,
+  toLocalKey,
+  type GraphEdge,
+  type GraphEdgeRelation,
+  type GraphModel,
+  type GraphNode,
+  type GraphNodeId,
+  type GraphNodeKind,
+  type SnapshotFate,
+} from "./SchemaGraphView/graph-model.js";
+export {
+  GraphLayoutCache,
+  runLayout,
+  type LayoutOptions,
+  type NodePosition,
+  type PositionMap,
+} from "./SchemaGraphView/layout.js";
+export {
+  buildGraphFocusLens,
+  normalizeSpan,
+  resolveFocusRoots,
+  type GraphFocusGroup,
+  type GraphFocusGroupLabel,
+  type GraphFocusLens,
+  type GraphFocusOrigin,
+} from "./SchemaGraphView/focus-lens.js";
+
+export {
+  InteractionEditor,
+  type InteractionEditorProps,
+} from "./InteractionEditor/InteractionEditor.js";
+export {
+  ActionForm,
+  type ActionFormProps,
+} from "./InteractionEditor/ActionForm.js";
+export {
+  createIntentArgsForValue,
+  toCreateIntentArg,
+} from "./InteractionEditor/action-intent.js";
+export {
+  collectBlockerPaths,
+} from "./InteractionEditor/blocker-paths.js";
+export {
+  BlockerList,
+  type BlockerListProps,
+} from "./InteractionEditor/BlockerList.js";
+export {
+  IntentLadder,
+  type IntentLadderProps,
+} from "./InteractionEditor/IntentLadder.js";
+export {
+  deriveLadderState,
+  type LadderInputs,
+  type LadderState,
+  type LadderStep,
+  type LadderStepId,
+  type LadderStepStatus,
+} from "./InteractionEditor/ladder-state.js";
+export {
+  deriveCounterfactualHint,
+  firstProvableHint,
+  type CounterfactualHint,
+} from "./InteractionEditor/counterfactual.js";
+export {
+  SimulatePreview,
+  type SimulatePreviewProps,
+} from "./InteractionEditor/SimulatePreview.js";
+export {
+  SimulationTraceView,
+  type SimulationTraceViewProps,
+} from "./InteractionEditor/SimulationTraceView.js";
+export {
+  collectSimulationDiffs,
+  diffSnapshots,
+  extractSimulationSnapshot,
+  resolveValueAtPath,
+  sortPaths,
+  summarizePreviewValue,
+  tokenizePath,
+  type SnapshotDiff,
+  type SnapshotLike,
+} from "./InteractionEditor/snapshot-diff.js";
+export {
+  useJsonDraft,
+  type UseJsonDraftOptions,
+  type UseJsonDraftValue,
+} from "./InteractionEditor/useJsonDraft.js";
+export {
+  ensureAtPath,
+  getAtPath,
+  isPresentAtPath,
+  pathToKey,
+  removeAtPath,
+  setAtPath,
+  type FormPath,
+  type FormPathSegment,
+} from "./InteractionEditor/form-path-utils.js";
+export {
+  defaultValueFor,
+  createInitialFormValue,
+  descriptorForAction,
+  descriptorForActionSpec,
+  fromFieldSpec,
+  fromTypeDefinition,
+  type ArrayDescriptor,
+  type EnumDescriptor,
+  type EnumOption,
+  type EnumOptionValue,
+  type FormDescriptor,
+  type FormDescriptorCommon,
+  type JsonDescriptor,
+  type ObjectDescriptor,
+  type ObjectField,
+  type PrimitiveDescriptor,
+  type PrimitiveKind,
+  type RecordDescriptor,
+} from "./InteractionEditor/field-descriptor.js";

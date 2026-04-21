@@ -1,0 +1,35 @@
+{
+  "name": "@manifesto-ai/studio-adapter-monaco",
+  "version": "0.0.0",
+  "description": "Monaco Editor adapter for the Manifesto Studio Editor",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsup",
+    "clean": "rm -rf dist",
+    "lint": "echo 'lint not configured'",
+    "test": "node ../../node_modules/vitest/vitest.mjs run",
+    "test:watch": "node ../../node_modules/vitest/vitest.mjs"
+  },
+  "dependencies": {
+    "@manifesto-ai/studio-core": "workspace:*"
+  },
+  "peerDependencies": {
+    "monaco-editor": ">=0.52.0"
+  },
+  "devDependencies": {
+    "@manifesto-ai/compiler": "^3.7.0",
+    "jsdom": "^25.0.0",
+    "monaco-editor": "^0.52.0"
+  },
+  "files": [
+    "dist"
+  ]
+}
