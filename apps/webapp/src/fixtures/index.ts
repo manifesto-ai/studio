@@ -1,8 +1,14 @@
 import todoSource from "./todo.mel?raw";
-import battleshipSource from "./battleship.mel?raw";
 import taskflowSource from "./taskflow.mel?raw";
 
-export type FixtureId = "todo" | "battleship" | "taskflow";
+/**
+ * Built-in examples surfaced from the "New from example" submenu and
+ * used as the first-boot seed (todo only — see `useProjects.tsx`).
+ * Heavier stress fixtures (e.g. battleship) live in the headless
+ * adapter's test fixtures rather than here so the MVP example list
+ * stays approachable.
+ */
+export type FixtureId = "todo" | "taskflow";
 
 export type Fixture = {
   readonly id: FixtureId;
@@ -18,11 +24,5 @@ export const FIXTURES: readonly Fixture[] = [
     label: "taskflow.mel",
     source: taskflowSource,
     hint: "task mgmt · nullable types · time-aware computeds",
-  },
-  {
-    id: "battleship",
-    label: "battleship.mel",
-    source: battleshipSource,
-    hint: "60+ nodes",
   },
 ];

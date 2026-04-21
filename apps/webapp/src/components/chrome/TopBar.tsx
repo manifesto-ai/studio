@@ -1,38 +1,19 @@
-import { ChevronDown } from "lucide-react";
 import { useStudio } from "@manifesto-ai/studio-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/DropdownMenu";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/Tooltip";
-import type { FixtureId, Fixture } from "@/fixtures";
+import { ProjectSwitcher } from "@/components/chrome/ProjectSwitcher";
 
 /**
- * Top bar — the observatory's brow. Carries brand mark, fixture
- * selection, schema hash, and a determinism indicator. Everything else
- * (marketing, external links) lives elsewhere.
+ * Top bar — the observatory's brow. Carries brand mark, project
+ * selector, and a determinism indicator. Everything else (marketing,
+ * external links) lives elsewhere.
  */
-export function TopBar({
-  fixtureId,
-  onFixtureChange,
-  fixtures,
-}: {
-  readonly fixtureId: FixtureId;
-  readonly onFixtureChange: (next: FixtureId) => void;
-  readonly fixtures: readonly Fixture[];
-}): JSX.Element {
+export function TopBar(): JSX.Element {
   const { module, diagnostics } = useStudio();
-  const active = fixtures.find((f) => f.id === fixtureId) ?? fixtures[0];
   const errors = diagnostics.filter((m) => m.severity === "error").length;
   const status: "ok" | "err" | "idle" =
     module === null ? "idle" : errors > 0 ? "err" : "ok";
@@ -47,7 +28,6 @@ export function TopBar({
         backdrop-blur-2xl
       "
     >
-      {/* Brand mark */}
       <div className="flex items-center gap-2">
         <BrandMark />
         <span
@@ -60,50 +40,8 @@ export function TopBar({
 
       <Separator />
 
-      {/* Fixture breadcrumb */}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            className="
-              group flex items-center gap-1 h-7 px-1.5 rounded-md
-              font-sans text-[12px] text-[var(--color-ink-dim)]
-              hover:text-[var(--color-ink)] hover:bg-[var(--color-glass)]
-              transition-colors outline-none
-              focus-visible:outline-2 focus-visible:outline-[var(--color-violet-hot)]
-              focus-visible:outline-offset-2
-            "
-          >
-            <span className="text-[var(--color-ink-mute)]">studio</span>
-            <span className="text-[var(--color-ink-mute)]">/</span>
-            <span className="font-mono text-[11.5px] text-[var(--color-ink)]">
-              {active.label}
-            </span>
-            <ChevronDown className="h-3 w-3 text-[var(--color-ink-mute)] group-hover:text-[var(--color-ink-dim)]" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start">
-          <DropdownMenuLabel>Fixture</DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          <DropdownMenuRadioGroup
-            value={fixtureId}
-            onValueChange={(v) => onFixtureChange(v as FixtureId)}
-          >
-            {fixtures.map((f) => (
-              <DropdownMenuRadioItem key={f.id} value={f.id}>
-                <span className="font-mono text-[12px]">{f.label}</span>
-                {f.hint !== undefined && (
-                  <span className="ml-auto font-mono text-[10px] text-[var(--color-ink-mute)]">
-                    {f.hint}
-                  </span>
-                )}
-              </DropdownMenuRadioItem>
-            ))}
-          </DropdownMenuRadioGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <ProjectSwitcher />
 
-      {/* Determinism status — minimal, right-aligned */}
       <div className="ml-auto">
         <DeterminismIndicator status={status} />
       </div>

@@ -19,7 +19,6 @@ import {
 } from "@manifesto-ai/studio-adapter-monaco";
 import { StudioHotkeys, StudioProvider } from "@manifesto-ai/studio-react";
 
-import { FIXTURES, type FixtureId } from "@/fixtures";
 import { TopBar } from "@/components/chrome/TopBar";
 import { NowLine } from "@/components/chrome/NowLine";
 import { PaneDivider } from "@/components/chrome/PaneDivider";
@@ -28,6 +27,11 @@ import { TimeScrubProvider } from "@/hooks/useTimeScrub";
 import { FocusProvider } from "@/hooks/useFocus";
 import { FocusSync } from "@/hooks/useFocusSync";
 import { ViewportProvider } from "@/hooks/useViewport";
+import {
+  ProjectsProvider,
+  useAutosave,
+  useProjects,
+} from "@/hooks/useProjects";
 import { SourcePane } from "@/components/panes/SourcePane";
 import { ObservatoryPane } from "@/components/panes/ObservatoryPane";
 import { LensPane, type LensId } from "@/components/panes/LensPane";
@@ -37,7 +41,7 @@ import { PANE_LIMITS, usePaneSizes } from "@/hooks/usePaneSizes";
  * Deterministic Observatory — App shell.
  *
  * Layout (top → bottom):
- *   TopBar          (brand, breadcrumb, schema hash, determinism status)
+ *   TopBar          (brand, project switcher, determinism status)
  *   Main 3-pane     (Source | Observatory | Lens) — glass panels on aurora
  *   NowLine         (snapshot beam — Manifesto's temporal dimension)
  *
@@ -46,6 +50,14 @@ import { PANE_LIMITS, usePaneSizes } from "@/hooks/usePaneSizes";
  * internal DOM and blanks the editor.
  */
 export function App(): JSX.Element {
+  return (
+    <ProjectsProvider>
+      <AppShell />
+    </ProjectsProvider>
+  );
+}
+
+function AppShell(): JSX.Element {
   const editorHostRef = useRef<HTMLDivElement | null>(null);
   const editorInstanceRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(
     null,
@@ -55,16 +67,21 @@ export function App(): JSX.Element {
   const [editor, setEditor] =
     useState<monaco.editor.IStandaloneCodeEditor | null>(null);
   const [lens, setLens] = useState<LensId>("interact");
-  const [fixtureId, setFixtureId] = useState<FixtureId>("todo");
-  const fixture = FIXTURES.find((f) => f.id === fixtureId) ?? FIXTURES[0];
 
+  const { ready, activeProject, saveSource } = useProjects();
+
+  // Monaco boots exactly once and lives for the lifetime of the app.
+  // Content swaps (project switch, adapter swap) go through `setValue`
+  // so the editor instance — and any live Monaco state like folds /
+  // selection overlays — is not torn down.
   useEffect(() => {
     if (editorHostRef.current === null) return;
     if (editorInstanceRef.current !== null) return;
+    if (!ready) return;
 
     registerMelLanguage(monaco);
     const ed = monaco.editor.create(editorHostRef.current, {
-      value: fixture.source,
+      value: activeProject?.source ?? "",
       language: MEL_LANGUAGE_ID,
       theme: "vs-dark",
       automaticLayout: true,
@@ -94,24 +111,53 @@ export function App(): JSX.Element {
       setAdapter(null);
       setEditor(null);
     };
-  }, []);
+    // `ready` gates the first boot, `activeProject` is only read for the
+    // initial value on mount — subsequent project switches go through
+    // the separate swap effect below. Excluding them keeps the editor
+    // instance stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
 
-  const lastLoadedFixtureRef = useRef<FixtureId>(fixtureId);
+  // Swap Monaco's buffer when the active project changes without
+  // tearing down the editor. Guard against echoing our own change back
+  // into the DB by comparing current buffer content.
+  const lastLoadedProjectIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (adapter === null) return;
-    if (lastLoadedFixtureRef.current === fixtureId) return;
-    lastLoadedFixtureRef.current = fixtureId;
-    adapter.setSource(fixture.source);
+    if (editor === null) return;
+    if (activeProject === null) return;
+    if (lastLoadedProjectIdRef.current === activeProject.id) return;
+    lastLoadedProjectIdRef.current = activeProject.id;
+    const current = editor.getValue();
+    if (current !== activeProject.source) {
+      editor.setValue(activeProject.source);
+    }
+    adapter.setSource(activeProject.source);
     adapter.requestBuild();
-  }, [adapter, fixtureId, fixture.source]);
+  }, [adapter, editor, activeProject]);
 
-  // Initial auto-build: when the adapter first becomes non-null, kick off
-  // a build so the Observatory graph populates without requiring the user
-  // to hit Ctrl+S first. Fires exactly once per adapter instance.
+  // Initial auto-build on first adapter attach.
   useEffect(() => {
     if (adapter === null) return;
     adapter.requestBuild();
   }, [adapter]);
+
+  // Autosave: whenever Monaco's content changes, schedule a debounced
+  // write back to the active project in IndexedDB. Stale saves (user
+  // switched projects mid-debounce) are dropped inside useAutosave.
+  const scheduleAutosave = useAutosave(
+    activeProject?.id ?? null,
+    useCallback(() => editor?.getValue() ?? "", [editor]),
+    saveSource,
+    400,
+  );
+  useEffect(() => {
+    if (editor === null) return;
+    const disp = editor.onDidChangeModelContent(() => {
+      scheduleAutosave();
+    });
+    return () => disp.dispose();
+  }, [editor, scheduleAutosave]);
 
   const revealSpan = (line: number, column: number): void => {
     if (editor === null) return;
@@ -184,11 +230,7 @@ export function App(): JSX.Element {
         <TimeScrubProvider>
         <StudioHotkeys />
 
-        <TopBar
-          fixtureId={fixtureId}
-          onFixtureChange={setFixtureId}
-          fixtures={FIXTURES}
-        />
+        <TopBar />
 
         <main
           ref={mainRef}
@@ -198,7 +240,7 @@ export function App(): JSX.Element {
             style={{ width: sizes.left, flex: "none" }}
             className="flex flex-col min-w-0 min-h-0"
           >
-            <SourcePane ref={editorHostRef} fixture={fixture} />
+            <SourcePane ref={editorHostRef} />
           </div>
 
           <PaneDivider
