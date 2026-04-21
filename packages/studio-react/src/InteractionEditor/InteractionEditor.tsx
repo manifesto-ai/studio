@@ -32,6 +32,14 @@ export type InteractionEditorProps = {
    */
   readonly initialAction?: string;
   /**
+   * External action selection signal. When the host app observes that
+   * the user focused an action node (e.g. clicked an action card in
+   * the graph), it can pass the name here and the editor will switch
+   * its `selectedAction` to match. Differs from `initialAction` in
+   * that changes after mount are honoured.
+   */
+  readonly focusedAction?: string;
+  /**
    * Whether Dispatch is gated behind a resolved simulate for the
    * current bound intent (UX philosophy Rule S1).
    *
@@ -106,6 +114,19 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
       return actionNames[0];
     });
   }, [actionNames]);
+
+  // External action-focus signal (graph card click, diagnostic row).
+  // Only mirrors valid action names into the selector — if the caller
+  // passes something the schema doesn't have (e.g. after a rebuild),
+  // we leave the current selection alone so mid-edit forms aren't
+  // disrupted.
+  useEffect(() => {
+    if (props.focusedAction === undefined) return;
+    if (!actionNames.includes(props.focusedAction)) return;
+    setSelectedAction((prev) =>
+      prev === props.focusedAction ? prev : props.focusedAction ?? prev,
+    );
+  }, [props.focusedAction, actionNames]);
 
   const descriptor: FormDescriptor | null = useMemo(() => {
     if (module === null || selectedAction === null) return null;
@@ -354,6 +375,11 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
             </>
           )}
         </select>
+        {selectedAction !== null ? (
+          <HarnessBadge
+            available={actionSplits.available.includes(selectedAction)}
+          />
+        ) : null}
       </div>
 
       {selectedAction !== null ? (
@@ -491,6 +517,55 @@ function createInteractionSession(defaultValue: unknown): InteractionSession {
     runtimeError: null,
     lastInteraction: null,
   };
+}
+
+function HarnessBadge({
+  available,
+}: {
+  readonly available: boolean;
+}): JSX.Element {
+  const label = available ? "ready" : "blocked";
+  const tone = available ? COLORS.action : COLORS.warn;
+  return (
+    <span
+      aria-label={available ? "action is available" : "action is currently unavailable"}
+      title={
+        available
+          ? "All `available when` guards pass against the current snapshot (Pillar 1)."
+          : "This action's `available when` guard does not hold. See the Ladder on the bottom for why."
+      }
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        fontFamily: MONO_STACK,
+        fontSize: 10,
+        padding: "2px 7px",
+        borderRadius: 999,
+        border: `1px solid ${tone}`,
+        color: tone,
+        background: `color-mix(in oklch, ${tone} 12%, transparent)`,
+        letterSpacing: 0.4,
+        textTransform: "uppercase",
+        fontWeight: 600,
+        whiteSpace: "nowrap",
+        flex: "0 0 auto",
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          display: "inline-block",
+          width: 6,
+          height: 6,
+          borderRadius: 999,
+          background: tone,
+          boxShadow: `0 0 6px ${tone}`,
+        }}
+      />
+      {label}
+    </span>
+  );
 }
 
 function ActionSignature({

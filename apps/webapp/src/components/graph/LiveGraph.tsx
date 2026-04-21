@@ -29,7 +29,6 @@ import {
 } from "@/hooks/useViewport";
 import { ActionCard, ComputedCard, StateCard } from "./NodeCard";
 import { EdgeLayer } from "./EdgeLayer";
-import { ActionDispatchPopover } from "./ActionDispatchPopover";
 import { formatType } from "./formatValue";
 import {
   computeFocusLayout,
@@ -516,36 +515,11 @@ export function LiveGraph({
     setCamera,
   ]);
 
-  // --- Action dispatch popover ----------------------------------------
-  const [popoverAction, setPopoverAction] = useState<{
-    readonly name: string;
-    readonly anchor: HTMLElement;
-  } | null>(null);
-  const closePopover = useCallback(() => setPopoverAction(null), []);
-
-  // Reset transient UI on schema change. Focus is cleared too — node
-  // ids are schema-scoped, so the old focus target may not exist any
-  // more after a rebuild.
+  // Reset focus on schema change — node ids are schema-scoped.
   useEffect(() => {
-    setPopoverAction(null);
     clearFocus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model.schemaHash]);
-
-  // Close popover when dispatching is disabled (past mode)
-  useEffect(() => {
-    if (disableDispatch) setPopoverAction(null);
-  }, [disableDispatch]);
-
-  // Close popover whenever focus enters / exits. The anchor DOM moves
-  // with the card's FLIP animation and Radix Popover does NOT auto-
-  // update its floating position — so the popover would visually stay
-  // pinned to the anchor's old viewport coords until the next toggle.
-  // Clean-close beats a stuck popover. The user can re-open at the
-  // new location by clicking the action card again in focus mode.
-  useEffect(() => {
-    setPopoverAction(null);
-  }, [focusActive]);
 
   // --- Search / filter (G6) -------------------------------------------
   const [searchOpen, setSearchOpen] = useState(false);
@@ -580,7 +554,6 @@ export function LiveGraph({
           setSearchQuery("");
         } else {
           clearFocus();
-          setPopoverAction(null);
         }
         return;
       }
@@ -647,24 +620,22 @@ export function LiveGraph({
   ]);
 
   const handleNodeActivate = useCallback(
-    (node: GraphNode, el: HTMLElement) => {
+    (node: GraphNode, _el: HTMLElement) => {
       if (wasDraggedSinceLastClickRef.current) {
         wasDraggedSinceLastClickRef.current = false;
         return;
       }
-      if (node.kind === "action" && !disableDispatch) {
-        setPopoverAction({ name: node.name, anchor: el });
-        focusNode(node.id);
-      } else {
-        toggleFocus(node.id);
-      }
+      // All node kinds route through Focus. Action cards used to open
+      // an inline dispatch popover here; that path now lives in the
+      // Interact lens, which LensPane auto-pulses when focus lands on
+      // an action while the lens isn't visible.
+      toggleFocus(node.id);
     },
-    [disableDispatch, focusNode, toggleFocus],
+    [toggleFocus],
   );
 
   const handleBackgroundClick = useCallback(() => {
     clearFocus();
-    setPopoverAction(null);
   }, [clearFocus]);
 
   const searchActive = searchOpen && searchQuery.trim() !== "";
@@ -953,16 +924,6 @@ export function LiveGraph({
         })}
       </div>
 
-      {popoverAction !== null && !disableDispatch && (
-        <ActionDispatchPopover
-          actionName={popoverAction.name}
-          anchor={popoverAction.anchor}
-          open
-          onOpenChange={(next) => {
-            if (!next) closePopover();
-          }}
-        />
-      )}
       <PlaybackControlBar controller={simulateController} />
     </div>
     <GraphSearch

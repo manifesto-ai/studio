@@ -109,13 +109,23 @@ export function LensPane({
     return null;
   }, [focus]);
 
-  // Pulse hint — when focus changes while the user isn't on the Inspect
-  // lens, briefly glow the rail's Inspect button so they know "a new
-  // thing to inspect has arrived." Soft hint only; we never force a
-  // tab switch (auto-switching on click would steal attention from
-  // e.g. a mid-edit Interact form).
+  // Pulse hint — when focus changes while the user isn't on the
+  // relevant lens, briefly glow the rail button. Soft hint only; we
+  // never force-switch tabs (would steal attention from e.g. a
+  // mid-edit Interact form).
+  //
+  // Lens routing:
+  //   action    → interact lens  (replaces the old inline popover)
+  //   state     → inspect lens
+  //   computed  → inspect lens
   const [pulseLens, setPulseLens] = useState<LensId | null>(null);
   const lastFocusIdRef = useRef<string | null>(null);
+  const targetLens: LensId | null =
+    snapshotFocus === null
+      ? null
+      : snapshotFocus.kind === "action"
+        ? "interact"
+        : "snapshot";
   useEffect(() => {
     const nextId = snapshotFocus === null
       ? null
@@ -123,11 +133,17 @@ export function LensPane({
     if (nextId === lastFocusIdRef.current) return;
     lastFocusIdRef.current = nextId;
     if (nextId === null) return;
-    if (value === "snapshot") return; // already here, no hint needed
-    setPulseLens("snapshot");
+    if (targetLens === null) return;
+    if (value === targetLens) return;
+    setPulseLens(targetLens);
     const t = window.setTimeout(() => setPulseLens(null), 1400);
     return () => window.clearTimeout(t);
-  }, [snapshotFocus, value]);
+  }, [snapshotFocus, value, targetLens]);
+
+  const focusedActionName: string | undefined =
+    snapshotFocus !== null && snapshotFocus.kind === "action"
+      ? snapshotFocus.name
+      : undefined;
 
   return (
     <Panel className="overflow-hidden !flex-row">
@@ -179,7 +195,7 @@ export function LensPane({
                   flexDirection: "column",
                 }}
               >
-                <InteractionEditor />
+                <InteractionEditor focusedAction={focusedActionName} />
               </div>
               {value === "snapshot" ? <SnapshotTree focus={snapshotFocus} /> : null}
               {value === "plan" ? <PlanPanel /> : null}
