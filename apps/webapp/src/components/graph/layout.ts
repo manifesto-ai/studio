@@ -420,14 +420,36 @@ export function computeFocusLayout(
   const stripWidth = (count: number): number =>
     count === 0 ? 0 : count * CARD_WIDTH + (count - 1) * GAP;
 
+  // Column offset from canvas centre: columns sit OUTSIDE the top
+  // strip's X footprint so actions don't hover over state/computed
+  // cards. Baseline keeps columns close to the focus when there are
+  // few actions; for wide strips the offset grows so columns end up
+  // clear of the strip's edges.
+  const topStripW = stripWidth(topActions.length);
+  const columnMargin = GAP * 3;
+  const colCenterOffset = Math.max(
+    CARD_WIDTH + columnMargin,
+    topStripW / 2 + CARD_WIDTH / 2 + columnMargin,
+  );
+
+  // Top strip height sits above the focus card; it doesn't compete
+  // with the flanking columns on Y any more, so verticalNeed only
+  // needs to accommodate the taller column stack plus the strip.
+  const topStripH =
+    topActions.length > 0 ? CARD_HEIGHT + columnMargin : 0;
+  const columnStackH = Math.max(
+    stackHeight(leftStates.length),
+    stackHeight(rightComputeds.length),
+    CARD_HEIGHT, // focus card itself
+  );
   const verticalNeed =
-    CARD_HEIGHT + // focus card
-    GAP * 6 + // breathing room around focus
-    Math.max(stackHeight(leftStates.length), stackHeight(rightComputeds.length));
+    ZONE_MARGIN * 2 + topStripH + columnStackH + columnMargin;
+
+  // Canvas must fit focus + both columns + outside margins.
   const horizontalNeed =
-    CARD_WIDTH + // focus card
-    GAP * 8 + // left gutter + right gutter + separation
-    Math.max(CARD_WIDTH * 2, stripWidth(topActions.length));
+    ZONE_MARGIN * 2 +
+    CARD_WIDTH + // the widest column card
+    (colCenterOffset + CARD_WIDTH / 2) * 2;
 
   const W = Math.max(containerWidth, horizontalNeed);
   const H = Math.max(containerHeight, verticalNeed);
@@ -444,12 +466,12 @@ export function computeFocusLayout(
     height: CARD_HEIGHT,
   });
 
-  // Left column — state neighbours. Separation from the focus uses
-  // GAP*3 so edges have breathing room and arrows don't collide with
-  // the focus card border.
-  const leftColX = Math.max(ZONE_MARGIN, focusX - CARD_WIDTH - GAP * 3);
-  const leftHeight =
-    leftStates.length * CARD_HEIGHT + Math.max(0, leftStates.length - 1) * GAP;
+  // Left column — state neighbours. Placed outside the top strip's X
+  // range (colCenterOffset guarantees no horizontal overlap with
+  // actions), so the strip can sweep across without sitting atop the
+  // state cards.
+  const leftColX = cx - colCenterOffset - CARD_WIDTH / 2;
+  const leftHeight = stackHeight(leftStates.length);
   const leftStartY = cy - leftHeight / 2;
   leftStates.forEach((n, i) => {
     bounds.set(n.id, {
@@ -460,14 +482,9 @@ export function computeFocusLayout(
     });
   });
 
-  // Right column — computed neighbours.
-  const rightColX = Math.min(
-    W - CARD_WIDTH - ZONE_MARGIN,
-    focusX + CARD_WIDTH + GAP * 3,
-  );
-  const rightHeight =
-    rightComputeds.length * CARD_HEIGHT +
-    Math.max(0, rightComputeds.length - 1) * GAP;
+  // Right column — computed neighbours. Mirrors the left column.
+  const rightColX = cx + colCenterOffset - CARD_WIDTH / 2;
+  const rightHeight = stackHeight(rightComputeds.length);
   const rightStartY = cy - rightHeight / 2;
   rightComputeds.forEach((n, i) => {
     bounds.set(n.id, {
@@ -479,11 +496,10 @@ export function computeFocusLayout(
   });
 
   // Top strip — action neighbours, centered above the focus card.
-  const topCount = topActions.length;
-  const topTotalWidth =
-    topCount * CARD_WIDTH + Math.max(0, topCount - 1) * GAP;
-  const topStartX = cx - topTotalWidth / 2;
-  const topY = Math.max(ZONE_MARGIN, focusY - CARD_HEIGHT - GAP * 3);
+  // Strip width is contained by `colCenterOffset` so the edges of
+  // the strip can reach toward (but not cover) the column cards.
+  const topStartX = cx - topStripW / 2;
+  const topY = Math.max(ZONE_MARGIN, focusY - CARD_HEIGHT - columnMargin);
   topActions.forEach((n, i) => {
     bounds.set(n.id, {
       x: topStartX + i * (CARD_WIDTH + GAP),
