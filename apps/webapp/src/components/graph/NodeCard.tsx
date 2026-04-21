@@ -102,19 +102,37 @@ function CardShell({
       />
       {children}
 
-      {/* Pulse ring — plays once per generation when this node is touched */}
+      {/* Pulse layer — double-ring effect: an inner flash that lights
+        * up the card body, plus an outer ripple that fans out. Both
+        * re-trigger each time the pulsing prop flips true again, which
+        * happens once per playback step landing on this node. */}
       {pulsing && (
-        <motion.div
-          aria-hidden
-          initial={{ opacity: 0.8, scale: 1 }}
-          animate={{ opacity: 0, scale: 1.28 }}
-          transition={{ duration: 0.9, ease: [0.2, 0.7, 0.4, 1] }}
-          className="absolute inset-0 rounded-lg pointer-events-none"
-          style={{
-            border: `1.5px solid ${tokens.glow}`,
-            boxShadow: `0 0 24px ${tokens.glow}`,
-          }}
-        />
+        <>
+          {/* Inner flash — cardform glows from within. */}
+          <motion.div
+            aria-hidden
+            initial={{ opacity: 0.85 }}
+            animate={{ opacity: 0 }}
+            transition={{ duration: 0.65, ease: "easeOut" }}
+            className="absolute inset-0 rounded-lg pointer-events-none"
+            style={{
+              background: `radial-gradient(circle at center, ${tokens.glow}55 0%, ${tokens.glow}22 45%, transparent 80%)`,
+              boxShadow: `inset 0 0 18px ${tokens.glow}, 0 0 36px ${tokens.glow}`,
+            }}
+          />
+          {/* Outer ripple — expanding ring. */}
+          <motion.div
+            aria-hidden
+            initial={{ opacity: 0.95, scale: 1 }}
+            animate={{ opacity: 0, scale: 1.45 }}
+            transition={{ duration: 0.95, ease: [0.2, 0.7, 0.4, 1] }}
+            className="absolute inset-0 rounded-lg pointer-events-none"
+            style={{
+              border: `2px solid ${tokens.glow}`,
+              boxShadow: `0 0 28px ${tokens.glow}, 0 0 64px ${tokens.glow}`,
+            }}
+          />
+        </>
       )}
     </div>
   );

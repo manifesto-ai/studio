@@ -195,19 +195,42 @@ export function EdgeLayer({
                 markerEnd={`url(#${style.marker})`}
               />
               {pulsing && (
-                <motion.path
-                  d={d}
-                  fill="none"
-                  stroke={style.hot}
-                  strokeWidth={2.25}
-                  strokeLinecap="round"
-                  initial={{ pathLength: 0, opacity: 0.9 }}
-                  animate={{ pathLength: 1, opacity: 0 }}
-                  transition={{ duration: 0.7, ease: [0.3, 0.6, 0.3, 1] }}
-                  style={{
-                    filter: `drop-shadow(0 0 8px ${style.hot})`,
-                  }}
-                />
+                <>
+                  {/* Leading wavefront — bright, thick head that
+                    * traces along the edge path. Layered over a fading
+                    * "afterglow" trail (next motion.path) so the
+                    * energy reads as a comet rather than a single
+                    * brief flash. */}
+                  <motion.path
+                    d={d}
+                    fill="none"
+                    stroke={style.hot}
+                    strokeWidth={3.6}
+                    strokeLinecap="round"
+                    initial={{ pathLength: 0, opacity: 1 }}
+                    animate={{ pathLength: 1, opacity: 0 }}
+                    transition={{ duration: 0.78, ease: [0.25, 0.75, 0.3, 1] }}
+                    style={{
+                      filter: `drop-shadow(0 0 14px ${style.hot}) drop-shadow(0 0 4px ${style.hot})`,
+                    }}
+                  />
+                  {/* Afterglow — soft, wide halo that lingers slightly
+                    * past the wavefront for the "trail" effect. */}
+                  <motion.path
+                    d={d}
+                    fill="none"
+                    stroke={style.hot}
+                    strokeWidth={7}
+                    strokeLinecap="round"
+                    initial={{ pathLength: 0, opacity: 0.35 }}
+                    animate={{ pathLength: 1, opacity: 0 }}
+                    transition={{ duration: 1.1, ease: [0.3, 0.55, 0.3, 1] }}
+                    style={{
+                      filter: `blur(3px)`,
+                      mixBlendMode: "screen",
+                    }}
+                  />
+                </>
               )}
             </g>
           );
