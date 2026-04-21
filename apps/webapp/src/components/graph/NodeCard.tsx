@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { motion } from "motion/react";
 import { Zap } from "lucide-react";
 import { cn } from "@/lib/cn";
@@ -177,7 +178,7 @@ function CardHeader({ name, tone, trailing }: CardHeaderProps): JSX.Element {
 // StateCard
 // --------------------------------------------------------------------
 
-export function StateCard(props: {
+type StateCardProps = {
   readonly id: string;
   readonly name: string;
   readonly typeLabel: string;
@@ -189,7 +190,9 @@ export function StateCard(props: {
   readonly pulsing: boolean;
   readonly onClick?: () => void;
   readonly onDoubleClick?: () => void;
-}): JSX.Element {
+};
+
+function StateCardImpl(props: StateCardProps): JSX.Element {
   return (
     <CardShell
       id={props.id}
@@ -222,7 +225,7 @@ export function StateCard(props: {
 // ComputedCard
 // --------------------------------------------------------------------
 
-export function ComputedCard(props: {
+type ComputedCardProps = {
   readonly id: string;
   readonly name: string;
   readonly typeLabel: string;
@@ -234,7 +237,9 @@ export function ComputedCard(props: {
   readonly pulsing: boolean;
   readonly onClick?: () => void;
   readonly onDoubleClick?: () => void;
-}): JSX.Element {
+};
+
+function ComputedCardImpl(props: ComputedCardProps): JSX.Element {
   return (
     <CardShell
       id={props.id}
@@ -268,7 +273,7 @@ export function ComputedCard(props: {
 // ActionCard
 // --------------------------------------------------------------------
 
-export function ActionCard(props: {
+type ActionCardProps = {
   readonly id: string;
   readonly name: string;
   readonly argLabel: string;
@@ -280,7 +285,9 @@ export function ActionCard(props: {
   readonly pulsing: boolean;
   readonly onClick?: () => void;
   readonly onDoubleClick?: () => void;
-}): JSX.Element {
+};
+
+function ActionCardImpl(props: ActionCardProps): JSX.Element {
   const status =
     props.dispatchable === null
       ? "unknown"
@@ -348,5 +355,16 @@ export function ActionCard(props: {
     </CardShell>
   );
 }
+
+/**
+ * React.memo wrappers — LiveGraph re-renders on every pointer move,
+ * every live-pulse tick, every focus/search change, but most cards see
+ * no prop change on any given tick. Shallow compare on primitive +
+ * schema-stable object props (typeDef, typeLabel, value, rect) lets
+ * the map loop skip ~N-1 cards per render.
+ */
+export const StateCard = memo(StateCardImpl);
+export const ComputedCard = memo(ComputedCardImpl);
+export const ActionCard = memo(ActionCardImpl);
 
 export { formatType, formatValue };
