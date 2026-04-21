@@ -70,7 +70,7 @@ export function EdgeLayer({
    */
   readonly router?: EdgeRouter;
 }): JSX.Element {
-  const routes = useMemo(
+  const routing = useMemo(
     () =>
       router({
         model,
@@ -85,6 +85,33 @@ export function EdgeLayer({
     for (const e of model.edges) m.set(e.id, e);
     return m;
   }, [model.edges]);
+
+  // Which edges are members of which bundle — used to dim a trunk when
+  // a highlighted edge passes through it (neighbourhood focus), and to
+  // brighten it on hover. We derive from classification via `hint`.
+  const trunkHighlighted = useMemo(() => {
+    const highlightedBundles = new Set<string>();
+    // Highlighted trunks = trunks whose bundled edge is highlighted.
+    // Cheap: for each route with hint bundle-leaf, check if its edge
+    // is highlighted, then mark its cluster-pair key.
+    // We can't recover the pair key from a leaf route directly, but we
+    // can infer from the model + clusters we already have in closure.
+    if (clusters === undefined) return highlightedBundles;
+    for (const edge of model.edges) {
+      if (!highlightedEdgeIds.has(edge.id)) continue;
+      const srcCluster = clusters.byNode.get(edge.source);
+      const tgtCluster = clusters.byNode.get(edge.target);
+      if (
+        srcCluster === undefined ||
+        tgtCluster === undefined ||
+        srcCluster === tgtCluster
+      ) {
+        continue;
+      }
+      highlightedBundles.add(`trunk:${srcCluster}|${tgtCluster}`);
+    }
+    return highlightedBundles;
+  }, [clusters, highlightedEdgeIds, model.edges]);
 
   return (
     <motion.svg
@@ -104,8 +131,46 @@ export function EdgeLayer({
         <ArrowMarker id="arrow-feeds" color="var(--color-sig-computed)" />
         <ArrowMarker id="arrow-unlocks" color="var(--color-sig-state)" />
       </defs>
+      {/* Trunks — aggregate "river" per cluster pair with ≥2 edges.
+       * Rendered beneath the individual edges so leaves sit on top of
+       * the river. Thickness scales with edgeCount, colour uses the
+       * bundle's dominant relation's hot tone. */}
       <g>
-        {routes.map((route) => {
+        {routing.trunks.map((trunk) => {
+          const rel = trunk.dominantRelation as EdgeRelation;
+          const style = RELATION_STYLES[rel];
+          const isHighlighted = trunkHighlighted.has(trunk.id);
+          // Log-scaled width so a 10-edge bundle doesn't blow up too
+          // much relative to a 2-edge bundle.
+          const width = Math.min(
+            8,
+            2.4 + Math.log2(1 + trunk.edgeCount) * 1.6,
+          );
+          return (
+            <path
+              key={trunk.id}
+              d={trunk.d}
+              fill="none"
+              stroke={style.hot}
+              strokeWidth={width}
+              strokeLinecap="round"
+              style={{
+                opacity: isHighlighted
+                  ? 0.85
+                  : dimmed
+                    ? 0.22
+                    : 0.45,
+                transition: "opacity 180ms, stroke-width 180ms",
+                filter: isHighlighted
+                  ? `drop-shadow(0 0 10px ${style.hot})`
+                  : undefined,
+              }}
+            />
+          );
+        })}
+      </g>
+      <g>
+        {routing.edges.map((route) => {
           const edge = edgeById.get(route.edgeId);
           if (edge === undefined) return null;
           const d = route.d;

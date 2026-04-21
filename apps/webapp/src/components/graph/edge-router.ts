@@ -12,19 +12,21 @@ import type { ClusterMap } from "./clusters";
 /**
  * Edge routing abstraction.
  *
- * An `EdgeRouter` is a pure function that takes the graph model and
- * layout (plus cluster topology if any) and returns one SVG path per
- * edge. EdgeLayer just renders whatever the router hands back, so we
- * can swap routing strategies — straight-only, port-bundled,
- * orthogonal, dagre-imported — without touching the render code.
+ * Routers take the graph + layout + cluster topology and return:
+ *  - `edges`  — one path per edge (for the individual connection read)
+ *  - `trunks` — one path per cluster pair whose bundle size ≥ 2 (for
+ *               the aggregate "how many edges flow here?" read)
  *
- * Current implementation: `bundledPortRouter`.
- *   - intra-cluster edges → straight cubic bezier (existing `edgePath`)
- *   - inter-cluster edges → port-to-port path: source card → source
- *     cluster exit port → target cluster entry port → target card.
- *     All edges between the same cluster pair share both ports, so
- *     they visually merge into a single trunk between the clusters
- *     (Holten-style hierarchical edge bundling, simplified).
+ * EdgeLayer renders trunks beneath the individual edges. Trunks are a
+ * visual aggregate — their stroke weight scales with the number of
+ * edges in the bundle, so a dense cluster-pair reads as a thick river
+ * without the stack of individual strokes having to do that work.
+ *
+ * When bundling is enabled and a cluster pair has ≥ 2 edges, the
+ * individual edges in that bundle render only their entry/exit legs
+ * (card → source port, target port → card) and omit the middle
+ * segment — the trunk carries it. Solo edges (bundle size 1, or
+ * intra-cluster, or no clusters) render a regular straight bezier.
  */
 
 export type EdgeRouteInput = {
@@ -40,23 +42,32 @@ export type EdgeRouteInput = {
 export type EdgeRoute = {
   readonly edgeId: string;
   readonly d: string;
-  readonly hint: "straight" | "bundled";
+  readonly hint: "straight" | "solo-bundled" | "bundle-leaf";
 };
 
-export type EdgeRouter = (input: EdgeRouteInput) => readonly EdgeRoute[];
+export type TrunkRoute = {
+  /** Stable id — `trunk:{srcCluster}|{tgtCluster}`. */
+  readonly id: string;
+  readonly d: string;
+  readonly edgeCount: number;
+  readonly dominantRelation: GraphEdge["relation"];
+};
 
-/**
- * Default router — intra-cluster straight bezier + inter-cluster
- * port-based bundling. When clusters are absent or bundling is
- * disabled, falls back to straight everywhere.
- */
+export type EdgeRoutingResult = {
+  readonly edges: readonly EdgeRoute[];
+  readonly trunks: readonly TrunkRoute[];
+};
+
+export type EdgeRouter = (input: EdgeRouteInput) => EdgeRoutingResult;
+
 export const bundledPortRouter: EdgeRouter = ({
   model,
   layout,
   clusters,
   options,
 }) => {
-  const bundlingEnabled = options?.bundling !== false && clusters !== undefined;
+  const bundlingEnabled =
+    options?.bundling !== false && clusters !== undefined;
   const clusterRectById = new Map<string, Rect>();
   if (bundlingEnabled && layout.clusterRects !== undefined) {
     for (const r of layout.clusterRects) {
@@ -69,115 +80,161 @@ export const bundledPortRouter: EdgeRouter = ({
     }
   }
 
-  const out: EdgeRoute[] = [];
+  // Pass 1 — group inter-cluster edges by unordered cluster pair.
+  type BundleKey = string;
+  const bundleMembers = new Map<BundleKey, GraphEdge[]>();
+  const bundleGeometry = new Map<
+    BundleKey,
+    { srcPort: ClusterPort; tgtPort: ClusterPort }
+  >();
+  const bundleKeyFor = (
+    src: string,
+    tgt: string,
+  ): BundleKey => `${src}|${tgt}`;
+
+  const classify = new Map<
+    string,
+    | { kind: "straight" }
+    | {
+        kind: "bundled";
+        bundleKey: BundleKey;
+        srcCluster: string;
+        tgtCluster: string;
+      }
+  >();
+
   for (const edge of model.edges) {
+    if (!bundlingEnabled || clusters === undefined) {
+      classify.set(edge.id, { kind: "straight" });
+      continue;
+    }
+    const srcCluster = clusters.byNode.get(edge.source);
+    const tgtCluster = clusters.byNode.get(edge.target);
+    if (
+      srcCluster === undefined ||
+      tgtCluster === undefined ||
+      srcCluster === tgtCluster
+    ) {
+      classify.set(edge.id, { kind: "straight" });
+      continue;
+    }
+    const srcRect = clusterRectById.get(srcCluster);
+    const tgtRect = clusterRectById.get(tgtCluster);
+    if (srcRect === undefined || tgtRect === undefined) {
+      classify.set(edge.id, { kind: "straight" });
+      continue;
+    }
+    const key = bundleKeyFor(srcCluster, tgtCluster);
+    if (!bundleGeometry.has(key)) {
+      const srcCentre = centreOf(srcRect);
+      const tgtCentre = centreOf(tgtRect);
+      bundleGeometry.set(key, {
+        srcPort: portTowards(srcRect, tgtCentre),
+        tgtPort: portTowards(tgtRect, srcCentre),
+      });
+    }
+    const list = bundleMembers.get(key) ?? [];
+    list.push(edge);
+    bundleMembers.set(key, list);
+    classify.set(edge.id, {
+      kind: "bundled",
+      bundleKey: key,
+      srcCluster,
+      tgtCluster,
+    });
+  }
+
+  // Pass 2 — emit edge routes. A bundled edge with bundle size 1 still
+  // draws the full three-segment path (no trunk, no aggregate).
+  const edgeRoutes: EdgeRoute[] = [];
+  for (const edge of model.edges) {
+    const cls = classify.get(edge.id);
     const source = layout.bounds.get(edge.source);
     const target = layout.bounds.get(edge.target);
     if (source === undefined || target === undefined) continue;
 
-    const srcCluster = bundlingEnabled ? clusters!.byNode.get(edge.source) : undefined;
-    const tgtCluster = bundlingEnabled ? clusters!.byNode.get(edge.target) : undefined;
-
-    if (
-      bundlingEnabled &&
-      srcCluster !== undefined &&
-      tgtCluster !== undefined &&
-      srcCluster !== tgtCluster
-    ) {
-      const srcRect = clusterRectById.get(srcCluster);
-      const tgtRect = clusterRectById.get(tgtCluster);
-      if (srcRect !== undefined && tgtRect !== undefined) {
-        const srcCentre = centreOf(srcRect);
-        const tgtCentre = centreOf(tgtRect);
-        const srcPort = portTowards(srcRect, tgtCentre);
-        const tgtPort = portTowards(tgtRect, srcCentre);
-        const fromAttach = attachPoint(source, srcPort.x, srcPort.y);
-        const toAttach = attachPoint(target, tgtPort.x, tgtPort.y);
-        out.push({
-          edgeId: edge.id,
-          d: portBundledPath(fromAttach, toAttach, srcPort, tgtPort),
-          hint: "bundled",
-        });
-        continue;
-      }
+    if (cls === undefined || cls.kind === "straight") {
+      const fromAttach = attachPoint(source, centreOf(target).x, centreOf(target).y);
+      const toAttach = attachPoint(target, centreOf(source).x, centreOf(source).y);
+      edgeRoutes.push({
+        edgeId: edge.id,
+        d: edgePath(fromAttach, toAttach),
+        hint: "straight",
+      });
+      continue;
     }
 
-    // Straight bezier fallback (intra-cluster / unclustered / bundling off).
-    const targetCentre = centreOf(target);
-    const sourceCentre = centreOf(source);
-    const fromAttach = attachPoint(source, targetCentre.x, targetCentre.y);
-    const toAttach = attachPoint(target, sourceCentre.x, sourceCentre.y);
-    out.push({
-      edgeId: edge.id,
-      d: edgePath(fromAttach, toAttach),
-      hint: "straight",
+    const geom = bundleGeometry.get(cls.bundleKey);
+    if (geom === undefined) {
+      // Shouldn't happen — classify sets bundled only when geom exists.
+      continue;
+    }
+    const { srcPort, tgtPort } = geom;
+    const fromAttach = attachPoint(source, srcPort.x, srcPort.y);
+    const toAttach = attachPoint(target, tgtPort.x, tgtPort.y);
+    const bundleSize = bundleMembers.get(cls.bundleKey)?.length ?? 1;
+    if (bundleSize <= 1) {
+      // Solo bundled — full 3-segment path (we still benefit from
+      // perpendicular port entry/exit even without an aggregate trunk).
+      edgeRoutes.push({
+        edgeId: edge.id,
+        d: fullPortPath(fromAttach, toAttach, srcPort, tgtPort),
+        hint: "solo-bundled",
+      });
+    } else {
+      // Leaf-only — entry + exit legs. The middle port→port span is
+      // carried by the trunk emitted below.
+      edgeRoutes.push({
+        edgeId: edge.id,
+        d: leafPortPath(fromAttach, toAttach, srcPort, tgtPort),
+        hint: "bundle-leaf",
+      });
+    }
+  }
+
+  // Pass 3 — emit one trunk per bundle with ≥ 2 members.
+  const trunks: TrunkRoute[] = [];
+  for (const [key, members] of bundleMembers) {
+    if (members.length < 2) continue;
+    const geom = bundleGeometry.get(key);
+    if (geom === undefined) continue;
+    const { srcPort, tgtPort } = geom;
+    const dominant = dominantRelationOf(members);
+    trunks.push({
+      id: `trunk:${key}`,
+      d: trunkPath(srcPort, tgtPort),
+      edgeCount: members.length,
+      dominantRelation: dominant,
     });
   }
-  return out;
+
+  return { edges: edgeRoutes, trunks };
 };
 
 function centreOf(rect: Rect): { x: number; y: number } {
   return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
 }
 
-/**
- * Three-segment cubic bezier: card attach → cluster exit port →
- * cluster entry port → card attach. Exit/entry tangents are
- * perpendicular to the cluster boundary (from the port's `side`), so
- * edges leave and arrive cleanly against the rect. The middle leg is
- * a near-straight cubic between the two ports — that's where every
- * edge in a cluster pair visually overlaps to form the trunk.
- */
-function portBundledPath(
-  fromAttach: ReturnType<typeof attachPoint>,
-  toAttach: ReturnType<typeof attachPoint>,
-  srcPort: ClusterPort,
-  tgtPort: ClusterPort,
-): string {
-  const exitHandle = 48;
-  const portHandle = 40;
-
-  const fromOff = offsetForCardSide(fromAttach.side);
-  const toOff = offsetForCardSide(toAttach.side);
-  const srcPortOut = offsetForPortSide(srcPort.side);
-  const tgtPortIn = offsetForPortSide(tgtPort.side);
-
-  // Leg 1 — card attach → source port. Out tangent leaves card
-  // perpendicular; in tangent arrives at port along the port's
-  // outward normal.
-  const a1x = fromAttach.x + fromOff.dx * exitHandle;
-  const a1y = fromAttach.y + fromOff.dy * exitHandle;
-  const a2x = srcPort.x - srcPortOut.dx * portHandle;
-  const a2y = srcPort.y - srcPortOut.dy * portHandle;
-
-  // Leg 2 — source port → target port. Tangents along each port's
-  // outward normal so the trunk leaves src perpendicular and arrives
-  // at tgt perpendicular. Control points nudged 50% of the port gap.
-  const trunkLen = Math.hypot(tgtPort.x - srcPort.x, tgtPort.y - srcPort.y);
-  const trunkHandle = Math.max(24, Math.min(trunkLen * 0.45, 120));
-  const b1x = srcPort.x + srcPortOut.dx * trunkHandle;
-  const b1y = srcPort.y + srcPortOut.dy * trunkHandle;
-  const b2x = tgtPort.x + tgtPortIn.dx * trunkHandle;
-  const b2y = tgtPort.y + tgtPortIn.dy * trunkHandle;
-
-  // Leg 3 — target port → target card attach.
-  const c1x = tgtPort.x - tgtPortIn.dx * portHandle;
-  const c1y = tgtPort.y - tgtPortIn.dy * portHandle;
-  const c2x = toAttach.x + toOff.dx * exitHandle;
-  const c2y = toAttach.y + toOff.dy * exitHandle;
-
-  return (
-    `M ${fx(fromAttach.x)} ${fx(fromAttach.y)} ` +
-    `C ${fx(a1x)} ${fx(a1y)}, ${fx(a2x)} ${fx(a2y)}, ${fx(srcPort.x)} ${fx(srcPort.y)} ` +
-    `C ${fx(b1x)} ${fx(b1y)}, ${fx(b2x)} ${fx(b2y)}, ${fx(tgtPort.x)} ${fx(tgtPort.y)} ` +
-    `C ${fx(c1x)} ${fx(c1y)}, ${fx(c2x)} ${fx(c2y)}, ${fx(toAttach.x)} ${fx(toAttach.y)}`
-  );
+function dominantRelationOf(edges: readonly GraphEdge[]): GraphEdge["relation"] {
+  const counts = new Map<GraphEdge["relation"], number>();
+  for (const e of edges) counts.set(e.relation, (counts.get(e.relation) ?? 0) + 1);
+  let best: GraphEdge["relation"] = edges[0]?.relation ?? "mutates";
+  let bestCount = 0;
+  for (const [rel, c] of counts) {
+    if (c > bestCount) {
+      best = rel;
+      bestCount = c;
+    }
+  }
+  return best;
 }
 
-function offsetForCardSide(side: "top" | "bottom" | "left" | "right"): {
-  dx: number;
-  dy: number;
-} {
+const EXIT_HANDLE = 48;
+const PORT_HANDLE = 40;
+
+function offsetForSide(
+  side: "top" | "bottom" | "left" | "right",
+): { dx: number; dy: number } {
   switch (side) {
     case "top":
       return { dx: 0, dy: -1 };
@@ -190,9 +247,74 @@ function offsetForCardSide(side: "top" | "bottom" | "left" | "right"): {
   }
 }
 
-/** Port side tangent = outward normal of the cluster rect face. */
-function offsetForPortSide(side: ClusterPort["side"]): { dx: number; dy: number } {
-  return offsetForCardSide(side);
+/** Full port path: card → srcPort → tgtPort → card (3 cubic segments). */
+function fullPortPath(
+  fromAttach: ReturnType<typeof attachPoint>,
+  toAttach: ReturnType<typeof attachPoint>,
+  srcPort: ClusterPort,
+  tgtPort: ClusterPort,
+): string {
+  return (
+    entryLeg(fromAttach, srcPort) +
+    " " +
+    trunkCurve(srcPort, tgtPort) +
+    " " +
+    exitLeg(tgtPort, toAttach)
+  );
+}
+
+/** Entry + exit legs only (two disjoint subpaths via `M` break). */
+function leafPortPath(
+  fromAttach: ReturnType<typeof attachPoint>,
+  toAttach: ReturnType<typeof attachPoint>,
+  srcPort: ClusterPort,
+  tgtPort: ClusterPort,
+): string {
+  return entryLeg(fromAttach, srcPort) + " " + exitLeg(tgtPort, toAttach);
+}
+
+/** Just the port→port middle — what the trunk aggregate renders. */
+function trunkPath(srcPort: ClusterPort, tgtPort: ClusterPort): string {
+  return `M ${fx(srcPort.x)} ${fx(srcPort.y)} ${trunkCurve(srcPort, tgtPort).replace(/^C/, "C")}`;
+}
+
+function entryLeg(
+  fromAttach: ReturnType<typeof attachPoint>,
+  srcPort: ClusterPort,
+): string {
+  const fromOff = offsetForSide(fromAttach.side);
+  const srcOut = offsetForSide(srcPort.side);
+  const c1x = fromAttach.x + fromOff.dx * EXIT_HANDLE;
+  const c1y = fromAttach.y + fromOff.dy * EXIT_HANDLE;
+  const c2x = srcPort.x - srcOut.dx * PORT_HANDLE;
+  const c2y = srcPort.y - srcOut.dy * PORT_HANDLE;
+  return `M ${fx(fromAttach.x)} ${fx(fromAttach.y)} C ${fx(c1x)} ${fx(c1y)}, ${fx(c2x)} ${fx(c2y)}, ${fx(srcPort.x)} ${fx(srcPort.y)}`;
+}
+
+function exitLeg(
+  tgtPort: ClusterPort,
+  toAttach: ReturnType<typeof attachPoint>,
+): string {
+  const tgtIn = offsetForSide(tgtPort.side);
+  const toOff = offsetForSide(toAttach.side);
+  const c1x = tgtPort.x - tgtIn.dx * PORT_HANDLE;
+  const c1y = tgtPort.y - tgtIn.dy * PORT_HANDLE;
+  const c2x = toAttach.x + toOff.dx * EXIT_HANDLE;
+  const c2y = toAttach.y + toOff.dy * EXIT_HANDLE;
+  return `M ${fx(tgtPort.x)} ${fx(tgtPort.y)} C ${fx(c1x)} ${fx(c1y)}, ${fx(c2x)} ${fx(c2y)}, ${fx(toAttach.x)} ${fx(toAttach.y)}`;
+}
+
+/** Port-to-port middle. Used inside full path and as the trunk path. */
+function trunkCurve(srcPort: ClusterPort, tgtPort: ClusterPort): string {
+  const srcOut = offsetForSide(srcPort.side);
+  const tgtIn = offsetForSide(tgtPort.side);
+  const trunkLen = Math.hypot(tgtPort.x - srcPort.x, tgtPort.y - srcPort.y);
+  const trunkHandle = Math.max(24, Math.min(trunkLen * 0.45, 120));
+  const b1x = srcPort.x + srcOut.dx * trunkHandle;
+  const b1y = srcPort.y + srcOut.dy * trunkHandle;
+  const b2x = tgtPort.x + tgtIn.dx * trunkHandle;
+  const b2y = tgtPort.y + tgtIn.dy * trunkHandle;
+  return `C ${fx(b1x)} ${fx(b1y)}, ${fx(b2x)} ${fx(b2y)}, ${fx(tgtPort.x)} ${fx(tgtPort.y)}`;
 }
 
 function fx(n: number): string {
