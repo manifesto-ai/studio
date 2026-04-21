@@ -108,11 +108,14 @@
 - 구현: `studio-core.isActionAvailable(name)` surface 추가. InteractionEditor의 액션 `<select>`를 `<optgroup>` 두 개로 분할 — "Available now" + "Currently unavailable"(∅ prefix).
 - 남은 부분: H3 정적 counterfactual (unavailable 액션별로 "이렇게 하면 가능" 힌트). `available when` expression에 `firstProvableHint` 적용 필요. 다음 사이클.
 
-### 5.3 Pillar 4 (Time is first-class)의 Studio UI 구현
+### 5.3 Pillar 4 (Time is first-class) Studio UI — ✅ 부분 해결됨
 
-- 현재 상태: 완전 silent. `HistoryTimeline`은 schema edit log이지 Merkle World 체인이 아님.
-- 의존: `docs/studio/ux-philosophy.md` §5 Deferred D1 — Studio Core가 lineage-decorated runtime을 wrapping해야 함. 현재 base runtime만 사용.
-- 우선순위: High after D1 해결.
+- 구현: Studio Core에 synthetic `LineageTracker` 추가. build 성공과 completed dispatch마다 World 레코드(parent chain + snapshot hash + origin) 기록. `StudioCore.getLineage() / getLatestHead() / getWorld(id)` surface 노출. NowLine 우측에 현재 world id 뱃지 + hover tooltip (parent → id, depth, origin).
+- 남은 부분:
+  - 진짜 SDK `withLineage` 기반 Merkle DAG로 교체 (SealAttempt 포함). 현재는 UI projection이고 재구동 시 체인 사라짐.
+  - "Lineage" lens — world list + branch tree 시각화.
+  - Scrub-to-past가 현재는 edit envelope 기반. World-id 기반 scrub으로 확장.
+- 우선순위: Medium — 당장 UI에 lineage가 보이므로 "silent" 상태는 해결. 깊은 통합은 사용자 체감 피드백 후.
 
 ---
 

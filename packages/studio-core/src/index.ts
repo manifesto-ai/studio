@@ -141,3 +141,12 @@ export {
   formatPlan,
   type FormatPlanOptions,
 } from "./internal/format-plan.js";
+
+export type {
+  BranchId,
+  World,
+  WorldHead,
+  WorldId,
+  WorldLineage,
+  WorldOrigin,
+} from "./internal/lineage-tracker.js";

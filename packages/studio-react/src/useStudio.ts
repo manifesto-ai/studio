@@ -5,6 +5,7 @@ import type {
   ReconciliationPlan,
   Snapshot,
 } from "./type-imports.js";
+import type { WorldLineage } from "@manifesto-ai/studio-core";
 import { StudioContext, type StudioContextValue } from "./StudioProvider.js";
 
 export type UseStudioValue = StudioContextValue & {
@@ -17,6 +18,8 @@ export type UseStudioValue = StudioContextValue & {
   readonly snapshot: Snapshot<unknown> | null;
   readonly plan: ReconciliationPlan | null;
   readonly diagnostics: readonly Marker[];
+  /** Synthetic Merkle-ish world chain. Pillar 4. */
+  readonly lineage: WorldLineage;
 };
 
 export function useStudio(): UseStudioValue {
@@ -34,6 +37,7 @@ export function useStudio(): UseStudioValue {
       snapshot: core.getSnapshot(),
       plan: core.getLastReconciliationPlan(),
       diagnostics: core.getDiagnostics(),
+      lineage: core.getLineage(),
     }),
     // `version` is the cache key — bumping it invalidates all four reads.
     // eslint-disable-next-line react-hooks/exhaustive-deps

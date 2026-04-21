@@ -14,6 +14,12 @@ import type { TraceRecord } from "./trace.js";
 import type { ReconciliationPlan } from "./reconciliation.js";
 import type { EditHistoryQuery, EditHistoryStore } from "./edit-history-store.js";
 import type { EditIntentEnvelope } from "./edit-intent.js";
+import type {
+  World,
+  WorldHead,
+  WorldId,
+  WorldLineage,
+} from "../internal/lineage-tracker.js";
 
 export type Detach = () => void;
 
@@ -59,4 +65,14 @@ export type StudioCore = {
   readonly getEditHistory: (
     query?: EditHistoryQuery,
   ) => Promise<readonly EditIntentEnvelope[]>;
+  /**
+   * Synthetic Merkle-ish world lineage (Pillar 4 — "Time is first-class").
+   * Each successful build or completed dispatch emits a World linked to
+   * its parent by id. Read via `getLineage()` for the full chain or
+   * `getLatestHead()` for the current tip. Type shapes mirror
+   * `@manifesto-ai/lineage` for future swap.
+   */
+  readonly getLineage: () => WorldLineage;
+  readonly getLatestHead: () => WorldHead | null;
+  readonly getWorld: (id: WorldId) => World | null;
 };

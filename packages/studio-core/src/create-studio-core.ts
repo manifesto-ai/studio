@@ -20,6 +20,13 @@ import { createInitialState, type StudioState } from "./internal/state.js";
 import { createTraceBuffer } from "./internal/trace-buffer.js";
 import { createInMemoryEditHistoryStore } from "./internal/in-memory-edit-history-store.js";
 import { buildEnvelope } from "./internal/envelope-codec.js";
+import {
+  createLineageTracker,
+  type World,
+  type WorldHead,
+  type WorldId,
+  type WorldLineage,
+} from "./internal/lineage-tracker.js";
 
 const DEFAULT_TRACE_BUFFER_SIZE = 1000;
 
@@ -30,6 +37,7 @@ export function createStudioCore(options?: StudioCoreOptions): StudioCore {
   const editHistoryStore =
     options?.editHistoryStore ?? createInMemoryEditHistoryStore();
   const effects = options?.effects;
+  const lineage = createLineageTracker();
   let state: StudioState = createInitialState();
   let attachedAdapter: EditorAdapter | null = null;
   let adapterUnsubscribe: (() => void) | null = null;
@@ -62,6 +70,16 @@ export function createStudioCore(options?: StudioCoreOptions): StudioCore {
         author: "human",
       });
       await editHistoryStore.append(envelope);
+      // Lineage: schema change drops any prior chain under the old
+      // hash, and the successful build seeds a new genesis world for
+      // the new schema so the UI always has a head to anchor on.
+      lineage.resetForSchema(result.schemaHash);
+      const canonical = state.runtime?.getCanonicalSnapshot() ?? null;
+      lineage.record({
+        schemaHash: result.schemaHash,
+        origin: { kind: "build", buildId: state.currentBuildId ?? undefined },
+        canonicalSnapshot: canonical as never,
+      });
     }
     return result;
   }
@@ -194,6 +212,23 @@ export function createStudioCore(options?: StudioCoreOptions): StudioCore {
         ? traceBuffer.append(intentId, schemaHash, hostTraces)
         : [];
 
+    // Lineage: a completed dispatch advances the head onto a new world.
+    // Rejected/failed attempts don't produce a new world — the tip
+    // stays where it was (they are "no-op relative to state").
+    if (report.kind === "completed") {
+      const canonical =
+        state.runtime?.getCanonicalSnapshot() ?? null;
+      const changedPaths =
+        (report.outcome as { projected?: { changedPaths?: readonly string[] } })
+          ?.projected?.changedPaths ?? [];
+      lineage.record({
+        schemaHash,
+        origin: { kind: "dispatch", intentType: intent.type },
+        canonicalSnapshot: canonical as never,
+        changedPaths,
+      });
+    }
+
     return { ...report, traceIds } as StudioDispatchResult;
   }
 
@@ -250,5 +285,8 @@ export function createStudioCore(options?: StudioCoreOptions): StudioCore {
     getModule,
     getDiagnostics,
     getEditHistory,
+    getLineage: lineage.getLineage,
+    getLatestHead: lineage.getLatestHead,
+    getWorld: (id: WorldId): World | null => lineage.getWorld(id),
   };
 }

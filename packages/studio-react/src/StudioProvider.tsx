@@ -17,6 +17,7 @@ import type {
   StudioCore,
   StudioDispatchResult,
   StudioSimulateResult,
+  WorldLineage,
 } from "@manifesto-ai/studio-core";
 import { resolveValueAtPath } from "./InteractionEditor/snapshot-diff.js";
 

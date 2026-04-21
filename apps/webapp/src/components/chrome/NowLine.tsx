@@ -7,7 +7,7 @@ import {
   type DispatchDiff,
   type DispatchHistoryEntry,
 } from "@manifesto-ai/studio-react";
-import type { EditIntentEnvelope } from "@manifesto-ai/studio-core";
+import type { EditIntentEnvelope, WorldHead } from "@manifesto-ai/studio-core";
 import {
   Tooltip,
   TooltipContent,
@@ -43,10 +43,11 @@ type TimelineTick =
  * replay-from-here (P1-G8).
  */
 export function NowLine(): JSX.Element {
-  const { history, dispatchHistory, module } = useStudio();
+  const { history, dispatchHistory, lineage, module } = useStudio();
   const { state: scrub, select, returnToNow, selectedEnvelopeId } =
     useTimeScrub();
   const [hovered, setHovered] = useState<string | null>(null);
+  const head: WorldHead | null = lineage.head;
 
   const ticks = useMemo<readonly TimelineTick[]>(() => {
     if (history.length === 0 && dispatchHistory.length === 0) return [];
@@ -184,16 +185,78 @@ export function NowLine(): JSX.Element {
             Return to now
           </button>
         ) : (
-          <span className="font-mono text-[10.5px] text-[var(--color-ink-dim)] shrink-0">
-            {now !== undefined
-              ? formatTime(now.timestamp)
-              : module === null
-                ? "—"
-                : "fresh"}
-          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            {head !== null ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className="
+                      font-mono text-[10px] px-1.5 py-0.5 rounded
+                      border border-[color-mix(in_oklch,var(--color-violet)_40%,transparent)]
+                      bg-[color-mix(in_oklch,var(--color-violet)_10%,transparent)]
+                      text-[var(--color-violet-hot)]
+                      tracking-[0.03em]
+                    "
+                    aria-label="current world id"
+                  >
+                    {head.worldId}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={10}>
+                  <WorldHeadTooltipBody head={head} lineage={lineage} />
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+            <span className="font-mono text-[10.5px] text-[var(--color-ink-dim)]">
+              {now !== undefined
+                ? formatTime(now.timestamp)
+                : module === null
+                  ? "—"
+                  : "fresh"}
+            </span>
+          </div>
         )}
       </div>
     </TooltipProvider>
+  );
+}
+
+function WorldHeadTooltipBody({
+  head,
+  lineage,
+}: {
+  readonly head: WorldHead;
+  readonly lineage: ReturnType<typeof useStudio>["lineage"];
+}): JSX.Element {
+  const world = lineage.worlds.find((w) => w.id === head.worldId) ?? null;
+  const parent = world?.parentId ?? null;
+  const chainDepth = lineage.worlds.length;
+  return (
+    <div className="flex flex-col gap-1 min-w-[220px]">
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-sans text-[10px] uppercase tracking-[0.06em] text-[var(--color-ink-mute)]">
+          current world
+        </span>
+        <span className="font-mono text-[10px] text-[var(--color-violet-hot)]">
+          depth {chainDepth}
+        </span>
+      </div>
+      <div className="font-mono text-[10px] text-[var(--color-ink)]">{head.worldId}</div>
+      {world !== null ? (
+        <>
+          <div className="font-mono text-[9.5px] text-[var(--color-ink-mute)]">
+            {world.origin.kind === "dispatch"
+              ? `dispatch · ${world.origin.intentType ?? ""}`
+              : `build · ${world.schemaHash.slice(0, 8)}`}
+          </div>
+          <div className="flex items-center gap-1 font-mono text-[9.5px] text-[var(--color-ink-mute)]">
+            <span>{parent ?? "∅"}</span>
+            <span className="text-[var(--color-ink-mute)]">→</span>
+            <span className="text-[var(--color-ink)]">{world.id}</span>
+          </div>
+        </>
+      ) : null}
+    </div>
   );
 }
 
