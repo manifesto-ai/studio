@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -317,7 +318,7 @@ export function LiveGraph({
 
   const onNodePointerDown = useCallback(
     (
-      node: GraphNode,
+      nodeId: GraphNode["id"],
       e: React.PointerEvent<HTMLElement>,
     ): void => {
       // Only left button; don't start drag from form inputs or buttons
@@ -331,11 +332,11 @@ export function LiveGraph({
       // move cards would immediately defeat that.
       if (focusActive) return;
 
-      const rect = layout.bounds.get(node.id);
+      const rect = layout.bounds.get(nodeId);
       if (rect === undefined) return;
 
       dragStateRef.current = {
-        nodeId: node.id,
+        nodeId,
         pointerId: e.pointerId,
         startPointerX: e.clientX,
         startPointerY: e.clientY,
@@ -620,7 +621,7 @@ export function LiveGraph({
   ]);
 
   const handleNodeActivate = useCallback(
-    (node: GraphNode, _el: HTMLElement) => {
+    (nodeId: GraphNode["id"], _el: HTMLElement) => {
       if (wasDraggedSinceLastClickRef.current) {
         wasDraggedSinceLastClickRef.current = false;
         return;
@@ -629,7 +630,7 @@ export function LiveGraph({
       // an inline dispatch popover here; that path now lives in the
       // Interact lens, which LensPane auto-pulses when focus lands on
       // an action while the lens isn't visible.
-      toggleFocus(node.id);
+      toggleFocus(nodeId);
     },
     [toggleFocus],
   );
@@ -637,6 +638,53 @@ export function LiveGraph({
   const handleBackgroundClick = useCallback(() => {
     clearFocus();
   }, [clearFocus]);
+
+  // --- Per-node schema metadata (stable per schema build) -------------
+  // typeLabel / typeDef / action-arg / action-descriptor all depend on
+  // `module` only — when the snapshot changes, these don't. Pre-compute
+  // them once per schema build so card renders read from a Map instead
+  // of calling `typeOfStateField(module, name)` on every parent render,
+  // which previously returned fresh object references for typeDef and
+  // defeated NodeCard.memo.
+  const nodeMetaByNodeId = useMemo(() => {
+    type Meta =
+      | { readonly kind: "state"; readonly typeLabel: string; readonly typeDef: unknown }
+      | { readonly kind: "computed"; readonly typeLabel: string; readonly typeDef: unknown }
+      | { readonly kind: "action"; readonly argLabel: string };
+    const map = new Map<GraphNode["id"], Meta>();
+    if (module === null) return map;
+    for (const node of model.nodes) {
+      if (node.kind === "state") {
+        map.set(node.id, {
+          kind: "state",
+          typeLabel: typeOfStateField(module, node.name),
+          typeDef: typeDefOfStateField(module, node.name),
+        });
+      } else if (node.kind === "computed") {
+        map.set(node.id, {
+          kind: "computed",
+          typeLabel: typeOfComputed(module, node.name),
+          typeDef: typeDefOfComputed(module, node.name),
+        });
+      } else if (node.kind === "action") {
+        const descriptor = descriptorForAction(module.schema, node.name);
+        map.set(node.id, {
+          kind: "action",
+          argLabel: describeActionArg(descriptor, node.name),
+        });
+      }
+    }
+    return map;
+  }, [model.nodes, module]);
+
+  // --- Rect reference stability ---------------------------------------
+  // Both `layout.bounds` (base + overrides + cluster collapse) and
+  // `focusLayout.bounds` (focus subgraph) get rebuilt on every pointer
+  // drag / cluster toggle / focus change. For nodes whose (x, y, width,
+  // height) are unchanged we want to reuse the prior Rect object so
+  // NodeCard.memo can shallow-compare `rect === prev.rect` and skip.
+  const stableBounds = useRectStability(layout.bounds);
+  const stableFocusBounds = useRectStability(focusLayout?.bounds ?? null);
 
   const searchActive = searchOpen && searchQuery.trim() !== "";
   const dimmed = focusNodeId !== null || searchActive;
@@ -810,8 +858,8 @@ export function LiveGraph({
           // merged baseLayout+overrides rect.
           const inFocus = focusActive && focusedNodeSet.has(node.id);
           const rect = inFocus
-            ? effectiveLayout.bounds.get(node.id)
-            : layout.bounds.get(node.id);
+            ? stableFocusBounds?.get(node.id)
+            : stableBounds.get(node.id);
           if (rect === undefined) return null;
           const focused = focusNodeId === node.id;
           const focusOk =
@@ -828,99 +876,83 @@ export function LiveGraph({
           // responding to pointer events — they're context, not targets.
           const faded = focusActive && !focusedNodeSet.has(node.id);
           const interactive = !faded;
-          const commonHandlers = {
-            faded,
-            interactive,
-            onPointerDown: (e: React.PointerEvent<HTMLElement>) =>
-              onNodePointerDown(node, e),
-            onPointerMove: onNodePointerMove,
-            onPointerUp: onNodePointerUp,
-            onActivate: (el: HTMLElement) => handleNodeActivate(node, el),
-            // Double-click routes to Focus (origin=graph). `useFocusSync`
-            // then reveals + pulses the span in Monaco. For action cards
-            // this path is handy: single=popover, double=jump to source.
-            onRevealSource: () => focusNode(node.id),
-          };
+          const meta = nodeMetaByNodeId.get(node.id);
 
-          if (node.kind === "state") {
-            const typeLabel = typeOfStateField(module, node.name);
-            const typeDef = typeDefOfStateField(module, node.name);
+          if (node.kind === "state" && meta?.kind === "state") {
             const value = (
               effectiveSnapshot?.data as Record<string, unknown> | undefined
             )?.[node.name];
             return (
-              <InteractiveCard
+              <StateCardItem
                 key={node.id}
                 nodeId={node.id}
+                name={node.name}
+                typeLabel={meta.typeLabel}
+                typeDef={meta.typeDef}
+                value={value}
                 rect={rect}
-                {...commonHandlers}
-              >
-                <StateCard
-                  id={node.id}
-                  name={node.name}
-                  typeLabel={typeLabel}
-                  typeDef={typeDef}
-                  value={value}
-                  rect={rect}
-                  highlighted={highlighted}
-                  focused={focused}
-                  pulsing={pulsing}
-                />
-              </InteractiveCard>
+                highlighted={highlighted}
+                focused={focused}
+                pulsing={pulsing}
+                faded={faded}
+                interactive={interactive}
+                onPointerDown={onNodePointerDown}
+                onPointerMove={onNodePointerMove}
+                onPointerUp={onNodePointerUp}
+                onActivate={handleNodeActivate}
+                onRevealSource={focusNode}
+              />
             );
           }
-          if (node.kind === "computed") {
-            const typeLabel = typeOfComputed(module, node.name);
-            const typeDef = typeDefOfComputed(module, node.name);
+          if (node.kind === "computed" && meta?.kind === "computed") {
             const value = effectiveSnapshot?.computed?.[node.name];
             return (
-              <InteractiveCard
+              <ComputedCardItem
                 key={node.id}
                 nodeId={node.id}
+                name={node.name}
+                typeLabel={meta.typeLabel}
+                typeDef={meta.typeDef}
+                value={value}
                 rect={rect}
-                {...commonHandlers}
-              >
-                <ComputedCard
-                  id={node.id}
-                  name={node.name}
-                  typeLabel={typeLabel}
-                  typeDef={typeDef}
-                  value={value}
-                  rect={rect}
-                  highlighted={highlighted}
-                  focused={focused}
-                  pulsing={pulsing}
-                />
-              </InteractiveCard>
+                highlighted={highlighted}
+                focused={focused}
+                pulsing={pulsing}
+                faded={faded}
+                interactive={interactive}
+                onPointerDown={onNodePointerDown}
+                onPointerMove={onNodePointerMove}
+                onPointerUp={onNodePointerUp}
+                onActivate={handleNodeActivate}
+                onRevealSource={focusNode}
+              />
             );
           }
-          // action
-          const info = actionDispatchability.get(node.id);
-          const descriptor =
-            module === null
-              ? null
-              : descriptorForAction(module.schema, node.name);
-          const argLabel = describeActionArg(descriptor, node.name);
-          return (
-            <InteractiveCard
-              key={node.id}
-              nodeId={node.id}
-              rect={rect}
-              {...commonHandlers}
-            >
-              <ActionCard
-                id={node.id}
+          if (node.kind === "action" && meta?.kind === "action") {
+            const info = actionDispatchability.get(node.id);
+            return (
+              <ActionCardItem
+                key={node.id}
+                nodeId={node.id}
                 name={node.name}
-                argLabel={argLabel}
+                argLabel={meta.argLabel}
                 dispatchable={disableDispatch ? null : info?.dispatchable ?? null}
                 blockerCount={info?.blockerCount ?? 0}
                 rect={rect}
                 highlighted={highlighted}
                 focused={focused}
                 pulsing={pulsing}
+                faded={faded}
+                interactive={interactive}
+                onPointerDown={onNodePointerDown}
+                onPointerMove={onNodePointerMove}
+                onPointerUp={onNodePointerUp}
+                onActivate={handleNodeActivate}
+                onRevealSource={focusNode}
               />
-            </InteractiveCard>
-          );
+            );
+          }
+          return null;
         })}
       </div>
 
@@ -941,11 +973,33 @@ export function LiveGraph({
 }
 
 // --------------------------------------------------------------------
-// InteractiveCard — wraps a NodeCard with pointer handlers for drag
-// and click. Provides the anchor element used by the dispatch popover.
+// Shared pointer/activate wrapper + per-kind memoized card items.
 // --------------------------------------------------------------------
+//
+// Why this shape: parent LiveGraph re-renders on many high-frequency
+// signals (pointer moves, live-pulse ticks, viewport changes). Each
+// render used to produce a fresh closure for every card's onPointerDown
+// / onActivate / onRevealSource, which defeated React.memo. We now pass
+// stable handlers that take `nodeId` and bind them per-card inside an
+// inner memoized wrapper, so most cards skip render when their own
+// props haven't changed.
 
-function InteractiveCard({
+type CardHandlerProps = {
+  readonly nodeId: GraphNode["id"];
+  readonly rect: Rect;
+  readonly faded: boolean;
+  readonly interactive: boolean;
+  readonly onPointerDown: (
+    nodeId: GraphNode["id"],
+    e: React.PointerEvent<HTMLElement>,
+  ) => void;
+  readonly onPointerMove: (e: React.PointerEvent<HTMLElement>) => void;
+  readonly onPointerUp: (e: React.PointerEvent<HTMLElement>) => void;
+  readonly onActivate: (nodeId: GraphNode["id"], el: HTMLElement) => void;
+  readonly onRevealSource: (nodeId: GraphNode["id"]) => void;
+};
+
+function InteractiveCardShell({
   nodeId,
   rect,
   faded,
@@ -956,54 +1010,39 @@ function InteractiveCard({
   onActivate,
   onRevealSource,
   children,
-}: {
-  readonly nodeId: string;
-  readonly rect: Rect;
-  /** Non-focused nodes in focus mode: keep in place but fade out. */
-  readonly faded: boolean;
-  /** Pointer interactivity disabled for fading-out cards. */
-  readonly interactive: boolean;
-  readonly onPointerDown: (e: React.PointerEvent<HTMLElement>) => void;
-  readonly onPointerMove: (e: React.PointerEvent<HTMLElement>) => void;
-  readonly onPointerUp: (e: React.PointerEvent<HTMLElement>) => void;
-  readonly onActivate: (el: HTMLElement) => void;
-  readonly onRevealSource: () => void;
-  readonly children: React.ReactNode;
-}): JSX.Element {
+}: CardHandlerProps & { readonly children: React.ReactNode }): JSX.Element {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  // motion.div animates `x`, `y`, `width`, `height`, and `opacity`
-  // whenever the rect / faded props change, giving us FLIP transitions
-  // into and out of focus-layout positions for free.
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLElement>) => onPointerDown(nodeId, e),
+    [nodeId, onPointerDown],
+  );
+  const handleClick = useCallback(
+    (e: React.MouseEvent<HTMLElement>) => {
+      const t = e.target as HTMLElement;
+      if (t.closest("button, input, textarea, select, [role='dialog']")) return;
+      const el = (wrapperRef.current ??
+        (t.closest("[data-node-id]") as HTMLElement | null)) as HTMLElement | null;
+      if (el !== null) onActivate(nodeId, el);
+    },
+    [nodeId, onActivate],
+  );
+  const handleDoubleClick = useCallback(
+    (e: React.MouseEvent<HTMLElement>) => {
+      e.stopPropagation();
+      onRevealSource(nodeId);
+    },
+    [nodeId, onRevealSource],
+  );
   return (
     <motion.div
       ref={wrapperRef}
       data-interactive-card-id={nodeId}
-      onPointerDown={interactive ? onPointerDown : undefined}
+      onPointerDown={interactive ? handlePointerDown : undefined}
       onPointerMove={interactive ? onPointerMove : undefined}
       onPointerUp={interactive ? onPointerUp : undefined}
       onPointerCancel={interactive ? onPointerUp : undefined}
-      onClick={
-        interactive
-          ? (e) => {
-              const t = e.target as HTMLElement;
-              if (
-                t.closest("button, input, textarea, select, [role='dialog']")
-              )
-                return;
-              const el = (wrapperRef.current ??
-                (t.closest("[data-node-id]") as HTMLElement | null)) as HTMLElement | null;
-              if (el !== null) onActivate(el);
-            }
-          : undefined
-      }
-      onDoubleClick={
-        interactive
-          ? (e) => {
-              e.stopPropagation();
-              onRevealSource();
-            }
-          : undefined
-      }
+      onClick={interactive ? handleClick : undefined}
+      onDoubleClick={interactive ? handleDoubleClick : undefined}
       initial={false}
       animate={{
         x: rect.x,
@@ -1036,6 +1075,126 @@ function InteractiveCard({
     </motion.div>
   );
 }
+
+type StateCardItemProps = CardHandlerProps & {
+  readonly name: string;
+  readonly typeLabel: string;
+  readonly typeDef: unknown;
+  readonly value: unknown;
+  readonly highlighted: boolean;
+  readonly focused: boolean;
+  readonly pulsing: boolean;
+};
+
+const StateCardItem = memo(function StateCardItem(
+  props: StateCardItemProps,
+): JSX.Element {
+  return (
+    <InteractiveCardShell
+      nodeId={props.nodeId}
+      rect={props.rect}
+      faded={props.faded}
+      interactive={props.interactive}
+      onPointerDown={props.onPointerDown}
+      onPointerMove={props.onPointerMove}
+      onPointerUp={props.onPointerUp}
+      onActivate={props.onActivate}
+      onRevealSource={props.onRevealSource}
+    >
+      <StateCard
+        id={props.nodeId}
+        name={props.name}
+        typeLabel={props.typeLabel}
+        typeDef={props.typeDef}
+        value={props.value}
+        rect={props.rect}
+        highlighted={props.highlighted}
+        focused={props.focused}
+        pulsing={props.pulsing}
+      />
+    </InteractiveCardShell>
+  );
+});
+
+type ComputedCardItemProps = CardHandlerProps & {
+  readonly name: string;
+  readonly typeLabel: string;
+  readonly typeDef: unknown;
+  readonly value: unknown;
+  readonly highlighted: boolean;
+  readonly focused: boolean;
+  readonly pulsing: boolean;
+};
+
+const ComputedCardItem = memo(function ComputedCardItem(
+  props: ComputedCardItemProps,
+): JSX.Element {
+  return (
+    <InteractiveCardShell
+      nodeId={props.nodeId}
+      rect={props.rect}
+      faded={props.faded}
+      interactive={props.interactive}
+      onPointerDown={props.onPointerDown}
+      onPointerMove={props.onPointerMove}
+      onPointerUp={props.onPointerUp}
+      onActivate={props.onActivate}
+      onRevealSource={props.onRevealSource}
+    >
+      <ComputedCard
+        id={props.nodeId}
+        name={props.name}
+        typeLabel={props.typeLabel}
+        typeDef={props.typeDef}
+        value={props.value}
+        rect={props.rect}
+        highlighted={props.highlighted}
+        focused={props.focused}
+        pulsing={props.pulsing}
+      />
+    </InteractiveCardShell>
+  );
+});
+
+type ActionCardItemProps = CardHandlerProps & {
+  readonly name: string;
+  readonly argLabel: string;
+  readonly dispatchable: boolean | null;
+  readonly blockerCount: number;
+  readonly highlighted: boolean;
+  readonly focused: boolean;
+  readonly pulsing: boolean;
+};
+
+const ActionCardItem = memo(function ActionCardItem(
+  props: ActionCardItemProps,
+): JSX.Element {
+  return (
+    <InteractiveCardShell
+      nodeId={props.nodeId}
+      rect={props.rect}
+      faded={props.faded}
+      interactive={props.interactive}
+      onPointerDown={props.onPointerDown}
+      onPointerMove={props.onPointerMove}
+      onPointerUp={props.onPointerUp}
+      onActivate={props.onActivate}
+      onRevealSource={props.onRevealSource}
+    >
+      <ActionCard
+        id={props.nodeId}
+        name={props.name}
+        argLabel={props.argLabel}
+        dispatchable={props.dispatchable}
+        blockerCount={props.blockerCount}
+        rect={props.rect}
+        highlighted={props.highlighted}
+        focused={props.focused}
+        pulsing={props.pulsing}
+      />
+    </InteractiveCardShell>
+  );
+});
 
 // --------------------------------------------------------------------
 // Schema introspection helpers
@@ -1182,6 +1341,42 @@ function computeNeighbourhood(
     }
   }
   return { nodeIds, edgeIds };
+}
+
+/**
+ * Preserve Rect object references across layout re-computations when
+ * the geometry is unchanged. Turns a stream of fresh Maps into a stream
+ * of Maps that share rect identity with the previous one for all
+ * unchanged entries, so NodeCard.memo can shallow-compare and skip.
+ */
+function useRectStability(
+  bounds: ReadonlyMap<GraphNode["id"], Rect> | null,
+): ReadonlyMap<GraphNode["id"], Rect> {
+  const cacheRef = useRef(new Map<GraphNode["id"], Rect>());
+  return useMemo(() => {
+    const cache = cacheRef.current;
+    const next = new Map<GraphNode["id"], Rect>();
+    if (bounds === null) {
+      cacheRef.current = next;
+      return next;
+    }
+    for (const [id, rect] of bounds) {
+      const prev = cache.get(id);
+      if (
+        prev !== undefined &&
+        prev.x === rect.x &&
+        prev.y === rect.y &&
+        prev.width === rect.width &&
+        prev.height === rect.height
+      ) {
+        next.set(id, prev);
+      } else {
+        next.set(id, rect);
+      }
+    }
+    cacheRef.current = next;
+    return next;
+  }, [bounds]);
 }
 
 /**

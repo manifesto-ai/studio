@@ -20,7 +20,7 @@ import type { GraphNode } from "@manifesto-ai/studio-react";
  * character would re-center the viewport.
  */
 
-export type FocusOrigin = "graph" | "source" | "diagnostic";
+export type FocusOrigin = "graph" | "source" | "diagnostic" | "interact";
 
 export type Focus =
   | {

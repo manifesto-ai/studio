@@ -13,6 +13,7 @@ import {
   InteractionEditor,
   PlanPanel,
   SnapshotTree,
+  type GraphNode,
   type SnapshotFocus,
 } from "@manifesto-ai/studio-react";
 // Marker is defined in studio-core (adapter-interface) and not
@@ -96,7 +97,7 @@ export function LensPane({
 
   // Map Focus → SnapshotFocus for the Inspect lens. GraphNode ids are
   // `state:X` / `computed:X` / `action:X`; split on the first colon.
-  const { focus } = useFocus();
+  const { focus, setFocus } = useFocus();
   const snapshotFocus: SnapshotFocus | null = useMemo(() => {
     if (focus === null || focus.kind !== "node") return null;
     const idx = focus.id.indexOf(":");
@@ -195,7 +196,16 @@ export function LensPane({
                   flexDirection: "column",
                 }}
               >
-                <InteractionEditor focusedAction={focusedActionName} />
+                <InteractionEditor
+                  focusedAction={focusedActionName}
+                  onSelectAction={(name) =>
+                    setFocus({
+                      kind: "node",
+                      id: `action:${name}` as GraphNode["id"],
+                      origin: "interact",
+                    })
+                  }
+                />
               </div>
               {value === "snapshot" ? <SnapshotTree focus={snapshotFocus} /> : null}
               {value === "plan" ? <PlanPanel /> : null}

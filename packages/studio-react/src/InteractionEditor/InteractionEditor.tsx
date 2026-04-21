@@ -41,6 +41,13 @@ export type InteractionEditorProps = {
    */
   readonly focusedAction?: string;
   /**
+   * Called when the user picks an action from this editor's dropdown.
+   * Host apps typically route this into their shared Focus context so
+   * the graph / Inspect lens reflect the same selection. Combined
+   * with `focusedAction` it makes action selection bidirectional.
+   */
+  readonly onSelectAction?: (name: string) => void;
+  /**
    * Whether Dispatch is gated behind a resolved simulate for the
    * current bound intent (UX philosophy Rule S1).
    *
@@ -415,7 +422,11 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
         <select
           id="ie-action-select"
           value={selectedAction ?? ""}
-          onChange={(e) => setSelectedAction(e.currentTarget.value)}
+          onChange={(e) => {
+            const next = e.currentTarget.value;
+            setSelectedAction(next);
+            props.onSelectAction?.(next);
+          }}
           disabled={actionNames.length === 0}
           style={selectStyle}
         >
