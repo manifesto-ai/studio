@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { Play } from "lucide-react";
 import {
   useStudio,
+  type DispatchDiff,
   type DispatchHistoryEntry,
 } from "@manifesto-ai/studio-react";
 import type { EditIntentEnvelope } from "@manifesto-ai/studio-core";
@@ -287,8 +288,13 @@ function DispatchTooltipBody({
       : entry.status === "failed"
         ? entry.failureMessage ?? "execution failed"
         : "blocked before execution";
+  const diffs = entry.diffs ?? [];
+  const extraDiffs = Math.max(
+    0,
+    entry.changedPaths.length - diffs.length,
+  );
   return (
-    <div className="flex flex-col gap-1 min-w-[200px]">
+    <div className="flex flex-col gap-1 min-w-[240px] max-w-[360px]">
       <div className="flex items-center justify-between gap-3">
         <span className="font-mono text-[10px] text-[var(--color-ink)]">
           dispatch · {entry.intentType}
@@ -307,8 +313,62 @@ function DispatchTooltipBody({
       <div className="font-mono text-[10px] text-[var(--color-ink-mute)]">
         {detail}
       </div>
+      {diffs.length > 0 ? (
+        <div className="mt-1.5 flex flex-col gap-0.5 font-mono text-[10px] leading-[1.35] border-t border-[var(--color-rule)] pt-1.5">
+          {diffs.map((d) => (
+            <DispatchDiffRow key={d.path} diff={d} />
+          ))}
+          {extraDiffs > 0 ? (
+            <div className="text-[var(--color-ink-mute)] mt-0.5">
+              … +{extraDiffs} more path{extraDiffs === 1 ? "" : "s"}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function DispatchDiffRow({ diff }: { readonly diff: DispatchDiff }): JSX.Element {
+  const before = formatDiffValue(diff.before);
+  const after = formatDiffValue(diff.after);
+  // When the value is unchanged textually (e.g. object identity
+  // changed but stringify collapses to the same output), hide the
+  // `-` row so we don't show noise.
+  const sameText = before === after;
+  return (
+    <div className="flex flex-col gap-0">
+      <div className="text-[var(--color-ink-dim)] truncate" title={diff.path}>
+        {diff.path}
+      </div>
+      {!sameText ? (
+        <div className="text-[var(--color-err)] truncate" title={before}>
+          <span className="text-[var(--color-err)] mr-1">−</span>
+          {before}
+        </div>
+      ) : null}
+      <div className="text-[var(--color-sig-action)] truncate" title={after}>
+        <span className="text-[var(--color-sig-action)] mr-1">+</span>
+        {after}
+      </div>
+    </div>
+  );
+}
+
+function formatDiffValue(v: unknown): string {
+  if (v === undefined) return "undefined";
+  if (v === null) return "null";
+  if (typeof v === "string") return JSON.stringify(v);
+  if (typeof v === "number" || typeof v === "boolean" || typeof v === "bigint") {
+    return String(v);
+  }
+  try {
+    const s = JSON.stringify(v);
+    if (s === undefined) return String(v);
+    return s.length > 60 ? `${s.slice(0, 57)}…` : s;
+  } catch {
+    return String(v);
+  }
 }
 
 function TickTooltipBody({

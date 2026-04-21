@@ -18,6 +18,7 @@ import type {
   StudioDispatchResult,
   StudioSimulateResult,
 } from "@manifesto-ai/studio-core";
+import { resolveValueAtPath } from "./InteractionEditor/snapshot-diff.js";
 
 export type SimulationPlaybackSource =
   | "interaction-editor"
@@ -55,6 +56,20 @@ export type SimulationPlayback = SimulationPlaybackEvent & {
  * It is NOT a replacement for the SDK's Merkle lineage — that belongs
  * upstream. This is a pragmatic projection for the Dispatch lens.
  */
+/**
+ * Per-path before/after snapshot diff, captured only for `completed`
+ * dispatches. Values are kept as `unknown` — the tooltip formats them
+ * (JSON.stringify + truncate) at render time so provider code stays
+ * value-agnostic. Truncated to the first 8 paths by default so
+ * the history log doesn't retain huge snapshot slices for every
+ * dispatch.
+ */
+export type DispatchDiff = {
+  readonly path: string;
+  readonly before: unknown;
+  readonly after: unknown;
+};
+
 export type DispatchHistoryEntry = {
   readonly id: string;
   readonly intentType: string;
@@ -64,7 +79,11 @@ export type DispatchHistoryEntry = {
   readonly recordedAt: number;
   readonly rejectionCode?: string;
   readonly failureMessage?: string;
+  /** Populated for "completed" entries; empty otherwise. */
+  readonly diffs?: readonly DispatchDiff[];
 };
+
+const DIFF_CAPTURE_LIMIT = 8;
 
 export type StudioContextValue = {
   readonly core: StudioCore;
@@ -208,6 +227,7 @@ export function StudioProvider({
               ...common,
               status: "completed",
               changedPaths: result.outcome.projected.changedPaths ?? [],
+              diffs: collectDispatchDiffs(result),
             }
           : result.kind === "rejected"
             ? {
@@ -319,4 +339,28 @@ export function StudioProvider({
   );
 
   return <StudioContext.Provider value={value}>{children}</StudioContext.Provider>;
+}
+
+/**
+ * Pull per-path before/after from the SDK's projected diff. Capped at
+ * `DIFF_CAPTURE_LIMIT` so very wide dispatches (e.g. bulk clear) don't
+ * retain the whole snapshot slice in the history log — the NowLine
+ * tooltip is a summary view, not an archival one.
+ */
+function collectDispatchDiffs(
+  result: Extract<StudioDispatchResult, { readonly kind: "completed" }>,
+): readonly DispatchDiff[] {
+  const projected = result.outcome.projected;
+  const paths = projected.changedPaths ?? [];
+  const out: DispatchDiff[] = [];
+  const limit = Math.min(paths.length, DIFF_CAPTURE_LIMIT);
+  for (let i = 0; i < limit; i += 1) {
+    const path = paths[i];
+    out.push({
+      path,
+      before: resolveValueAtPath(projected.beforeSnapshot, path),
+      after: resolveValueAtPath(projected.afterSnapshot, path),
+    });
+  }
+  return out;
 }

@@ -3,6 +3,7 @@ export {
   StudioContext,
   type StudioProviderProps,
   type StudioContextValue,
+  type DispatchDiff,
   type DispatchHistoryEntry,
   type SimulationPlayback,
   type SimulationPlaybackEvent,
