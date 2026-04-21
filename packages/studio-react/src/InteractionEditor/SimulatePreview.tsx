@@ -6,11 +6,8 @@ import type {
   StudioDispatchResult,
   StudioSimulateResult,
 } from "@manifesto-ai/studio-core";
-import {
-  resolveValueAtPath,
-  sortPaths,
-  summarizePreviewValue,
-} from "./snapshot-diff.js";
+import { resolveValueAtPath, sortPaths } from "./snapshot-diff.js";
+import { InlineValue } from "../InlineValue.js";
 import { SimulationTraceView } from "./SimulationTraceView.js";
 
 export type SimulatePreviewProps = {
@@ -118,9 +115,9 @@ export function SimulatePreview({
             {insight.requirements.map((r) => (
               <li key={r.id} style={reqRowStyle}>
                 <code style={reqTypeStyle}>{r.type}</code>
-                <code style={reqParamsStyle}>
-                  {summarizePreviewValue(r.params, 80)}
-                </code>
+                <span style={reqParamsStyle}>
+                  <InlineValue value={r.params} />
+                </span>
               </li>
             ))}
           </ul>
@@ -273,9 +270,9 @@ function PathRow({
     <li style={pathRowStyle}>
       <code style={pathLabelStyle}>{path}</code>
       <div style={diffBoxStyle}>
-        <code style={beforeValueStyle}>{formatValue(before)}</code>
+        <InlineValue value={before} accent="err" />
         <span style={arrowStyle}>→</span>
-        <code style={afterValueStyle}>{formatValue(after)}</code>
+        <InlineValue value={after} accent="action" />
       </div>
     </li>
   );
@@ -343,10 +340,6 @@ function Pill({
 
 function flagLabel(value: boolean): string {
   return value ? "yes" : "no";
-}
-
-function formatValue(v: unknown): string {
-  return summarizePreviewValue(v, 80);
 }
 
 function statusTone(status: string): InsightTone {
@@ -472,29 +465,6 @@ const diffBoxStyle: CSSProperties = {
   gap: 6,
   fontFamily: MONO_STACK,
   fontSize: 11,
-};
-
-const beforeValueStyle: CSSProperties = {
-  color: COLORS.muted,
-  textDecoration: "line-through",
-  background: COLORS.bg,
-  padding: "2px 5px",
-  borderRadius: 3,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-  maxWidth: "48%",
-};
-
-const afterValueStyle: CSSProperties = {
-  color: COLORS.preserved,
-  background: COLORS.bg,
-  padding: "2px 5px",
-  borderRadius: 3,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-  maxWidth: "48%",
 };
 
 const arrowStyle: CSSProperties = {

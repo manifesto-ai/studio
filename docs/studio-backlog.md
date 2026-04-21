@@ -148,3 +148,38 @@ Phase 1 (`detectClusters` + cluster-aware column layout + dashed 경계)이 land
 - Jaccard threshold 0.3이 battleship 실사용에서 어떻게 보이는지 관찰 후 조정.
 - `reset` 같은 universal action이 너무 많은 cluster를 묶는 경우 "degree > N 이상 action은 bridge로 제외" 같은 heuristic 추가 검토.
 - 현재는 action share만 봄. computed dependency가 실제 cluster membership과 어긋나는 경우(예: unused computed)에 대한 처리 검토.
+
+---
+
+## 7. Value rendering 후속 (InlineValue 승격 이후)
+
+Phase 1 (`InlineValue` 공통 컴포넌트 + NowLine 툴팁/SimulatePreview diff 마이그레이션)이 landing됨. 다음은 사용자 요청으로 백로그 이관.
+
+### 7.1 JsonTree — 확장 가능한 트리 뷰어 (B)
+
+- 목적: 깊은 객체/배열을 Chrome DevTools console 스타일로 재귀적 key/value 트리로 표시. `▸` 클릭으로 레벨별 확장, 타입별 색 (string/number/bool/null 구분).
+- 사용처 후보: Snapshot pane, dedicated inspect panel, dispatch diff의 객체가 많을 때 "펼쳐보기" 링크.
+- 설계: 자체 구현(~200줄) vs `react-json-view` 같은 라이브러리 도입. 번들 크기/테마 통합 고려하면 자체 구현이 나음.
+- InlineValue와의 관계: InlineValue는 1줄 요약, JsonTree는 multi-line 드릴다운. 트리 노드의 leaf 값은 InlineValue로 재사용 가능.
+- 우선순위: Low — InlineValue 도입 후 "이 이상의 드릴다운이 필요하다"는 신호가 나올 때 착수.
+
+### 7.2 Semantic diff rendering — 구조 보존 diff (C)
+
+- 목적: `-`/`+` 행을 "변경된 서브키 단위"로 쪼개서 보여줌. 예:
+  ```
+  todos[0]
+    completed  − false  + true
+    priority   − 1      + 3
+  ```
+  현재는 path 전체의 before/after 2줄로만 표시 — 객체 한 덩어리가 `{...}`로 축약되면 실제 무엇이 변경됐는지 숨겨짐.
+- 구현: deep-diff 알고리즘 (`diff` / `microdiff` 등 경량 라이브러리 또는 자체 40줄 재귀) + `InlineValue`의 leaf 렌더러 재사용.
+- InlineValue가 이미 shape을 보여주므로 체감 이점은 "깊이 2 이상의 객체 diff에서 가장 뚜렷"함. 단순 scalar 변경에서는 이득 작음.
+- 우선순위: Low — InlineValue 적용 후 실제로 "diff가 {...}로 뭉쳐서 안 보인다"는 케이스가 많이 관찰되면 착수.
+
+### 7.3 InlineValue와 ValueView 통합
+
+- 현재 두 컴포넌트가 각자 존재:
+  - `ValueView` (apps/webapp): 카드 내 stateful 렌더 (토글 UI, 대형 숫자, array 타일, object 접힘)
+  - `InlineValue` (studio-react): 어디서든 1줄 inline 표시
+- 중복 로직 (type 분기, truncate) 일부 있음. 장기적으로는 `ValueView = InlineValue + card-affordances` 레이어로 합치는 게 좋음.
+- 지금은 역할 분리로 유지. 각 사용처의 요구가 충분히 다를 때까지는 통합 부담이 이득보다 큼.

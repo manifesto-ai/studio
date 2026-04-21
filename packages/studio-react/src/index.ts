@@ -36,6 +36,12 @@ export {
 export { COLORS, FONT_STACK, MONO_STACK } from "./style-tokens.js";
 
 export {
+  InlineValue,
+  type InlineValueAccent,
+  type InlineValueProps,
+} from "./InlineValue.js";
+
+export {
   SchemaGraphView,
   type SchemaGraphViewProps,
 } from "./SchemaGraphView/SchemaGraphView.js";

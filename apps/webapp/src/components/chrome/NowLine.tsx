@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { Play } from "lucide-react";
 import {
+  InlineValue,
   useStudio,
   type DispatchDiff,
   type DispatchHistoryEntry,
@@ -330,42 +331,33 @@ function DispatchTooltipBody({
 }
 
 function DispatchDiffRow({ diff }: { readonly diff: DispatchDiff }): JSX.Element {
-  const before = formatDiffValue(diff.before);
-  const after = formatDiffValue(diff.after);
-  // When the value is unchanged textually (e.g. object identity
-  // changed but stringify collapses to the same output), hide the
-  // `-` row so we don't show noise.
-  const sameText = before === after;
+  // When the stringified before/after collapse to the same shape we
+  // suppress the `−` row to avoid noise from pure reference-identity
+  // changes. Structural equality would be stricter but StringifyEq
+  // matches how the user perceives "did the value change".
+  const sameText = stringifyCompare(diff.before) === stringifyCompare(diff.after);
   return (
-    <div className="flex flex-col gap-0">
+    <div className="flex flex-col gap-[1px]">
       <div className="text-[var(--color-ink-dim)] truncate" title={diff.path}>
         {diff.path}
       </div>
       {!sameText ? (
-        <div className="text-[var(--color-err)] truncate" title={before}>
-          <span className="text-[var(--color-err)] mr-1">−</span>
-          {before}
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-[var(--color-err)] shrink-0">−</span>
+          <InlineValue value={diff.before} accent="err" />
         </div>
       ) : null}
-      <div className="text-[var(--color-sig-action)] truncate" title={after}>
-        <span className="text-[var(--color-sig-action)] mr-1">+</span>
-        {after}
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span className="text-[var(--color-sig-action)] shrink-0">+</span>
+        <InlineValue value={diff.after} accent="action" />
       </div>
     </div>
   );
 }
 
-function formatDiffValue(v: unknown): string {
-  if (v === undefined) return "undefined";
-  if (v === null) return "null";
-  if (typeof v === "string") return JSON.stringify(v);
-  if (typeof v === "number" || typeof v === "boolean" || typeof v === "bigint") {
-    return String(v);
-  }
+function stringifyCompare(v: unknown): string {
   try {
-    const s = JSON.stringify(v);
-    if (s === undefined) return String(v);
-    return s.length > 60 ? `${s.slice(0, 57)}…` : s;
+    return JSON.stringify(v) ?? String(v);
   } catch {
     return String(v);
   }
