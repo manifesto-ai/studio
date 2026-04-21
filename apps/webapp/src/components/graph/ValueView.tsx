@@ -120,31 +120,36 @@ function BoolView({
   const active = value;
   const activeColor = "var(--color-sig-determ)";
   const idleColor = TONE[tone].dim;
+  // Animate the dot's horizontal position with an explicit `animate` on
+  // `x` instead of using Framer's `layout` prop. `layout` would make
+  // the pill measure its bounding box on every parent re-render and
+  // FLIP-animate if it moved by a sub-pixel, which produced a phantom
+  // "circle flying in" effect whenever LiveGraph / cards re-rendered.
   return (
     <div className="flex items-center gap-2">
-      {/* Mini toggle indicator: filled for true, hollow outline for false */}
-      <motion.span
-        layout
+      <span
         className="relative inline-flex h-[14px] w-[22px] rounded-full border items-center"
         style={{
           borderColor: active ? activeColor : idleColor,
           background: active
             ? "color-mix(in oklch, var(--color-sig-determ) 28%, transparent)"
             : "transparent",
+          transition: "background-color 150ms, border-color 150ms",
         }}
       >
         <motion.span
-          layout
           aria-hidden
           className="absolute h-[8px] w-[8px] rounded-full"
+          initial={false}
+          animate={{ x: active ? 11 : 2 }}
+          transition={{ type: "spring", stiffness: 500, damping: 30 }}
           style={{
+            left: 0,
             background: active ? activeColor : idleColor,
             boxShadow: active ? `0 0 6px ${activeColor}` : undefined,
-            left: active ? 11 : 2,
           }}
-          transition={{ type: "spring", stiffness: 500, damping: 30 }}
         />
-      </motion.span>
+      </span>
       <span
         className="font-mono text-[11.5px] font-medium"
         style={{ color: active ? activeColor : idleColor }}
