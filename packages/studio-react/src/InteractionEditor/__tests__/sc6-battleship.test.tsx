@@ -174,8 +174,8 @@ describe("P1-SC-7 — blocker UX", () => {
     cleanup();
   });
 
-  it("shoot before initCells: Dispatch stays locked; ladder surfaces the available-layer blocker (Rule S1 + L2)", async () => {
-    const { container, cleanup } = await mountBattleship();
+  it("shoot before initCells: clicking Dispatch stops at simulate and surfaces the available-layer blocker (Rule S1 + L2)", async () => {
+    const { container, core, cleanup } = await mountBattleship();
     const select = container.querySelector("#ie-action-select") as HTMLSelectElement;
     await act(async () => {
       fireInput(select, "shoot");
@@ -187,34 +187,35 @@ describe("P1-SC-7 — blocker UX", () => {
     await act(async () => {
       fireInput(textInput, "cell-0-0");
     });
-    // Rule S1: Dispatch must be inert from mount — no simulate yet.
+
+    const beforePhase = (core.getSnapshot()?.data as { readonly phase?: string } | undefined)?.phase;
     const dispatchBtn = Array.from(container.querySelectorAll("button")).find(
       (b) => b.textContent?.trim().startsWith("Dispatch"),
     ) as HTMLButtonElement;
-    expect(dispatchBtn.disabled).toBe(true);
+    expect(dispatchBtn.disabled).toBe(false);
 
-    // Simulate surfaces the blocker through the legality ladder.
-    const simBtn = Array.from(container.querySelectorAll("button")).find((b) =>
-      b.textContent?.trim().startsWith("Simulate"),
-    ) as HTMLButtonElement;
+    // Clicking Dispatch runs the simulate-first chain internally; when
+    // the intent is blocked at the availability layer, the chain stops
+    // before the actual write — state must not change and the ladder
+    // must surface the blocker for the user.
     await act(async () => {
-      simBtn.click();
+      dispatchBtn.click();
       await new Promise((r) => setTimeout(r, 30));
     });
-    // Ladder's step 1 is blocked-here; downstream steps are
-    // demoted but still visible (Rule L1).
     const step1 = container.querySelector('[data-testid="ladder-step-available"]') as HTMLElement;
     expect(step1?.dataset.status).toBe("blocked-here");
     for (const id of ["input-valid", "dispatchable", "simulated", "admitted"]) {
       const el = container.querySelector(`[data-testid="ladder-step-${id}"]`) as HTMLElement;
       expect(el?.dataset.status).toBe("not-yet-evaluated");
     }
-    // Existing BlockerList still renders the blocker for UX continuity.
     const text = (container.textContent ?? "").toLowerCase();
     expect(text).toMatch(/blocked/);
     expect(text).toMatch(/available/);
-    // Dispatch still locked after blocker is surfaced.
-    expect(dispatchBtn.disabled).toBe(true);
+
+    // Real dispatch never happened — phase is still whatever it was
+    // before the click.
+    const afterPhase = (core.getSnapshot()?.data as { readonly phase?: string } | undefined)?.phase;
+    expect(afterPhase).toBe(beforePhase);
     cleanup();
   });
 });

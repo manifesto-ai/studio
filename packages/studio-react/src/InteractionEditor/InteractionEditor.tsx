@@ -51,6 +51,11 @@ export type InteractionEditorProps = {
    * payload serialization) and predate Rule S1. Every override site
    * must be justified in `docs/studio/backlog.md`.
    */
+  /**
+   * @deprecated since the simulate-first chain landed. Dispatch now
+   * always runs simulate internally before the actual write, so this
+   * toggle is a no-op. Left on the type for call-site compatibility.
+   */
   readonly enforceSimulateFirst?: boolean;
 };
 
@@ -60,7 +65,9 @@ export type InteractionEditorProps = {
  * `dispatch` / `simulate` / `createIntent` from `useStudio()`.
  */
 export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Element {
-  const enforceSimulateFirst = props.enforceSimulateFirst ?? true;
+  // `enforceSimulateFirst` is a no-op kept only for type compat (see
+  // prop docstring). Read once so we don't lint-warn on unused props.
+  void props.enforceSimulateFirst;
   const {
     core,
     module,
@@ -287,15 +294,52 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
   const onDispatch = useCallback(async () => {
     const intent = buildIntent();
     if (intent === null) return;
-    setPending("dispatch");
+
+    // Rule S1 as a chain, not a gate. We always resolve legality
+    // (explainIntent + simulate) first; only if the intent is admitted
+    // do we actually dispatch. If it's blocked we stop at simulate and
+    // let the ladder surface the blocker narrative — same end state
+    // as the old gated path, but without a dead-feeling Dispatch
+    // button.
+    setPending("simulate");
     try {
+      const explained = explainIntent(intent);
+      if (explained.kind === "blocked") {
+        updateActiveSession((prev) => ({
+          ...prev,
+          runtimeError: null,
+          lastInteraction: "simulate",
+          lastInsightValueSignature: prev.valueSignature,
+          lastExplanation: explained,
+        }));
+        return;
+      }
+      const simResult = simulate(intent);
+      if (simResult.diagnostics?.trace !== undefined) {
+        publishSimulationPlayback({
+          actionName: intent.type,
+          trace: simResult.diagnostics.trace,
+          source: "interaction-editor",
+        });
+      }
+      updateActiveSession((prev) => ({
+        ...prev,
+        runtimeError: null,
+        lastInteraction: "simulate",
+        lastInsightValueSignature: prev.valueSignature,
+        lastExplanation: explained,
+        lastSimulateResult: simResult,
+      }));
+
+      setPending("dispatch");
       const result = await dispatch(intent);
       updateActiveSession((prev) => ({
         ...prev,
         runtimeError: null,
         lastInteraction: "dispatch",
         lastInsightValueSignature: prev.valueSignature,
-        lastExplanation: explanationFromDispatch(result) ?? prev.lastExplanation,
+        lastExplanation:
+          explanationFromDispatch(result) ?? prev.lastExplanation,
         lastDispatchResult: result,
       }));
     } catch (err) {
@@ -306,7 +350,14 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
     } finally {
       setPending(null);
     }
-  }, [buildIntent, dispatch, updateActiveSession]);
+  }, [
+    buildIntent,
+    dispatch,
+    explainIntent,
+    publishSimulationPlayback,
+    simulate,
+    updateActiveSession,
+  ]);
 
   if (module === null) {
     return (
@@ -435,28 +486,17 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
         <button
           type="button"
           onClick={onDispatch}
-          disabled={
-            pending !== null ||
-            selectedAction === null ||
-            // Rule S1 (simulate-first): Dispatch is inert until a
-            // fresh simulate has resolved for the current bound
-            // intent. `simulateReadyForDispatch` goes true only when
-            // all 5 legality steps passed AND the form value has not
-            // drifted since simulate resolved. Production callers keep
-            // `enforceSimulateFirst` at its default `true`; tests
-            // covering unrelated paths may opt out.
-            (enforceSimulateFirst && !ladderState.simulateReadyForDispatch)
-          }
-          title={
-            enforceSimulateFirst && !ladderState.simulateReadyForDispatch
-              ? "Simulate-first: run Simulate for the current inputs to unlock Dispatch (Rule S1)"
-              : undefined
-          }
+          disabled={pending !== null || selectedAction === null}
+          title="Simulate runs first automatically; only an admitted intent proceeds to dispatch."
           data-testid="ie-dispatch-btn"
           data-simulate-ready={ladderState.simulateReadyForDispatch ? "1" : "0"}
           style={primaryBtnStyle}
         >
-          {pending === "dispatch" ? "Dispatching…" : "Dispatch"}
+          {pending === "simulate"
+            ? "Checking…"
+            : pending === "dispatch"
+              ? "Dispatching…"
+              : "Dispatch"}
         </button>
       </div>
 
