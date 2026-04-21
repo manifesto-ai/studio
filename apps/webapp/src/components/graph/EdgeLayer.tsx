@@ -3,7 +3,7 @@ import { motion } from "motion/react";
 import type { GraphModel } from "@manifesto-ai/studio-react";
 import type { LayoutResult } from "./layout";
 import type { ClusterMap } from "./clusters";
-import { bundledPortRouter, type EdgeRouter } from "./edge-router";
+import { orthogonalPortRouter, type EdgeRouter } from "./edge-router";
 
 type EdgeRelation = "feeds" | "mutates" | "unlocks";
 
@@ -45,7 +45,7 @@ export function EdgeLayer({
   focusActive = false,
   clusters,
   bundlingEnabled = false,
-  router = bundledPortRouter,
+  router = orthogonalPortRouter,
 }: {
   readonly model: GraphModel;
   readonly layout: LayoutResult;
@@ -63,10 +63,10 @@ export function EdgeLayer({
   /** Turn bundling off to force straight routing everywhere (e.g. focus mode). */
   readonly bundlingEnabled?: boolean;
   /**
-   * Routing strategy. Default is `bundledPortRouter` — straight
-   * bezier for intra-cluster edges, port-based trunk for inter-cluster.
-   * Swap in `orthogonalRouter` / `dagreRouter` etc. without touching
-   * this layer.
+   * Routing strategy. Default is `orthogonalPortRouter` — smoothstep
+   * (right-angle segments with rounded corners), using cluster ports
+   * as the bundling rendezvous. Swap in `dagreRouter` / `elkRouter`
+   * etc. without touching this layer.
    */
   readonly router?: EdgeRouter;
 }): JSX.Element {
