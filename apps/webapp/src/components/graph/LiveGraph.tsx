@@ -468,30 +468,37 @@ export function LiveGraph({
 
   useEffect(() => {
     if (disableDispatch) return;
-    if (simulatePulse.generation === 0 || simulatePulse.originAction === null) {
-      return;
-    }
+    if (focusActive) return; // focus fit owns the camera in focus mode
+    if (simulatePulse.generation === 0) return;
+    if (simulateController.steps.length === 0) return;
     if (lastScrolledPlaybackGenerationRef.current === simulatePulse.generation) {
       return;
     }
     const host = hostRef.current;
-    const originRect = layout.bounds.get(simulatePulse.originAction);
-    if (host === null || originRect === undefined) return;
-    // Fit the origin action + touched downstream nodes in the camera.
-    // Falls back to just the origin rect if the pulse hasn't populated
-    // yet (first frame of a new generation).
-    let minX = originRect.x;
-    let minY = originRect.y;
-    let maxX = originRect.x + originRect.width;
-    let maxY = originRect.y + originRect.height;
-    for (const id of simulatePulse.activeNodes) {
+    if (host === null) return;
+
+    // Fit the full propagation path at generation boundary. Using the
+    // static `steps` list (not the live `activeNodes`) keeps the camera
+    // pinned for the entire playback — the previous implementation fit
+    // whichever set of active nodes the current pulse carried, which
+    // for step 0 is a single origin-action card → extreme zoom-in.
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    const addRect = (id: GraphNode["id"] | null): void => {
+      if (id === null) return;
       const r = layout.bounds.get(id);
-      if (r === undefined) continue;
+      if (r === undefined) return;
       if (r.x < minX) minX = r.x;
       if (r.y < minY) minY = r.y;
       if (r.x + r.width > maxX) maxX = r.x + r.width;
       if (r.y + r.height > maxY) maxY = r.y + r.height;
-    }
+    };
+    addRect(simulatePulse.originAction);
+    for (const step of simulateController.steps) addRect(step.nodeId);
+    if (!Number.isFinite(minX)) return;
+
     const target = computeFitCamera(
       { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
       { width: host.clientWidth, height: host.clientHeight },
@@ -501,10 +508,11 @@ export function LiveGraph({
     setCamera(target, { animate: true });
   }, [
     disableDispatch,
+    focusActive,
     layout.bounds,
     simulatePulse.generation,
     simulatePulse.originAction,
-    simulatePulse.activeNodes,
+    simulateController.steps,
     setCamera,
   ]);
 
