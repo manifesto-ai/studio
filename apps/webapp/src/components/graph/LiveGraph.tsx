@@ -16,6 +16,7 @@ import {
   descriptorForAction,
   useStudio,
 } from "@manifesto-ai/studio-react";
+import { motion } from "motion/react";
 import { useFocus } from "@/hooks/useFocus";
 import {
   computeFitCamera,
@@ -179,6 +180,64 @@ export function LiveGraph({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseLayout, overrides, model.schemaHash]);
 
+  // --- Focus / neighbourhood ------------------------------------------
+  // Focus is global (see `useFocus`) so that the Monaco cursor can move
+  // the graph's focus and vice versa. Local "which node is focused" is
+  // a read-through on that state.
+  const { focus, setFocus, clear: clearFocus } = useFocus();
+  const focusNodeId: GraphNode["id"] | null =
+    focus !== null && focus.kind === "node" ? focus.id : null;
+  const focusNode = useCallback(
+    (id: GraphNode["id"]): void => {
+      setFocus({ kind: "node", id, origin: "graph" });
+    },
+    [setFocus],
+  );
+  const toggleFocus = useCallback(
+    (id: GraphNode["id"]): void => {
+      if (focusNodeId === id) clearFocus();
+      else setFocus({ kind: "node", id, origin: "graph" });
+    },
+    [focusNodeId, setFocus, clearFocus],
+  );
+  const neighbourhood = useMemo(
+    () => computeNeighbourhood(model, focusNodeId),
+    [model, focusNodeId],
+  );
+
+  // --- Focus subgraph layout ------------------------------------------
+  // When a node is focused, compute a secondary clean layout for the
+  // focus + 1-hop neighbours, sized to the viewport so it reads without
+  // any zoom. Cards animate between their baseLayout rect and the
+  // focusLayout rect (FLIP). Nodes not in the focus set stay at their
+  // base position but fade out. Edges re-render from the focus
+  // subgraph.
+  const focusedNodeSet = useMemo<ReadonlySet<GraphNode["id"]>>(() => {
+    if (focusNodeId === null) return new Set();
+    const out = new Set<GraphNode["id"]>([focusNodeId]);
+    for (const id of neighbourhood.nodeIds) out.add(id);
+    return out;
+  }, [focusNodeId, neighbourhood.nodeIds]);
+  const focusedModel = useMemo<GraphModel | null>(() => {
+    if (focusNodeId === null) return null;
+    const nodes = model.nodes.filter((n) => focusedNodeSet.has(n.id));
+    if (nodes.length === 0) return null;
+    const edges = model.edges.filter(
+      (e) => focusedNodeSet.has(e.source) && focusedNodeSet.has(e.target),
+    );
+    const nodesById = new Map(nodes.map((n) => [n.id, n]));
+    return { schemaHash: model.schemaHash, nodes, edges, nodesById };
+  }, [focusNodeId, focusedNodeSet, model]);
+  const focusLayout = useMemo<LayoutResult | null>(() => {
+    if (focusedModel === null) return null;
+    const W = Math.max(viewport.width, 640);
+    const H = Math.max(viewport.height, 440);
+    return computeLayout(focusedModel, W, H);
+  }, [focusedModel, viewport.width, viewport.height]);
+  const focusActive = focusLayout !== null;
+  const effectiveModel: GraphModel = focusedModel ?? model;
+  const effectiveLayout: LayoutResult = focusLayout ?? layout;
+
   const dragStateRef = useRef<{
     nodeId: GraphNode["id"];
     pointerId: number;
@@ -200,6 +259,10 @@ export function LiveGraph({
       const target = e.target as HTMLElement;
       if (target.closest("button, input, textarea, select, [role='dialog']"))
         return;
+      // Drag is disabled while focus layout is active. The point of
+      // focus mode is a clean subgraph presentation; letting the user
+      // move cards would immediately defeat that.
+      if (focusActive) return;
 
       const rect = layout.bounds.get(node.id);
       if (rect === undefined) return;
@@ -215,7 +278,7 @@ export function LiveGraph({
       };
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     },
-    [layout.bounds],
+    [layout.bounds, focusActive],
   );
 
   const onNodePointerMove = useCallback(
@@ -263,77 +326,17 @@ export function LiveGraph({
 
   const wasDraggedSinceLastClickRef = useRef(false);
 
-  // --- Focus / neighbourhood ------------------------------------------
-  // Focus is global (see `useFocus`) so that the Monaco cursor can move
-  // the graph's focus and vice versa. Local "which node is focused" is
-  // a read-through on that state.
-  const { focus, setFocus, clear: clearFocus } = useFocus();
-  const focusNodeId: GraphNode["id"] | null =
-    focus !== null && focus.kind === "node" ? focus.id : null;
-  const focusNode = useCallback(
-    (id: GraphNode["id"]): void => {
-      setFocus({ kind: "node", id, origin: "graph" });
-    },
-    [setFocus],
-  );
-  const toggleFocus = useCallback(
-    (id: GraphNode["id"]): void => {
-      if (focusNodeId === id) clearFocus();
-      else setFocus({ kind: "node", id, origin: "graph" });
-    },
-    [focusNodeId, setFocus, clearFocus],
-  );
-  const neighbourhood = useMemo(
-    () => computeNeighbourhood(model, focusNodeId),
-    [model, focusNodeId],
-  );
-
   // --- Focus camera follow --------------------------------------------
-  // Focus change → animate camera to fit (focus ∪ 1-hop neighbours) in
-  // the viewport. If the sub-graph is larger than the viewport, k drops
-  // below 1 to zoom out; otherwise k stays at 1 and only translate
-  // moves. This is the "bounding-box viewing focus" behaviour. When
-  // focus clears, return to identity.
-  //
-  // Keyed on node id so re-publishing the same focus from a different
-  // origin (source cursor echoing a graph click) doesn't re-animate.
-  const lastFitFocusRef = useRef<GraphNode["id"] | null>(null);
+  // With focus subgraph re-layout enabled, the focus layout is already
+  // sized to the viewport — so the camera stays at identity. We only
+  // touch the camera on focus enter / exit transitions, not on every
+  // re-focus within a session.
+  const lastFocusActiveRef = useRef<boolean>(false);
   useEffect(() => {
-    if (focusNodeId === null) {
-      if (lastFitFocusRef.current !== null) {
-        lastFitFocusRef.current = null;
-        setCamera({ tx: 0, ty: 0, k: 1 }, { animate: true });
-      }
-      return;
-    }
-    if (lastFitFocusRef.current === focusNodeId) return;
-    const host = hostRef.current;
-    if (host === null) return;
-
-    const ids = new Set<GraphNode["id"]>([focusNodeId]);
-    for (const id of neighbourhood.nodeIds) ids.add(id);
-    let minX = Number.POSITIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-    for (const id of ids) {
-      const r = layout.bounds.get(id);
-      if (r === undefined) continue;
-      if (r.x < minX) minX = r.x;
-      if (r.y < minY) minY = r.y;
-      if (r.x + r.width > maxX) maxX = r.x + r.width;
-      if (r.y + r.height > maxY) maxY = r.y + r.height;
-    }
-    if (!Number.isFinite(minX)) return;
-
-    const next = computeFitCamera(
-      { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
-      { width: host.clientWidth, height: host.clientHeight },
-      { padding: 72 },
-    );
-    lastFitFocusRef.current = focusNodeId;
-    setCamera(next, { animate: true });
-  }, [focusNodeId, neighbourhood.nodeIds, layout.bounds, setCamera]);
+    if (focusActive === lastFocusActiveRef.current) return;
+    lastFocusActiveRef.current = focusActive;
+    setCamera({ tx: 0, ty: 0, k: 1 }, { animate: true });
+  }, [focusActive, setCamera]);
 
   // --- Propagation pulse ----------------------------------------------
   const livePulse = useLivePulse(model);
@@ -567,8 +570,8 @@ export function LiveGraph({
       <div
         className="relative"
         style={{
-          width: layout.canvasWidth,
-          height: layout.canvasHeight,
+          width: effectiveLayout.canvasWidth,
+          height: effectiveLayout.canvasHeight,
           transform: `translate3d(${camera.tx}px, ${camera.ty}px, 0) scale(${camera.k})`,
           transformOrigin: "0 0",
           willChange: "transform",
@@ -578,15 +581,23 @@ export function LiveGraph({
         }}
       >
         <EdgeLayer
-          model={model}
-          layout={layout}
+          model={effectiveModel}
+          layout={effectiveLayout}
           highlightedEdgeIds={neighbourhood.edgeIds}
           pulsingEdgeIds={pulsingEdgeIds}
           dimmed={dimmed}
+          focusActive={focusActive}
         />
 
         {model.nodes.map((node) => {
-          const rect = layout.bounds.get(node.id);
+          // In focus mode, non-focused nodes stay at their baseLayout
+          // position (so they fade out in place), focused nodes use
+          // the fresh subgraph rect. Out of focus, everyone uses the
+          // merged baseLayout+overrides rect.
+          const inFocus = focusActive && focusedNodeSet.has(node.id);
+          const rect = inFocus
+            ? effectiveLayout.bounds.get(node.id)
+            : layout.bounds.get(node.id);
           if (rect === undefined) return null;
           const focused = focusNodeId === node.id;
           const focusOk =
@@ -599,7 +610,13 @@ export function LiveGraph({
           const pulsing =
             livePulse.touched.has(node.id) ||
             simulatePulse.activeNodes.has(node.id);
+          // In focus mode, non-focused cards fade out in place and stop
+          // responding to pointer events — they're context, not targets.
+          const faded = focusActive && !focusedNodeSet.has(node.id);
+          const interactive = !faded;
           const commonHandlers = {
+            faded,
+            interactive,
             onPointerDown: (e: React.PointerEvent<HTMLElement>) =>
               onNodePointerDown(node, e),
             onPointerMove: onNodePointerMove,
@@ -726,6 +743,8 @@ export function LiveGraph({
 function InteractiveCard({
   nodeId,
   rect,
+  faded,
+  interactive,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -735,6 +754,10 @@ function InteractiveCard({
 }: {
   readonly nodeId: string;
   readonly rect: Rect;
+  /** Non-focused nodes in focus mode: keep in place but fade out. */
+  readonly faded: boolean;
+  /** Pointer interactivity disabled for fading-out cards. */
+  readonly interactive: boolean;
   readonly onPointerDown: (e: React.PointerEvent<HTMLElement>) => void;
   readonly onPointerMove: (e: React.PointerEvent<HTMLElement>) => void;
   readonly onPointerUp: (e: React.PointerEvent<HTMLElement>) => void;
@@ -743,48 +766,59 @@ function InteractiveCard({
   readonly children: React.ReactNode;
 }): JSX.Element {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  // The NodeCard itself is absolutely positioned via Framer Motion
-  // transforms.  We overlay a pointer-target div at the same rect so
-  // drag gestures feel natural and the dispatch popover has a stable
-  // DOM anchor that moves with the card.
+  // motion.div animates `x`, `y`, `width`, `height`, and `opacity`
+  // whenever the rect / faded props change, giving us FLIP transitions
+  // into and out of focus-layout positions for free.
   return (
-    <div
+    <motion.div
       ref={wrapperRef}
       data-interactive-card-id={nodeId}
-      onPointerDown={(e) => {
-        onPointerDown(e);
+      onPointerDown={interactive ? onPointerDown : undefined}
+      onPointerMove={interactive ? onPointerMove : undefined}
+      onPointerUp={interactive ? onPointerUp : undefined}
+      onPointerCancel={interactive ? onPointerUp : undefined}
+      onClick={
+        interactive
+          ? (e) => {
+              const t = e.target as HTMLElement;
+              if (
+                t.closest("button, input, textarea, select, [role='dialog']")
+              )
+                return;
+              const el = (wrapperRef.current ??
+                (t.closest("[data-node-id]") as HTMLElement | null)) as HTMLElement | null;
+              if (el !== null) onActivate(el);
+            }
+          : undefined
+      }
+      onDoubleClick={
+        interactive
+          ? (e) => {
+              e.stopPropagation();
+              onRevealSource();
+            }
+          : undefined
+      }
+      initial={false}
+      animate={{
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        opacity: faded ? 0 : 1,
       }}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-      onClick={(e) => {
-        // Avoid firing activate if the target is a control inside the
-        // card — the card itself, including value rows, is considered
-        // neutral surface that can activate.
-        const t = e.target as HTMLElement;
-        if (t.closest("button, input, textarea, select, [role='dialog']"))
-          return;
-        const el = (wrapperRef.current ??
-          (t.closest("[data-node-id]") as HTMLElement | null)) as HTMLElement | null;
-        if (el !== null) onActivate(el);
-      }}
-      onDoubleClick={(e) => {
-        e.stopPropagation();
-        onRevealSource();
-      }}
+      transition={{ duration: 0.36, ease: [0.32, 0.72, 0.28, 1] }}
       style={{
         position: "absolute",
         left: 0,
         top: 0,
-        transform: `translate3d(${rect.x}px, ${rect.y}px, 0)`,
-        width: rect.width,
-        height: rect.height,
         touchAction: "none",
-        cursor: "grab",
+        cursor: interactive ? "grab" : "default",
+        pointerEvents: faded ? "none" : undefined,
       }}
     >
       {children}
-    </div>
+    </motion.div>
   );
 }
 

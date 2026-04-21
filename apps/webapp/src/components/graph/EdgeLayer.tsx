@@ -40,12 +40,20 @@ export function EdgeLayer({
   highlightedEdgeIds,
   pulsingEdgeIds,
   dimmed,
+  focusActive = false,
 }: {
   readonly model: GraphModel;
   readonly layout: LayoutResult;
   readonly highlightedEdgeIds: ReadonlySet<string>;
   readonly pulsingEdgeIds: ReadonlySet<string>;
   readonly dimmed: boolean;
+  /**
+   * When true, the caller has swapped `model` / `layout` to the focus
+   * subgraph. We key the outer SVG on this bool so the whole edge
+   * layer remounts and re-renders with an `initial` opacity animation
+   * — a clean fade-swap instead of jittery path jumps.
+   */
+  readonly focusActive?: boolean;
 }): JSX.Element {
   const paths = useMemo(() => {
     const out: {
@@ -72,12 +80,17 @@ export function EdgeLayer({
   }, [layout, model.edges]);
 
   return (
-    <svg
+    <motion.svg
+      key={focusActive ? "focus" : "base"}
       aria-hidden
       className="absolute inset-0 pointer-events-none"
       width={layout.canvasWidth}
       height={layout.canvasHeight}
       viewBox={`0 0 ${layout.canvasWidth} ${layout.canvasHeight}`}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.28, ease: "easeOut" }}
     >
       <defs>
         <ArrowMarker id="arrow-mutates" color="var(--color-sig-action)" />
@@ -125,7 +138,7 @@ export function EdgeLayer({
           );
         })}
       </g>
-    </svg>
+    </motion.svg>
   );
 }
 
