@@ -10,29 +10,36 @@ type MonarchAction =
       bracket?: "@open" | "@close";
     };
 
-type MonarchRule = readonly [RegExp, MonarchAction];
+type MonarchRule = [RegExp, MonarchAction];
 
-type MonarchTokenizer = Record<string, readonly MonarchRule[]>;
+// Monaco's IMonarchLanguage types rule arrays as mutable; keeping them
+// `readonly` here creates a contravariant-position incompatibility at
+// call sites that pass the real `monaco` object in.
+type MonarchTokenizer = Record<string, MonarchRule[]>;
 
+// NOTE: these structural types intentionally use mutable collection
+// shapes to match monaco-editor's real `IMonarchLanguage` /
+// `LanguageConfiguration`. Contravariant-position incompatibilities
+// appear the moment we mark these arrays/objects `readonly`.
 type MonacoMonarchLanguage = {
-  readonly defaultToken: string;
-  readonly ignoreCase?: boolean;
-  readonly tokenizer: MonarchTokenizer;
+  defaultToken: string;
+  ignoreCase?: boolean;
+  tokenizer: MonarchTokenizer;
 };
 
 type MonacoLanguageConfiguration = {
-  readonly comments?: {
-    readonly lineComment?: string;
-    readonly blockComment?: readonly [string, string];
+  comments?: {
+    lineComment?: string;
+    blockComment?: [string, string];
   };
-  readonly brackets?: readonly (readonly [string, string])[];
-  readonly autoClosingPairs?: readonly {
-    readonly open: string;
-    readonly close: string;
+  brackets?: [string, string][];
+  autoClosingPairs?: {
+    open: string;
+    close: string;
   }[];
-  readonly surroundingPairs?: readonly {
-    readonly open: string;
-    readonly close: string;
+  surroundingPairs?: {
+    open: string;
+    close: string;
   }[];
 };
 
@@ -40,8 +47,11 @@ export interface MonacoLanguageApiLike {
   readonly languages: {
     readonly register: (desc: {
       id: string;
-      extensions?: readonly string[];
-      aliases?: readonly string[];
+      // These must stay mutable to match monaco-editor's real
+      // ILanguageExtensionPoint shape; `readonly` here creates a
+      // contravariant-position mismatch at the call site in App.tsx.
+      extensions?: string[];
+      aliases?: string[];
     }) => MonacoDisposableLike | void;
     readonly setMonarchTokensProvider: (
       languageId: string,

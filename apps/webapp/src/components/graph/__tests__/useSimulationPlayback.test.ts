@@ -19,7 +19,9 @@ function createNode(
     id,
     kind,
     name,
-    localKey: id,
+    // Node ids and local keys share a branded-string value in the
+    // fixtures; the cast pins the brand so the test compiles cleanly.
+    localKey: id as GraphNode["localKey"],
     sourceSpan: null,
     identityFate: null,
     snapshotFate: undefined,
@@ -42,6 +44,8 @@ function createPlayback(trace: SimulationPlayback["trace"]): SimulationPlayback 
     actionName: "addTodo",
     source: "interaction-editor",
     trace,
+    mode: "sequence",
+    traceNodeId: null,
   };
 }
 
