@@ -27,6 +27,9 @@ import {
   computePlaybackScrollTarget,
   useSimulationPlayback,
 } from "./useSimulationPlayback";
+// computePlaybackScrollTarget handles the single-rect → viewport math
+// we need for the focus bounding-box too; feeding it a union rect gives
+// us the same "center if it fits, clamp otherwise" behaviour.
 import { GraphSearch } from "./GraphSearch";
 
 /**
@@ -240,6 +243,64 @@ export function LiveGraph({
     () => computeNeighbourhood(model, focusNodeId),
     [model, focusNodeId],
   );
+
+  // --- Focus viewport follow ------------------------------------------
+  // When focus lands on a node, scroll so the focus node + its 1-hop
+  // neighbours are all in view. This is the "bounding-box viewing
+  // focus" behaviour: it keeps the highlighted sub-graph on screen
+  // even when focus is driven from outside the canvas (Monaco cursor,
+  // diagnostic click). We skip the scroll if the sub-graph is already
+  // fully visible so typing/clicking doesn't constantly bounce the
+  // viewport. Runs on both origins — the source cursor is the primary
+  // reason this effect exists.
+  const lastScrolledFocusRef = useRef<GraphNode["id"] | null>(null);
+  useEffect(() => {
+    if (focusNodeId === null) {
+      lastScrolledFocusRef.current = null;
+      return;
+    }
+    const host = hostRef.current;
+    if (host === null) return;
+    // Guard against re-scrolling when only the origin changed (e.g. the
+    // double-click path that re-publishes the same id). We key on node
+    // id — a genuine focus shift always carries a different id.
+    if (lastScrolledFocusRef.current === focusNodeId) return;
+
+    const ids = new Set<GraphNode["id"]>([focusNodeId]);
+    for (const id of neighbourhood.nodeIds) ids.add(id);
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const id of ids) {
+      const r = layout.bounds.get(id);
+      if (r === undefined) continue;
+      if (r.x < minX) minX = r.x;
+      if (r.y < minY) minY = r.y;
+      if (r.x + r.width > maxX) maxX = r.x + r.width;
+      if (r.y + r.height > maxY) maxY = r.y + r.height;
+    }
+    if (!Number.isFinite(minX)) return;
+
+    const target = computePlaybackScrollTarget(
+      { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
+      {
+        left: host.scrollLeft,
+        top: host.scrollTop,
+        width: host.clientWidth,
+        height: host.clientHeight,
+        scrollWidth: host.scrollWidth,
+        scrollHeight: host.scrollHeight,
+      },
+    );
+    lastScrolledFocusRef.current = focusNodeId;
+    if (target === null) return;
+    host.scrollTo({
+      left: target.left,
+      top: target.top,
+      behavior: "smooth",
+    });
+  }, [focusNodeId, neighbourhood.nodeIds, layout.bounds]);
 
   // --- Propagation pulse ----------------------------------------------
   const livePulse = useLivePulse(model);
