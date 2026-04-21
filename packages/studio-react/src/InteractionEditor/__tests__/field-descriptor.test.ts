@@ -149,6 +149,43 @@ describe("fromTypeDefinition", () => {
     expect(d.kind).toBe("json");
   });
 
+  it("unwraps `T | null` to T's descriptor (literal-null branch)", () => {
+    const def: TypeDefinition = {
+      kind: "union",
+      types: [
+        { kind: "primitive", type: "string" },
+        { kind: "literal", value: null },
+      ],
+    };
+    const d = fromTypeDefinition(def, EMPTY_SCHEMA, true);
+    expect(d.kind).toBe("string");
+  });
+
+  it("unwraps `T | null` to T's descriptor (primitive-null branch)", () => {
+    const def: TypeDefinition = {
+      kind: "union",
+      types: [
+        { kind: "primitive", type: "number" },
+        { kind: "primitive", type: "null" },
+      ],
+    };
+    const d = fromTypeDefinition(def, EMPTY_SCHEMA, true);
+    expect(d.kind).toBe("number");
+  });
+
+  it("still falls through to json when two non-null branches remain after null drop", () => {
+    const def: TypeDefinition = {
+      kind: "union",
+      types: [
+        { kind: "primitive", type: "string" },
+        { kind: "primitive", type: "number" },
+        { kind: "literal", value: null },
+      ],
+    };
+    const d = fromTypeDefinition(def, EMPTY_SCHEMA, true);
+    expect(d.kind).toBe("json");
+  });
+
   it("resolves ref via schema.types", () => {
     const schema: DomainSchema = {
       ...EMPTY_SCHEMA,

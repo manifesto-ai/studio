@@ -199,6 +199,17 @@ export function fromTypeDefinition(
         options: [{ value: def.value, label: stringifyEnum(def.value) }],
       };
     case "union": {
+      // Nullable pattern: `T | null` collapses to `T`'s descriptor so
+      // users get a real input for the value type instead of a JSON
+      // textarea. Null emptiness is already conveyed through the form
+      // (empty string stays "", optional fields stay unset). We treat
+      // both `{kind:"literal", value:null}` and `{kind:"primitive",
+      // type:"null"}` as the null branch.
+      const nonNull = def.types.filter((t) => !isNullTypeDef(t));
+      if (nonNull.length === 1 && nonNull.length < def.types.length) {
+        return fromTypeDefinition(nonNull[0], schema, required, seenRefs);
+      }
+
       // Union of literals → enum. Mixed unions (literal + non-literal or
       // non-literal only) fall through to JSON — the form generator can't
       // present a meaningful control for "string or boolean".
@@ -345,6 +356,12 @@ export function createInitialFormValue(
       return obj;
     }
   }
+}
+
+function isNullTypeDef(t: TypeDefinition): boolean {
+  if (t.kind === "literal" && t.value === null) return true;
+  if (t.kind === "primitive" && t.type === "null") return true;
+  return false;
 }
 
 function primitiveKindOf(type: string): PrimitiveKind | null {
