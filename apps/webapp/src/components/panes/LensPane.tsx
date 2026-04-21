@@ -13,8 +13,13 @@ import {
   InteractionEditor,
   PlanPanel,
   SnapshotTree,
-  type Marker,
+  type SnapshotFocus,
 } from "@manifesto-ai/studio-react";
+// Marker is defined in studio-core (adapter-interface) and not
+// re-exported by studio-react; pull it from the authoritative source.
+import type { Marker } from "@manifesto-ai/studio-core";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useFocus } from "@/hooks/useFocus";
 import { cn } from "@/lib/cn";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/Panel";
 import {
@@ -44,8 +49,8 @@ const LENSES: readonly LensMeta[] = [
   },
   {
     id: "snapshot",
-    label: "Snapshot",
-    hint: "Current state tree",
+    label: "Inspect",
+    hint: "Current state tree · click a graph node to scope",
     Icon: Boxes,
     channel: "state",
   },
@@ -89,6 +94,41 @@ export function LensPane({
 }): JSX.Element {
   const active = LENSES.find((l) => l.id === value) ?? LENSES[0];
 
+  // Map Focus → SnapshotFocus for the Inspect lens. GraphNode ids are
+  // `state:X` / `computed:X` / `action:X`; split on the first colon.
+  const { focus } = useFocus();
+  const snapshotFocus: SnapshotFocus | null = useMemo(() => {
+    if (focus === null || focus.kind !== "node") return null;
+    const idx = focus.id.indexOf(":");
+    if (idx < 0) return null;
+    const kind = focus.id.slice(0, idx);
+    const name = focus.id.slice(idx + 1);
+    if (kind === "state" || kind === "computed" || kind === "action") {
+      return { kind, name };
+    }
+    return null;
+  }, [focus]);
+
+  // Pulse hint — when focus changes while the user isn't on the Inspect
+  // lens, briefly glow the rail's Inspect button so they know "a new
+  // thing to inspect has arrived." Soft hint only; we never force a
+  // tab switch (auto-switching on click would steal attention from
+  // e.g. a mid-edit Interact form).
+  const [pulseLens, setPulseLens] = useState<LensId | null>(null);
+  const lastFocusIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const nextId = snapshotFocus === null
+      ? null
+      : `${snapshotFocus.kind}:${snapshotFocus.name}`;
+    if (nextId === lastFocusIdRef.current) return;
+    lastFocusIdRef.current = nextId;
+    if (nextId === null) return;
+    if (value === "snapshot") return; // already here, no hint needed
+    setPulseLens("snapshot");
+    const t = window.setTimeout(() => setPulseLens(null), 1400);
+    return () => window.clearTimeout(t);
+  }, [snapshotFocus, value]);
+
   return (
     <Panel className="overflow-hidden !flex-row">
       {/* Vertical icon rail */}
@@ -107,6 +147,7 @@ export function LensPane({
               key={lens.id}
               lens={lens}
               active={lens.id === value}
+              pulse={pulseLens === lens.id}
               onSelect={() => onChange(lens.id)}
             />
           ))}
@@ -140,7 +181,7 @@ export function LensPane({
               >
                 <InteractionEditor />
               </div>
-              {value === "snapshot" ? <SnapshotTree /> : null}
+              {value === "snapshot" ? <SnapshotTree focus={snapshotFocus} /> : null}
               {value === "plan" ? <PlanPanel /> : null}
               {value === "history" ? <DispatchTimeline /> : null}
               {value === "diagnostics" ? (
@@ -157,10 +198,12 @@ export function LensPane({
 function RailButton({
   lens,
   active,
+  pulse = false,
   onSelect,
 }: {
   readonly lens: LensMeta;
   readonly active: boolean;
+  readonly pulse?: boolean;
   readonly onSelect: () => void;
 }): JSX.Element {
   const { Icon } = lens;
@@ -199,6 +242,22 @@ function RailButton({
                 boxShadow: `0 0 8px ${channelColor}`,
               }}
               transition={{ type: "spring", stiffness: 500, damping: 40 }}
+            />
+          )}
+          {pulse && !active && (
+            // Soft hint — an outward pulse ring that fades out. Tells
+            // the user "something new just landed in this lens" without
+            // forcibly switching tabs.
+            <motion.span
+              aria-hidden
+              className="absolute inset-0 rounded-md pointer-events-none"
+              initial={{ opacity: 0.8, scale: 1 }}
+              animate={{ opacity: 0, scale: 1.35 }}
+              transition={{ duration: 1.2, ease: "easeOut", repeat: 1 }}
+              style={{
+                border: `1.5px solid ${channelColor}`,
+                boxShadow: `0 0 14px ${channelColor}`,
+              }}
             />
           )}
         </button>

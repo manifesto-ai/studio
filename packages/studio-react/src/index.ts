@@ -23,7 +23,11 @@ export {
   type DiagnosticsPanelProps,
 } from "./DiagnosticsPanel.js";
 export { PlanPanel } from "./PlanPanel.js";
-export { SnapshotTree } from "./SnapshotTree.js";
+export {
+  SnapshotTree,
+  type SnapshotFocus,
+  type SnapshotTreeProps,
+} from "./SnapshotTree.js";
 export {
   HistoryTimeline,
   type HistoryTimelineProps,
@@ -40,6 +44,7 @@ export {
   type InlineValueAccent,
   type InlineValueProps,
 } from "./InlineValue.js";
+export { JsonTree, type JsonTreeProps } from "./JsonTree.js";
 
 export {
   SchemaGraphView,

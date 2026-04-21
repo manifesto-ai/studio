@@ -8,6 +8,22 @@ import {
   PANEL_HEADER,
 } from "./style-tokens.js";
 
+/**
+ * Optional focus binding — the host app passes which node the user is
+ * inspecting. When set, the tree scopes to that sub-value. Provider
+ * owns the focus state (the webapp has `useFocus`); `SnapshotTree`
+ * stays agnostic and takes it as a prop so studio-react has no reverse
+ * dependency on the app layer.
+ */
+export type SnapshotFocus =
+  | { readonly kind: "state"; readonly name: string }
+  | { readonly kind: "computed"; readonly name: string }
+  | { readonly kind: "action"; readonly name: string };
+
+export type SnapshotTreeProps = {
+  readonly focus?: SnapshotFocus | null;
+};
+
 type Node =
   | { readonly kind: "primitive"; readonly value: unknown }
   | { readonly kind: "array"; readonly items: readonly unknown[] }
@@ -31,32 +47,126 @@ function renderPrimitive(value: unknown): string {
   return String(value);
 }
 
-export function SnapshotTree(): JSX.Element {
+export function SnapshotTree({ focus = null }: SnapshotTreeProps = {}): JSX.Element {
   const { snapshot } = useStudio();
   const data = useMemo(() => {
     if (snapshot === null) return null;
     return (snapshot as { readonly data?: unknown }).data ?? null;
   }, [snapshot]);
+  const computed = useMemo(() => {
+    if (snapshot === null) return null;
+    const c = (snapshot as { readonly computed?: Record<string, unknown> })
+      .computed;
+    return c ?? null;
+  }, [snapshot]);
+
+  // Resolve the scoped value when a focus is set. `action` focus has no
+  // snapshot value — we show a placeholder explaining where to go.
+  const scoped = useMemo(() => {
+    if (focus === null) return null;
+    if (focus.kind === "action") {
+      return { kind: "action" as const };
+    }
+    if (focus.kind === "state") {
+      if (data === null || typeof data !== "object") {
+        return { kind: "missing" as const };
+      }
+      const v = (data as Record<string, unknown>)[focus.name];
+      return {
+        kind: "value" as const,
+        value: v,
+        path: `data.${focus.name}`,
+      };
+    }
+    // computed
+    if (computed === null) return { kind: "missing" as const };
+    return {
+      kind: "value" as const,
+      value: computed[focus.name],
+      path: `computed.${focus.name}`,
+    };
+  }, [focus, data, computed]);
+
+  const title = focus === null ? "Snapshot" : "Inspect";
+  const rightLabel =
+    focus === null
+      ? snapshot === null
+        ? "—"
+        : "data"
+      : `${focus.kind} · ${focus.name}`;
 
   return (
     <div style={rootStyle}>
       <div style={PANEL_HEADER}>
-        <span>Snapshot</span>
-        <span style={{ color: COLORS.muted, fontSize: 11 }}>
-          {snapshot === null ? "—" : "data"}
-        </span>
+        <span>{title}</span>
+        <span style={{ color: COLORS.muted, fontSize: 11 }}>{rightLabel}</span>
       </div>
       <div style={PANEL_BODY}>
-        {snapshot === null || data === null || data === undefined ? (
-          <div style={PANEL_EMPTY}>No snapshot yet. Build + dispatch to populate.</div>
-        ) : (
-          <div style={{ padding: "10px 14px" }}>
-            <TreeNode path="data" value={data} depth={0} />
-          </div>
-        )}
+        {renderBody(focus, scoped, data)}
       </div>
     </div>
   );
+}
+
+function renderBody(
+  focus: SnapshotFocus | null,
+  scoped: ReturnType<typeof buildScoped>,
+  data: unknown,
+): JSX.Element {
+  if (focus === null) {
+    if (data === null || data === undefined) {
+      return (
+        <div style={PANEL_EMPTY}>
+          No snapshot yet. Build + dispatch to populate, or click a graph
+          node to inspect its value.
+        </div>
+      );
+    }
+    return (
+      <div style={{ padding: "10px 14px" }}>
+        <TreeNode path="data" value={data} depth={0} />
+      </div>
+    );
+  }
+  if (scoped === null) return <div style={PANEL_EMPTY}>—</div>;
+  if (scoped.kind === "action") {
+    return (
+      <div style={PANEL_EMPTY}>
+        Action nodes don't hold state. Switch to the <strong>Interact</strong>
+        {" "}lens to dispatch this action and see its effect here.
+      </div>
+    );
+  }
+  if (scoped.kind === "missing") {
+    return (
+      <div style={PANEL_EMPTY}>
+        No value yet for <code>{focus?.name}</code>. Build the module and
+        dispatch an action that writes this field.
+      </div>
+    );
+  }
+  if (scoped.value === undefined) {
+    return (
+      <div style={PANEL_EMPTY}>
+        <code>{scoped.path}</code> is currently <code>undefined</code>.
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: "10px 14px" }}>
+      <TreeNode path={scoped.path} value={scoped.value} depth={0} />
+    </div>
+  );
+}
+
+// Helper type alias so renderBody's signature compiles cleanly.
+type ScopedResult =
+  | { readonly kind: "action" }
+  | { readonly kind: "missing" }
+  | { readonly kind: "value"; readonly value: unknown; readonly path: string }
+  | null;
+function buildScoped(): ScopedResult {
+  return null;
 }
 
 function TreeNode({
