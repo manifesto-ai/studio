@@ -6,8 +6,10 @@ import {
   inputStyle,
   isPathHighlighted,
   makeId,
+  smallBtnStyle,
 } from "./shared.js";
 import type { PrimitiveDescriptor } from "../field-descriptor.js";
+import { hintForPrimitive } from "./smart-fill.js";
 
 export function PrimitiveField({
   descriptor,
@@ -24,13 +26,44 @@ export function PrimitiveField({
   const id = makeId(path, label);
   const highlighted = isPathHighlighted(highlightedPaths, path);
 
+  // Smart-fill hint based on the field name — `+ uuid` / `+ now` /
+  // `+ from dueDate` etc. See `smart-fill.ts` for the heuristic.
+  const labelPath = label !== undefined ? [...path, label] : [...path];
+  const fillHint =
+    label !== undefined && descriptor.kind !== "null"
+      ? hintForPrimitive(descriptor, labelPath, rootValue)
+      : null;
+  const fillTrailing = fillHint !== null ? (
+    <button
+      type="button"
+      onClick={() => {
+        const next = fillHint.compute(rootValue);
+        onRootChange(setAtPath(rootValue, path, next));
+      }}
+      disabled={disabled}
+      style={smallBtnStyle}
+      title={`Fill this field (${fillHint.label})`}
+    >
+      {fillHint.label}
+    </button>
+  ) : null;
+  const combinedTrailing =
+    trailing !== undefined && fillTrailing !== null
+      ? (
+          <>
+            {fillTrailing}
+            {trailing}
+          </>
+        )
+      : trailing ?? fillTrailing ?? undefined;
+
   if (descriptor.kind === "null") {
     return (
       <FieldChrome
         label={label}
         required={descriptor.required}
         description={descriptor.description}
-        trailing={trailing}
+        trailing={combinedTrailing}
         highlighted={highlighted}
       >
         <div style={nullBoxStyle}>null</div>
@@ -45,7 +78,7 @@ export function PrimitiveField({
         required={descriptor.required}
         description={descriptor.description}
         labelFor={id}
-        trailing={trailing}
+        trailing={combinedTrailing}
         highlighted={highlighted}
       >
         <label style={checkboxRowStyle}>
@@ -77,7 +110,7 @@ export function PrimitiveField({
         required={descriptor.required}
         description={descriptor.description}
         labelFor={id}
-        trailing={trailing}
+        trailing={combinedTrailing}
         highlighted={highlighted}
       >
         <input
@@ -103,8 +136,16 @@ export function PrimitiveField({
   }
 
   const stringValue = typeof value === "string" ? value : "";
+  // At this point the three non-string kinds have early-returned above,
+  // so `descriptor.kind === "string"`. `PrimitiveDescriptor` is defined
+  // with a union-typed `kind` rather than as a discriminated union, so
+  // TS can't auto-narrow — assert explicitly to satisfy the
+  // GetStringSuggestions callback signature.
+  const stringDescriptor = descriptor as PrimitiveDescriptor & {
+    readonly kind: "string";
+  };
   const suggestions = getStringSuggestions?.({
-    descriptor,
+    descriptor: stringDescriptor,
     path,
     label,
     value,
@@ -117,7 +158,7 @@ export function PrimitiveField({
       required={descriptor.required}
       description={descriptor.description}
       labelFor={id}
-      trailing={trailing}
+      trailing={combinedTrailing}
       highlighted={highlighted}
     >
       <input

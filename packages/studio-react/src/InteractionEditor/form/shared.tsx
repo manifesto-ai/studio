@@ -21,54 +21,102 @@ export function FieldChrome({
   readonly trailing?: ReactNode;
   readonly highlighted?: boolean;
 }): JSX.Element {
-  const chromeStyle = asGroup ? groupChromeStyle : fieldChromeStyle;
+  const highlightStyle: CSSProperties = highlighted
+    ? { borderColor: COLORS.err, boxShadow: `0 0 0 1px ${COLORS.err}22` }
+    : {};
+
+  // Groups (objects, arrays, records) keep the traditional stacked
+  // chrome: bordered panel with header row + nested children below.
+  if (asGroup) {
+    return (
+      <div style={{ ...groupChromeStyle, ...highlightStyle }}>
+        {label !== undefined ? (
+          <div style={labelRowStyle}>
+            <LabelNode
+              label={label}
+              required={required}
+              highlighted={highlighted}
+              labelFor={labelFor}
+            />
+            {trailing}
+          </div>
+        ) : trailing !== undefined ? (
+          <div style={labelRowStyle}>
+            <span />
+            {trailing}
+          </div>
+        ) : null}
+        {description !== undefined && description.length > 0 ? (
+          <div style={descriptionStyle}>{description}</div>
+        ) : null}
+        {children}
+      </div>
+    );
+  }
+
+  // Leaf fields render horizontally: label | input | trailing actions
+  // in a 3-col grid. Description (when present) drops to a second row
+  // aligned under the input. Cuts vertical space in half for dense
+  // object forms like Task / ClockStamp.
   return (
-    <div
-      style={{
-        ...chromeStyle,
-        ...(highlighted
-          ? { borderColor: COLORS.err, boxShadow: `0 0 0 1px ${COLORS.err}22` }
-          : null),
-      }}
-    >
+    <div style={{ ...leafGridStyle, ...highlightStyle }}>
       {label !== undefined ? (
-        <div style={labelRowStyle}>
-          {labelFor !== undefined ? (
-            <label
-              htmlFor={labelFor}
-              style={{
-                ...labelStyle,
-                color: highlighted ? COLORS.err : labelStyle.color,
-              }}
-            >
-              {label}
-              {required ? <span style={requiredStyle}>*</span> : null}
-            </label>
-          ) : (
-            <span
-              style={{
-                ...labelStyle,
-                color: highlighted ? COLORS.err : labelStyle.color,
-              }}
-            >
-              {label}
-              {required ? <span style={requiredStyle}>*</span> : null}
-            </span>
-          )}
-          {trailing}
-        </div>
-      ) : trailing !== undefined ? (
-        <div style={labelRowStyle}>
-          <span />
-          {trailing}
-        </div>
-      ) : null}
+        <LabelNode
+          label={label}
+          required={required}
+          highlighted={highlighted}
+          labelFor={labelFor}
+          align="right"
+        />
+      ) : (
+        <span />
+      )}
+      <div style={leafBodyStyle}>{children}</div>
+      <div style={leafTrailingStyle}>{trailing}</div>
       {description !== undefined && description.length > 0 ? (
-        <div style={descriptionStyle}>{description}</div>
+        <>
+          <span />
+          <div style={descriptionStyle}>{description}</div>
+          <span />
+        </>
       ) : null}
-      {children}
     </div>
   );
+}
+
+function LabelNode({
+  label,
+  required,
+  highlighted,
+  labelFor,
+  align = "left",
+}: {
+  readonly label: string;
+  readonly required: boolean;
+  readonly highlighted: boolean;
+  readonly labelFor?: string;
+  readonly align?: "left" | "right";
+}): JSX.Element {
+  const style: CSSProperties = {
+    ...labelStyle,
+    color: highlighted ? COLORS.err : labelStyle.color,
+    textAlign: align,
+    padding: align === "right" ? "6px 0" : undefined,
+  };
+  const inner = (
+    <>
+      {label}
+      {required ? null : <span style={optionalTagStyle}>opt</span>}
+    </>
+  );
+  if (labelFor !== undefined) {
+    return (
+      <label htmlFor={labelFor} style={style}>
+        {inner}
+      </label>
+    );
+  }
+  return <span style={style}>{inner}</span>;
 }
 
 export function composeTrailing(
@@ -183,17 +231,37 @@ export const errorStyle: CSSProperties = {
   fontFamily: MONO_STACK,
 };
 
-const fieldChromeStyle: CSSProperties = {
+const leafGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "92px 1fr auto",
+  columnGap: 10,
+  rowGap: 2,
+  alignItems: "center",
+  fontFamily: FONT_STACK,
+  fontSize: 12,
+  color: COLORS.text,
+};
+
+const leafBodyStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
+  minWidth: 0,
+};
+
+const leafTrailingStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+};
+
+const groupChromeStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 4,
   fontFamily: FONT_STACK,
   fontSize: 12,
   color: COLORS.text,
-};
-
-const groupChromeStyle: CSSProperties = {
-  ...fieldChromeStyle,
   padding: "8px 10px",
   borderRadius: 6,
   background: COLORS.panelAlt,
@@ -208,16 +276,27 @@ const labelRowStyle: CSSProperties = {
 };
 
 const labelStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: 10,
   fontWeight: 700,
   letterSpacing: 0.8,
   color: COLORS.textDim,
   textTransform: "uppercase",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
 };
 
-const requiredStyle: CSSProperties = {
-  color: COLORS.err,
-  marginLeft: 3,
+const optionalTagStyle: CSSProperties = {
+  display: "inline-block",
+  marginLeft: 5,
+  padding: "0 4px",
+  borderRadius: 3,
+  background: `${COLORS.muted}22`,
+  color: COLORS.muted,
+  fontSize: 9,
+  fontWeight: 500,
+  letterSpacing: 0.5,
+  textTransform: "uppercase",
 };
 
 const descriptionStyle: CSSProperties = {

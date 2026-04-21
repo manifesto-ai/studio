@@ -25,7 +25,7 @@
  *   has short-circuited, so the user sees what WOULD have been
  *   checked next.
  */
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import type { DispatchBlocker } from "@manifesto-ai/studio-core";
 import { COLORS, FONT_STACK, MONO_STACK } from "../style-tokens.js";
 import type { LadderState, LadderStep } from "./ladder-state.js";
@@ -36,13 +36,45 @@ export type IntentLadderProps = {
 };
 
 export function IntentLadder({ state }: IntentLadderProps): JSX.Element {
+  const allPassed = state.steps.every((s) => s.status === "passed");
+  const [expanded, setExpanded] = useState(false);
+  // Full-pass case collapses into a single success line. The user can
+  // still expand to inspect the per-step detail if they want.
+  if (allPassed && !expanded) {
+    return (
+      <div style={collapsedRootStyle} data-testid="intent-ladder">
+        <span style={collapsedDotStyle} aria-hidden />
+        <span style={collapsedLabelStyle}>Legality passed</span>
+        <span style={collapsedMetaStyle}>5/5 · ready to dispatch</span>
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          style={collapsedBtnStyle}
+          aria-label="Expand legality ladder"
+        >
+          details
+        </button>
+      </div>
+    );
+  }
   return (
     <div style={rootStyle} data-testid="intent-ladder">
       <div style={headerStyle}>
         <span style={{ fontWeight: 600 }}>Legality Ladder</span>
-        <span style={{ color: COLORS.muted, fontSize: 10.5 }}>
-          SDK §legality-ladder · 5 steps
-        </span>
+        <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+          <span style={{ color: COLORS.muted, fontSize: 10.5 }}>
+            SDK §legality-ladder · 5 steps
+          </span>
+          {allPassed && expanded ? (
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              style={collapsedBtnStyle}
+            >
+              collapse
+            </button>
+          ) : null}
+        </div>
       </div>
       <ol style={listStyle}>
         {state.steps.map((step, i) => (
@@ -373,4 +405,51 @@ const hintTextStyle: CSSProperties = {
   color: COLORS.text,
   fontFamily: MONO_STACK,
   fontSize: 11,
+};
+
+// Collapsed-success styles — one quiet line when all five steps pass.
+const collapsedRootStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "6px 12px",
+  background: `${COLORS.action}12`,
+  border: `1px solid ${COLORS.action}55`,
+  borderRadius: 6,
+  fontFamily: FONT_STACK,
+  fontSize: 12,
+  color: COLORS.text,
+};
+
+const collapsedDotStyle: CSSProperties = {
+  width: 8,
+  height: 8,
+  borderRadius: 4,
+  background: COLORS.action,
+  boxShadow: `0 0 8px ${COLORS.action}`,
+  flexShrink: 0,
+};
+
+const collapsedLabelStyle: CSSProperties = {
+  fontWeight: 600,
+  color: COLORS.action,
+  letterSpacing: 0.2,
+};
+
+const collapsedMetaStyle: CSSProperties = {
+  color: COLORS.muted,
+  fontSize: 11,
+  fontFamily: MONO_STACK,
+};
+
+const collapsedBtnStyle: CSSProperties = {
+  marginLeft: "auto",
+  padding: "2px 8px",
+  borderRadius: 4,
+  border: `1px solid ${COLORS.line}`,
+  background: "transparent",
+  color: COLORS.textDim,
+  fontFamily: MONO_STACK,
+  fontSize: 10.5,
+  cursor: "pointer",
 };

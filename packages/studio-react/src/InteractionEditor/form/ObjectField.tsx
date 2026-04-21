@@ -1,5 +1,5 @@
 import { createInitialFormValue } from "../field-descriptor.js";
-import { ensureAtPath, isPresentAtPath, removeAtPath } from "../form-path-utils.js";
+import { ensureAtPath, isPresentAtPath, removeAtPath, setAtPath } from "../form-path-utils.js";
 import {
   FieldChrome,
   composeTrailing,
@@ -13,6 +13,7 @@ import {
 } from "./shared.js";
 import type { BaseFieldProps } from "./types.js";
 import type { ObjectDescriptor } from "../field-descriptor.js";
+import { objectFillAll } from "./smart-fill.js";
 
 export function ObjectField({
   descriptor,
@@ -46,13 +47,31 @@ export function ObjectField({
   const groupValue = isRecord(value) ? value : {};
   const hasChildren = visibleFields.length > 0 || hiddenOptional.length > 0;
 
+  // "Fill all now" — only when ≥3 children are recognisable as
+  // derivable (timestamps, uuids, etc.). Target: ClockStamp-shaped
+  // objects where users shouldn't be typing 15 fields by hand.
+  const labelPath = label !== undefined ? [...path, label] : [...path];
+  const fillAll = objectFillAll(descriptor, labelPath, rootValue);
+  const fillAllTrailing =
+    fillAll !== null ? (
+      <button
+        type="button"
+        onClick={() => onRootChange(setAtPath(rootValue, path, fillAll))}
+        disabled={disabled}
+        style={smallBtnStyle}
+        title="Fill every recognisable field in this object with a fresh derived value (uuid, now, timezone, etc.)."
+      >
+        + fill all now
+      </button>
+    ) : null;
+
   return (
     <FieldChrome
       label={label}
       required={descriptor.required}
       description={descriptor.description}
       asGroup
-      trailing={composeTrailing(trailing)}
+      trailing={composeTrailing(fillAllTrailing, trailing)}
       highlighted={highlighted}
     >
       <div style={nested ? nestedGroupStyle : rootGroupStyle}>

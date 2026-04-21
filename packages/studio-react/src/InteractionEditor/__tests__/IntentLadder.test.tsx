@@ -192,7 +192,7 @@ describe("IntentLadder — blocked at dispatchable (step 3)", () => {
 });
 
 describe("IntentLadder — all steps passed (admitted + simulate fresh)", () => {
-  it("all five steps render as passed", () => {
+  it("all-passed state collapses into a single success line by default", () => {
     const state = deriveLadderState({
       explanation: admitted(),
       simulate: { changedPaths: [], requirements: [], status: "idle" } as never,
@@ -200,6 +200,32 @@ describe("IntentLadder — all steps passed (admitted + simulate fresh)", () => 
       stale: false,
     });
     const { container, cleanup } = mount(<IntentLadder state={state} />);
+    // Per-step DOM is not rendered in the collapsed summary.
+    expect(
+      container.querySelector('[data-testid="ladder-step-available"]'),
+    ).toBeNull();
+    // The summary itself is present and announces full pass.
+    const root = container.querySelector('[data-testid="intent-ladder"]');
+    expect(root).not.toBeNull();
+    expect(root?.textContent ?? "").toMatch(/Legality passed/);
+    expect(root?.textContent ?? "").toMatch(/5\/5/);
+    cleanup();
+  });
+
+  it("clicking `details` expands to render all five passed steps", () => {
+    const state = deriveLadderState({
+      explanation: admitted(),
+      simulate: { changedPaths: [], requirements: [], status: "idle" } as never,
+      inputInvalid: false,
+      stale: false,
+    });
+    const { container, cleanup } = mount(<IntentLadder state={state} />);
+    act(() => {
+      const btn = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent?.trim() === "details",
+      );
+      btn?.click();
+    });
     for (const id of ["available", "input-valid", "dispatchable", "simulated", "admitted"]) {
       expect(
         (container.querySelector(`[data-testid="ladder-step-${id}"]`) as HTMLElement).dataset.status,
