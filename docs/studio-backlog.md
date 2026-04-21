@@ -172,3 +172,114 @@ Phase 1 (`InlineValue` 공통 컴포넌트 + NowLine 툴팁/SimulatePreview diff
   - `InlineValue` (studio-react): 어디서든 1줄 inline 표시
 - 중복 로직 (type 분기, truncate) 일부 있음. 장기적으로는 `ValueView = InlineValue + card-affordances` 레이어로 합치는 게 좋음.
 - 지금은 역할 분리로 유지. 각 사용처의 요구가 충분히 다를 때까지는 통합 부담이 이득보다 큼.
+
+---
+
+## 8. Agent-first Studio — "Deterministic Agent Observatory"
+
+Studio의 장기 방향. MEL 작성을 **에이전트가 담당**하고, 사용자는 Studio에서 에이전트의 제안을 **읽고 · 비교하고 · 승인 · 재지시**하는 공동작업대로 진화.
+
+포지셔닝: "그래프 IDE" → "**Deterministic Agent Observatory**" — 의미론적 결정론 시스템을 에이전트와 공유하고 함께 작업하는 작업대.
+
+### 8.0 왜 Manifesto + Agent가 맞는가 (설계 근거)
+
+- **MEL Non-Turing-complete** → 에이전트가 "이상한 짓"을 할 공간 자체가 좁음. 무한 루프 / 숨은 부작용 / 암묵적 IO 모두 불가능.
+- **컴파일러 즉시 판정** → LLM이 뽑은 MEL 을 compile → diagnostics 로 부적합이 선형 포착. 에이전트 verify loop 이미 제공됨.
+- **Simulate가 pure projection** → 에이전트가 "이 변경이 기존 상태에 무슨 영향을 주는지" 실행 없이 검증 가능. `compile → simulate(sample intents) → diff` 가 에이전트 self-check 루프.
+- **Reconciliation plan 결정론** → 에이전트가 state 필드 변경 시 `preserved/initialized/discarded/warned` 가 결정론적 결과. 사용자에게 "안전한가?" 를 plan 으로 그대로 답 가능.
+- **Lineage (withLineage)** → 에이전트가 과거 world chain 을 읽고 "이 필드는 이 action 에서 이렇게 변해왔다" 는 맥락을 정확히 복원.
+
+### 8.1 Agent turn 시각화
+
+- 에이전트의 tool call 하나하나가 "제안" 단위로 Studio 에 들어와야 함.
+- NowLine 에 dispatch tick / edit envelope tick 있는 것처럼 **agent turn tick** 도입.
+  - 각 turn = schema edit proposal / action simulation / dispatch 중 하나
+  - `origin: "agent" | "human"` 으로 색 / 아이콘 구분
+- 승인 전 상태(proposed, pending user approval) 를 UI 에서 명확히 — `ghost` tick 스타일.
+- 우선순위: High — 다른 대부분의 agent 기능의 기반 UI.
+
+### 8.2 Diff-first Editor
+
+- 에이전트가 주 작성자가 되면 Monaco 는 **diff view** 가 메인.
+  - `git diff` 스타일 + 에이전트의 근거(comment) 인라인.
+  - 사용자는 accept / reject / revise 지시만.
+- Monaco 는 "edge case 직접 편집" 으로 후퇴 — 필요할 때만 toggle.
+- 우선순위: High — 사용자-에이전트 공동작업 핵심.
+
+### 8.3 Structured Agent Directive
+
+- 자연어 입력 → 에이전트의 MEL patch proposal 이 묶여 함께 뜸.
+  - "sort 된 todos 추가해줘" → directive + proposed MEL + plan + simulate result 한 카드.
+- SDK 의 Phase 3 EditIntent "structured agent intents" 와 맞물릴 수 있음.
+- 의존: 8.1 (turn 시각화), 8.2 (diff editor).
+- 우선순위: High — 사용자가 에이전트에 지시하는 단방향 엔트리 포인트.
+
+### 8.4 Proposal replay — multi-action simulate
+
+- 현재 Playback 은 한 action 의 전파. 에이전트 제안은 보통 여러 step 의 시나리오 (예: "create task + move to in-progress + fire complete").
+- 제안된 action sequence 를 연속 simulate 로 묶어 **총 영향** 시각화.
+- 단계별 snapshot 스냅샷 + 최종 state + reconciliation plan 동시 제공.
+- 구현: `StudioCore.simulateSequence(intents[])` surface 추가 필요 (SDK 에 있으면 proxy, 없으면 Studio Core 에서 base runtime restore 기반 구현).
+- 우선순위: Medium — 8.3 의 자연스러운 확장.
+
+### 8.5 Lineage 의 `origin` 필드 + 감사 뷰
+
+- 승인된 제안이 정상 dispatch 경로로 들어갈 때 world 에 `origin: "agent" | "human"` 기록.
+- Lineage lens 에 origin 별 필터 + 세션 단위 그룹핑.
+- "이 world 는 누가 만든 것인지" 감사 가능.
+- 현재 synthetic lineage-tracker 에서 `WorldOrigin` 구조만 확장하면 low cost.
+- 우선순위: Medium — 8.1 에 딸려옴.
+
+### 8.6 Plan-based approval policy
+
+- 에이전트가 낸 MEL 이 Pillar 위반(side effect / non-determinism) 시도하면 컴파일러가 막아주므로 OK.
+- 하지만 **의도하지 않은 state wipe** (rebuild 로 `discarded` bucket 이 커지는 것) 는 컴파일러가 못 막음.
+- Plan panel 에 임계점 정책 UI:
+  - "≥ 3 fields discarded 시 추가 승인 필요" 같은 rule
+  - 에이전트의 bulk rewrite 제안을 한 클릭으로 반려 또는 선택적 accept.
+- 우선순위: Medium — 에이전트가 실제로 돌기 시작하면 우선순위 급상승.
+
+### 8.7 Agent context injection channel
+
+- 에이전트가 현재 schema + state + recent history 를 읽어내는 canonical channel 필요.
+- SDK 에 이미 있음: `getSnapshot / getEditHistory / getSchemaGraph / getLineage`.
+- 추가 필요: **agent-friendly serialization** — 토큰 효율적인 축약 포맷.
+  - 예: `snapshot.compact = { data: {...}, computed-summary: {count, tags} }`
+  - `getEditHistory` 의 envelope 요약 (`{kind, target, impact-summary}`)
+- Studio 가 이 serialization 을 agent tool description 에 직접 붙여 제공.
+- 우선순위: Medium — 없으면 LLM context 낭비. 있으면 에이전트 품질 ↑.
+
+### 8.8 Uncertainty 표현 surface
+
+- 에이전트가 "이거 맞는 것 같은데 자신 없음" 을 표현할 채널.
+  - MEL 내부 structured comment (`// @uncertain: ...`) — 컴파일러는 무시, Studio 는 inline 배지.
+  - 또는 제안 메타에 `confidence: number` + reasoning snippet.
+- 사용자가 "어떤 부분이 위험하다고 보는가" 한눈에.
+- 우선순위: Low — 에이전트 품질이 어느 정도 올라온 후.
+
+### 8.9 Turn-based dispatch session
+
+- "에이전트 턴" 이라는 세션 개념 도입.
+  - 한 턴 = 여러 action proposal + 승인 전 모두 simulate 상태
+  - 턴 전체 commit / rollback 단위
+- SDK 의 transaction 개념은 없음 (base runtime 은 per-dispatch). Studio Core 에서 가상 "세션" 관리 — uncommitted proposals queue.
+- 승인 시 queue 전체를 순차 dispatch, 실패 시 rollback (lineage restore).
+- 우선순위: Medium-High — 이게 없으면 agent 제안이 낱개로 흩어짐.
+
+### 8.10 NLI (자연어 인터페이스) chat pane
+
+- LensPane 에 "Agent" lens 추가.
+- 하단: 대화 입력, 상단: 에이전트 응답 + 제안 카드 stream.
+- 에이전트 response 내 "이 제안 보기" 링크 클릭 → 8.1 agent turn tick + 8.2 diff view focus.
+- 우선순위: Low (선행 8.1-8.3 필요) — 하지만 실제 사용자 흐름의 최종 엔트리 포인트.
+
+---
+
+## 우선순위 요약 (§8)
+
+1. **Immediate foundation**: 8.1 (agent turn) · 8.2 (diff editor) · 8.3 (structured directive)
+2. **Safety / correctness**: 8.6 (plan approval) · 8.9 (turn session)
+3. **Quality enablers**: 8.7 (context channel) · 8.5 (lineage origin)
+4. **Polish / UX layer**: 8.10 (chat pane) · 8.4 (proposal replay) · 8.8 (uncertainty)
+
+현재 Studio 자산 중 **Intent Ladder / Simulate preview / Observatory / Focus / Inspect / Plan / Playback / Diagnostics** 는 이미 §8 의 대부분 기능의 시각/검증 인프라로 직접 전용 가능. 추가로 짓는 것은 주로 **agent surface + approval workflow**.
