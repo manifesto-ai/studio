@@ -1,4 +1,5 @@
 import type { GraphModel, GraphNode } from "@manifesto-ai/studio-react";
+import type { ClusterMap } from "./clusters";
 
 export type Rect = {
   readonly x: number;
@@ -11,6 +12,12 @@ export type LayoutResult = {
   readonly bounds: ReadonlyMap<GraphNode["id"], Rect>;
   readonly canvasWidth: number;
   readonly canvasHeight: number;
+  /**
+   * Per-cluster bounding rectangles, derived from member card
+   * positions. `undefined` when no clusters were supplied to
+   * `computeLayout`. Rendered as a subtle dashed boundary.
+   */
+  readonly clusterRects?: readonly ClusterRect[];
 };
 
 /**
@@ -22,7 +29,22 @@ export type LayoutResult = {
 export const CARD_WIDTH = 196;
 export const CARD_HEIGHT = 82;
 export const GAP = 20;
+/** Extra vertical room between clusters so the boundary is visible. */
+export const INTER_CLUSTER_GAP = 28;
 export const ZONE_MARGIN = 28;
+
+/**
+ * A cluster's rectangle in canvas coords (used by LiveGraph to render
+ * a dashed boundary). Covers all member cards laid out in the state +
+ * computed columns, padded slightly.
+ */
+export type ClusterRect = {
+  readonly clusterId: string;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+};
 
 /**
  * Spatial grammar — Manifesto's three node kinds fall into natural roles
@@ -40,10 +62,25 @@ export function computeLayout(
   model: GraphModel,
   containerWidth: number,
   containerHeight: number,
+  clusters?: ClusterMap,
 ): LayoutResult {
   const actions = model.nodes.filter((n) => n.kind === "action");
   const states = model.nodes.filter((n) => n.kind === "state");
   const computeds = model.nodes.filter((n) => n.kind === "computed");
+
+  // Cluster ordering: preserve the ClusterMap order (largest first).
+  // If no clusters provided, pretend everything's a single cluster so
+  // the existing column math still runs unchanged.
+  const stateGroups = clusters
+    ? clusters.clusters.map((c) =>
+        states.filter((s) => c.states.includes(s.id)),
+      )
+    : [states];
+  const computedGroups = clusters
+    ? clusters.clusters.map((c) =>
+        computeds.filter((cn) => c.computeds.includes(cn.id)),
+      )
+    : [computeds];
 
   // Zone x-coordinates. State column is fixed on the left. The action
   // strip occupies the middle channel; computed column is pushed out to
@@ -93,39 +130,65 @@ export function computeLayout(
     });
   });
 
-  // --- State column -----------------------------------------------------
+  // --- State / Computed columns ---------------------------------------
   //
-  // Stack vertically, centered in the remaining vertical space.
+  // Cluster-aware: each cluster gets a contiguous vertical block in
+  // both the state column and the computed column, with an extra
+  // INTER_CLUSTER_GAP of whitespace between consecutive clusters so
+  // the boundary reads visually. Intra-cluster stacking reuses the
+  // standard GAP.
   const columnAvailable = Math.max(
     CARD_HEIGHT,
     containerHeight - contentTop - ZONE_MARGIN,
   );
-  const statesHeight =
-    states.length * CARD_HEIGHT + Math.max(0, states.length - 1) * GAP;
-  const stateStartY =
-    contentTop + Math.max(0, (columnAvailable - statesHeight) / 2);
-  states.forEach((node, i) => {
-    bounds.set(node.id, {
-      x: leftColX,
-      y: stateStartY + i * (CARD_HEIGHT + GAP),
-      width: CARD_WIDTH,
-      height: CARD_HEIGHT,
+  const layoutColumn = (
+    groups: readonly (readonly GraphNode[])[],
+    x: number,
+    clusterY: number[],
+    clusterBottomY: number[],
+  ): void => {
+    // Total height of the column with intra + inter gaps applied.
+    const nonEmpty = groups.filter((g) => g.length > 0);
+    const totalCards = nonEmpty.reduce((n, g) => n + g.length, 0);
+    if (totalCards === 0) return;
+    const intra = nonEmpty.reduce(
+      (n, g) => n + Math.max(0, g.length - 1) * GAP,
+      0,
+    );
+    const inter = Math.max(0, nonEmpty.length - 1) * INTER_CLUSTER_GAP;
+    const totalHeight = totalCards * CARD_HEIGHT + intra + inter;
+    let y = contentTop + Math.max(0, (columnAvailable - totalHeight) / 2);
+    groups.forEach((g, gi) => {
+      if (g.length === 0) {
+        clusterY[gi] = y;
+        clusterBottomY[gi] = y;
+        return;
+      }
+      clusterY[gi] = y;
+      g.forEach((node) => {
+        bounds.set(node.id, {
+          x,
+          y,
+          width: CARD_WIDTH,
+          height: CARD_HEIGHT,
+        });
+        y += CARD_HEIGHT + GAP;
+      });
+      // Step back the trailing GAP — the last card doesn't need one.
+      y -= GAP;
+      clusterBottomY[gi] = y + CARD_HEIGHT;
+      // Inter-cluster separator.
+      y += CARD_HEIGHT + INTER_CLUSTER_GAP;
     });
-  });
+  };
 
-  // --- Computed column --------------------------------------------------
-  const computedsHeight =
-    computeds.length * CARD_HEIGHT + Math.max(0, computeds.length - 1) * GAP;
-  const computedStartY =
-    contentTop + Math.max(0, (columnAvailable - computedsHeight) / 2);
-  computeds.forEach((node, i) => {
-    bounds.set(node.id, {
-      x: rightColX,
-      y: computedStartY + i * (CARD_HEIGHT + GAP),
-      width: CARD_WIDTH,
-      height: CARD_HEIGHT,
-    });
-  });
+  const clusterCount = Math.max(stateGroups.length, computedGroups.length);
+  const stateClusterTop: number[] = new Array(clusterCount).fill(0);
+  const stateClusterBot: number[] = new Array(clusterCount).fill(0);
+  const compClusterTop: number[] = new Array(clusterCount).fill(0);
+  const compClusterBot: number[] = new Array(clusterCount).fill(0);
+  layoutColumn(stateGroups, leftColX, stateClusterTop, stateClusterBot);
+  layoutColumn(computedGroups, rightColX, compClusterTop, compClusterBot);
 
   // Final canvas size = max extents of placed cards + margin.
   let maxX = containerWidth;
@@ -135,10 +198,43 @@ export function computeLayout(
     maxY = Math.max(maxY, rect.y + rect.height + ZONE_MARGIN);
   }
 
+  // Cluster rectangles — union of the state + computed sub-columns for
+  // each cluster, padded. Only emitted when a ClusterMap was supplied.
+  let clusterRects: ClusterRect[] | undefined;
+  if (clusters) {
+    clusterRects = [];
+    const padX = 10;
+    const padY = 8;
+    const leftWithPad = leftColX - padX;
+    const rightEdge = rightColX + CARD_WIDTH + padX;
+    for (let i = 0; i < clusters.clusters.length; i += 1) {
+      const c = clusters.clusters[i];
+      const hasState = c.states.length > 0;
+      const hasComp = c.computeds.length > 0;
+      if (!hasState && !hasComp) continue;
+      const top = Math.min(
+        hasState ? stateClusterTop[i] : Number.POSITIVE_INFINITY,
+        hasComp ? compClusterTop[i] : Number.POSITIVE_INFINITY,
+      );
+      const bot = Math.max(
+        hasState ? stateClusterBot[i] : Number.NEGATIVE_INFINITY,
+        hasComp ? compClusterBot[i] : Number.NEGATIVE_INFINITY,
+      );
+      clusterRects.push({
+        clusterId: c.id,
+        x: leftWithPad,
+        y: top - padY,
+        width: rightEdge - leftWithPad,
+        height: bot - top + padY * 2,
+      });
+    }
+  }
+
   return {
     bounds,
     canvasWidth: maxX,
     canvasHeight: maxY,
+    clusterRects,
   };
 }
 

@@ -35,6 +35,7 @@ import {
   type LayoutResult,
   type Rect,
 } from "./layout";
+import { detectClusters } from "./clusters";
 import { useLivePulse } from "./useLivePulse";
 import { useSimulationPlayback } from "./useSimulationPlayback";
 import { GraphSearch } from "./GraphSearch";
@@ -131,14 +132,16 @@ export function LiveGraph({
     return () => host.removeEventListener("wheel", onWheel);
   }, [setCamera]);
 
+  const clusters = useMemo(() => detectClusters(model), [model]);
   const baseLayout: LayoutResult = useMemo(
     () =>
       computeLayout(
         model,
         Math.max(viewport.width, 800),
         Math.max(viewport.height, 500),
+        clusters,
       ),
-    [model, viewport.width, viewport.height],
+    [model, viewport.width, viewport.height, clusters],
   );
 
   // --- Drag-to-reposition ----------------------------------------------
@@ -595,6 +598,27 @@ export function LiveGraph({
           if (e.target === e.currentTarget) handleBackgroundClick();
         }}
       >
+        {/* Cluster boundaries — subtle dashed rectangles behind the
+         * state+computed columns. Hidden while focus layout is active
+         * (clusters don't map onto the focus sub-graph). */}
+        {!focusActive && effectiveLayout.clusterRects?.map((r) => (
+          <div
+            key={r.clusterId}
+            aria-hidden
+            style={{
+              position: "absolute",
+              left: r.x,
+              top: r.y,
+              width: r.width,
+              height: r.height,
+              borderRadius: 12,
+              border: "1px dashed color-mix(in oklch, var(--color-violet) 30%, transparent)",
+              pointerEvents: "none",
+              opacity: 0.65,
+            }}
+          />
+        ))}
+
         <EdgeLayer
           model={effectiveModel}
           layout={effectiveLayout}
