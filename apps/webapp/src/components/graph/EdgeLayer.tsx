@@ -1,13 +1,9 @@
 import { useMemo } from "react";
 import { motion } from "motion/react";
-import type { GraphEdge, GraphModel } from "@manifesto-ai/studio-react";
-import {
-  attachPoint,
-  bundledEdgePath,
-  edgePath,
-  type LayoutResult,
-} from "./layout";
+import type { GraphModel } from "@manifesto-ai/studio-react";
+import type { LayoutResult } from "./layout";
 import type { ClusterMap } from "./clusters";
+import { bundledPortRouter, type EdgeRouter } from "./edge-router";
 
 type EdgeRelation = "feeds" | "mutates" | "unlocks";
 
@@ -49,6 +45,7 @@ export function EdgeLayer({
   focusActive = false,
   clusters,
   bundlingEnabled = false,
+  router = bundledPortRouter,
 }: {
   readonly model: GraphModel;
   readonly layout: LayoutResult;
@@ -62,74 +59,32 @@ export function EdgeLayer({
    * — a clean fade-swap instead of jittery path jumps.
    */
   readonly focusActive?: boolean;
-  /**
-   * Cluster map driving bundling. Edges crossing cluster boundaries
-   * share a rendezvous point (per src-cluster / tgt-cluster pair), so
-   * parallel connections between the same two clusters visually merge
-   * into a trunk. Intra-cluster edges use the regular straight bezier.
-   */
   readonly clusters?: ClusterMap;
-  /** Bundling is gated by the graph — we disable it during focus mode
-   * since the subgraph is meant to be read as individual connections. */
+  /** Turn bundling off to force straight routing everywhere (e.g. focus mode). */
   readonly bundlingEnabled?: boolean;
+  /**
+   * Routing strategy. Default is `bundledPortRouter` — straight
+   * bezier for intra-cluster edges, port-based trunk for inter-cluster.
+   * Swap in `orthogonalRouter` / `dagreRouter` etc. without touching
+   * this layer.
+   */
+  readonly router?: EdgeRouter;
 }): JSX.Element {
-  const paths = useMemo(() => {
-    const out: {
-      readonly edge: GraphEdge;
-      readonly d: string;
-    }[] = [];
-
-    // Pre-compute cluster centres once — rendezvous for a src/tgt
-    // cluster pair is the midpoint of those centres.
-    const clusterCentres = new Map<string, { x: number; y: number }>();
-    if (bundlingEnabled && layout.clusterRects !== undefined) {
-      for (const r of layout.clusterRects) {
-        clusterCentres.set(r.clusterId, {
-          x: r.x + r.width / 2,
-          y: r.y + r.height / 2,
-        });
-      }
-    }
-
-    for (const edge of model.edges) {
-      const source = layout.bounds.get(edge.source);
-      const target = layout.bounds.get(edge.target);
-      if (source === undefined || target === undefined) continue;
-      const sourceCenter = {
-        x: source.x + source.width / 2,
-        y: source.y + source.height / 2,
-      };
-      const targetCenter = {
-        x: target.x + target.width / 2,
-        y: target.y + target.height / 2,
-      };
-      const fromPoint = attachPoint(source, targetCenter.x, targetCenter.y);
-      const toPoint = attachPoint(target, sourceCenter.x, sourceCenter.y);
-
-      let d = edgePath(fromPoint, toPoint);
-      if (bundlingEnabled && clusters !== undefined) {
-        const srcCluster = clusters.byNode.get(edge.source);
-        const tgtCluster = clusters.byNode.get(edge.target);
-        if (
-          srcCluster !== undefined &&
-          tgtCluster !== undefined &&
-          srcCluster !== tgtCluster
-        ) {
-          const srcCentre = clusterCentres.get(srcCluster);
-          const tgtCentre = clusterCentres.get(tgtCluster);
-          if (srcCentre !== undefined && tgtCentre !== undefined) {
-            const rendezvous = {
-              x: (srcCentre.x + tgtCentre.x) / 2,
-              y: (srcCentre.y + tgtCentre.y) / 2,
-            };
-            d = bundledEdgePath(fromPoint, toPoint, rendezvous);
-          }
-        }
-      }
-      out.push({ edge, d });
-    }
-    return out;
-  }, [layout, model.edges, bundlingEnabled, clusters]);
+  const routes = useMemo(
+    () =>
+      router({
+        model,
+        layout,
+        clusters,
+        options: { bundling: bundlingEnabled },
+      }),
+    [router, model, layout, clusters, bundlingEnabled],
+  );
+  const edgeById = useMemo(() => {
+    const m = new Map<string, GraphModel["edges"][number]>();
+    for (const e of model.edges) m.set(e.id, e);
+    return m;
+  }, [model.edges]);
 
   return (
     <motion.svg
@@ -150,7 +105,10 @@ export function EdgeLayer({
         <ArrowMarker id="arrow-unlocks" color="var(--color-sig-state)" />
       </defs>
       <g>
-        {paths.map(({ edge, d }) => {
+        {routes.map((route) => {
+          const edge = edgeById.get(route.edgeId);
+          if (edge === undefined) return null;
+          const d = route.d;
           const style = RELATION_STYLES[edge.relation as EdgeRelation];
           const highlighted = highlightedEdgeIds.has(edge.id);
           const pulsing = pulsingEdgeIds.has(edge.id);

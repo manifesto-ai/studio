@@ -371,38 +371,56 @@ export function attachPoint(
 }
 
 /**
- * Bundled edge path — leaves the source attach perpendicular, bends
- * toward a shared rendezvous point, then arrives perpendicular at the
- * target attach. Inter-cluster edges sharing the same source/target
- * cluster pair all route through the same rendezvous, producing the
- * "trunk" effect of hierarchical edge bundling (Holten 2006, simplified).
+ * Cluster port — the point on a cluster rect's boundary where all
+ * inter-cluster edges with the same neighbour cluster pass through.
+ * Computed as the intersection of the line from the source cluster's
+ * centre to the target cluster's centre with the source cluster's
+ * rect boundary. `side` records which face of the rect was hit so
+ * callers can set exit/entry tangents perpendicular to the boundary.
  */
-export function bundledEdgePath(
-  from: ReturnType<typeof attachPoint>,
-  to: ReturnType<typeof attachPoint>,
-  rendezvous: { readonly x: number; readonly y: number },
-): string {
-  const fromOffset = offsetFor(from.side);
-  const toOffset = offsetFor(to.side);
-  const exitHandle = 60;
+export type ClusterPort = {
+  readonly x: number;
+  readonly y: number;
+  readonly side: "top" | "bottom" | "left" | "right";
+};
 
-  // First leg — away from source card perpendicular, bend toward rendezvous.
-  const c1x = from.x + fromOffset.dx * exitHandle;
-  const c1y = from.y + fromOffset.dy * exitHandle;
-  const c2x = rendezvous.x + (from.x - rendezvous.x) * 0.25;
-  const c2y = rendezvous.y + (from.y - rendezvous.y) * 0.25;
-
-  // Second leg — from rendezvous, bend toward target's perpendicular exit.
-  const c3x = rendezvous.x + (to.x - rendezvous.x) * 0.25;
-  const c3y = rendezvous.y + (to.y - rendezvous.y) * 0.25;
-  const c4x = to.x + toOffset.dx * exitHandle;
-  const c4y = to.y + toOffset.dy * exitHandle;
-
-  return (
-    `M ${from.x.toFixed(1)} ${from.y.toFixed(1)} ` +
-    `C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${rendezvous.x.toFixed(1)} ${rendezvous.y.toFixed(1)} ` +
-    `C ${c3x.toFixed(1)} ${c3y.toFixed(1)}, ${c4x.toFixed(1)} ${c4y.toFixed(1)}, ${to.x.toFixed(1)} ${to.y.toFixed(1)}`
-  );
+/**
+ * Compute the port on `rect` facing `target`. Ray casts from rect
+ * centre toward `target` and clips to the rect perimeter. Result lies
+ * on the rect boundary unless `target` is exactly the rect centre, in
+ * which case we return the right-edge midpoint as a safe fallback.
+ */
+export function portTowards(
+  rect: Rect,
+  target: { readonly x: number; readonly y: number },
+): ClusterPort {
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  const dx = target.x - cx;
+  const dy = target.y - cy;
+  if (dx === 0 && dy === 0) {
+    return { x: rect.x + rect.width, y: cy, side: "right" };
+  }
+  const hw = rect.width / 2;
+  const hh = rect.height / 2;
+  // Aspect-aware side pick — use the dimension whose ratio is larger.
+  const horizontalDominates = Math.abs(dx) * hh > Math.abs(dy) * hw;
+  if (horizontalDominates) {
+    const sign = dx > 0 ? 1 : -1;
+    const t = hw / Math.abs(dx);
+    return {
+      x: cx + sign * hw,
+      y: cy + dy * t,
+      side: sign > 0 ? "right" : "left",
+    };
+  }
+  const sign = dy > 0 ? 1 : -1;
+  const t = hh / Math.abs(dy);
+  return {
+    x: cx + dx * t,
+    y: cy + sign * hh,
+    side: sign > 0 ? "bottom" : "top",
+  };
 }
 
 /**
