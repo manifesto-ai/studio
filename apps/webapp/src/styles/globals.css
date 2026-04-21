@@ -289,6 +289,26 @@
     display: none;
   }
 
+  /* Playback bar glow — gentle breathing halo around the simulation
+   * control bar while a playback is playing. Off during paused/done
+   * so the glow itself signals "motion happening right now". */
+  .mf-playback-glow {
+    animation: mf-playback-glow 1800ms ease-in-out infinite;
+  }
+  @keyframes mf-playback-glow {
+    0%,
+    100% {
+      box-shadow:
+        0 8px 28px color-mix(in oklch, var(--color-violet, #9f7bff) 32%, transparent),
+        0 0 0 1px color-mix(in oklch, var(--color-violet-hot, #c79cff) 28%, transparent);
+    }
+    50% {
+      box-shadow:
+        0 10px 36px color-mix(in oklch, var(--color-violet-hot, #c79cff) 44%, transparent),
+        0 0 0 2px color-mix(in oklch, var(--color-violet-hot, #c79cff) 52%, transparent);
+    }
+  }
+
   /* Focus pulse — Monaco whole-line decoration applied when the user
    * lands on a graph node from outside the editor (graph click,
    * diagnostic click). Violet wash that rises, holds, and fades out

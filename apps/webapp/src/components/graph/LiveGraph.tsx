@@ -924,7 +924,7 @@ export function LiveGraph({
         })}
       </div>
 
-      <PlaybackControlBar controller={simulateController} />
+      <PlaybackControlBar controller={simulateController} model={model} />
     </div>
     <GraphSearch
       open={searchOpen}
