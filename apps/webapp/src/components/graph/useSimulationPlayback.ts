@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   GraphModel,
   GraphNode,
@@ -6,7 +6,7 @@ import type {
 } from "@manifesto-ai/studio-react";
 import type { Rect } from "./layout";
 
-export const PLAYBACK_STEP_DELAY_MS = 140;
+export const PLAYBACK_STEP_DELAY_MS = 280;
 export const PLAYBACK_TAIL_MS = 700;
 
 export type SimulationPlaybackStep = {
@@ -19,6 +19,23 @@ export type SimulationPlaybackPulse = {
   readonly activeNodes: ReadonlySet<GraphNode["id"]>;
   readonly activeEdges: ReadonlySet<string>;
   readonly originAction: GraphNode["id"] | null;
+};
+
+export type PlaybackStatus = "idle" | "playing" | "paused" | "done";
+
+export type SimulationPlaybackController = {
+  readonly pulse: SimulationPlaybackPulse;
+  readonly status: PlaybackStatus;
+  readonly currentStep: number;
+  readonly totalSteps: number;
+  readonly speed: number;
+  readonly steps: readonly SimulationPlaybackStep[];
+  readonly play: () => void;
+  readonly pause: () => void;
+  readonly next: () => void;
+  readonly prev: () => void;
+  readonly reset: () => void;
+  readonly setSpeed: (speed: number) => void;
 };
 
 export type PlaybackViewport = {
@@ -37,94 +54,173 @@ const EMPTY_PULSE: SimulationPlaybackPulse = {
   originAction: null,
 };
 
+/**
+ * Playback controller for simulation trace.
+ *
+ * Decouples three concerns:
+ *   1. Step derivation — pure function from (model, playback) →
+ *      SimulationPlaybackStep[].
+ *   2. Playback state — `status` (idle/playing/paused/done), `index`
+ *      (cursor into steps), `speed` (rate multiplier).
+ *   3. Pulse — what EdgeLayer/NodeCard render as the "currently lit"
+ *      node/edge, derived purely from index + steps.
+ *
+ * Timer only runs while `status === "playing"`. pause/next/prev move
+ * the cursor without re-firing the timer. reset returns to idle and
+ * clears the pulse. A new `playback.generation` (next simulate call)
+ * resets state, rebuilds steps, and auto-plays from the start.
+ */
 export function useSimulationPlayback(
   model: GraphModel | null,
   playback: SimulationPlayback | null,
   options: {
     readonly disabled?: boolean;
+    readonly autoPlay?: boolean;
   } = {},
-): SimulationPlaybackPulse {
+): SimulationPlaybackController {
   const disabled = options.disabled === true;
-  const [pulse, setPulse] = useState<SimulationPlaybackPulse>(EMPTY_PULSE);
-  const lastHandledGenerationRef = useRef<number | null>(null);
-  const timersRef = useRef<number[]>([]);
+  const autoPlay = options.autoPlay !== false;
 
-  useEffect(
-    () => () => {
-      clearPlaybackTimers(timersRef.current);
-      timersRef.current = [];
-    },
-    [],
-  );
+  const [status, setStatus] = useState<PlaybackStatus>("idle");
+  const [index, setIndex] = useState<number>(-1);
+  const [speed, setSpeedState] = useState<number>(1);
+  const [steps, setSteps] = useState<readonly SimulationPlaybackStep[]>([]);
+  const [originAction, setOriginAction] = useState<GraphNode["id"] | null>(null);
+  const [generation, setGeneration] = useState<number>(0);
 
+  const timerRef = useRef<number | null>(null);
+  const clearTimer = useCallback((): void => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  // Cleanup on unmount.
+  useEffect(() => () => clearTimer(), [clearTimer]);
+
+  // New playback generation → rebuild + start.
   useEffect(() => {
     if (playback === null || model === null || disabled) {
-      if (playback !== null) {
-        lastHandledGenerationRef.current = playback.generation;
-      }
-      clearPlaybackTimers(timersRef.current);
-      timersRef.current = [];
-      setPulse((prev) =>
-        prev.generation === 0 &&
-        prev.activeNodes.size === 0 &&
-        prev.activeEdges.size === 0 &&
-        prev.originAction === null
-          ? prev
-          : EMPTY_PULSE,
-      );
+      clearTimer();
+      setStatus("idle");
+      setIndex(-1);
+      setSteps([]);
+      setOriginAction(null);
+      setGeneration(0);
       return;
     }
+    if (playback.generation === generation) return;
+    setGeneration(playback.generation);
+    clearTimer();
 
-    if (lastHandledGenerationRef.current === playback.generation) {
-      return;
-    }
-    lastHandledGenerationRef.current = playback.generation;
-    clearPlaybackTimers(timersRef.current);
-    timersRef.current = [];
-
-    const originAction = resolveActionNodeId(model, playback.actionName);
-    const steps =
+    const origin = resolveActionNodeId(model, playback.actionName);
+    const built =
       playback.mode === "step" && playback.traceNodeId !== null
         ? buildTraceNodePlaybackSteps(model, playback, playback.traceNodeId)
         : buildSimulationPlaybackSteps(model, playback);
-
-    setPulse({
-      generation: playback.generation,
-      activeNodes: new Set(),
-      activeEdges: new Set(),
-      originAction,
-    });
-
-    if (steps.length === 0) {
+    setOriginAction(origin);
+    setSteps(built);
+    if (built.length === 0) {
+      setStatus("idle");
+      setIndex(-1);
       return;
     }
+    setIndex(0);
+    setStatus(autoPlay ? "playing" : "paused");
+  }, [playback, model, disabled, autoPlay, generation, clearTimer]);
 
-    for (let index = 0; index < steps.length; index += 1) {
-      const step = steps[index];
-      const timerId = window.setTimeout(() => {
-        setPulse({
-          generation: playback.generation,
-          activeNodes: new Set([step.nodeId]),
-          activeEdges:
-            step.edgeId === null ? new Set() : new Set([step.edgeId]),
-          originAction,
-        });
-      }, index * PLAYBACK_STEP_DELAY_MS);
-      timersRef.current.push(timerId);
+  // Auto-advance timer — only while playing.
+  useEffect(() => {
+    clearTimer();
+    if (status !== "playing") return;
+    if (steps.length === 0 || index < 0) return;
+    if (index >= steps.length - 1) {
+      // Tail: let last step linger, then mark done.
+      timerRef.current = window.setTimeout(() => {
+        setStatus("done");
+      }, PLAYBACK_TAIL_MS / Math.max(0.1, speed));
+      return;
     }
+    const delay = PLAYBACK_STEP_DELAY_MS / Math.max(0.1, speed);
+    timerRef.current = window.setTimeout(() => {
+      setIndex((i) => i + 1);
+    }, delay);
+  }, [status, index, steps.length, speed, clearTimer]);
 
-    const clearId = window.setTimeout(() => {
-      setPulse({
-        generation: playback.generation,
+  // Pulse derived purely from (status, index, steps).
+  const pulse = useMemo<SimulationPlaybackPulse>(() => {
+    if (status === "idle" || index < 0 || steps.length === 0) {
+      return EMPTY_PULSE;
+    }
+    if (status === "done") {
+      return {
+        generation,
         activeNodes: new Set(),
         activeEdges: new Set(),
         originAction: null,
-      });
-    }, steps.length * PLAYBACK_STEP_DELAY_MS + PLAYBACK_TAIL_MS);
-    timersRef.current.push(clearId);
-  }, [disabled, model, playback]);
+      };
+    }
+    const step = steps[Math.min(index, steps.length - 1)];
+    return {
+      generation,
+      activeNodes: step === undefined ? new Set() : new Set([step.nodeId]),
+      activeEdges:
+        step === undefined || step.edgeId === null
+          ? new Set()
+          : new Set([step.edgeId]),
+      originAction,
+    };
+  }, [status, index, steps, generation, originAction]);
 
-  return pulse;
+  const play = useCallback((): void => {
+    if (steps.length === 0) return;
+    if (status === "done") setIndex(0);
+    else if (index < 0) setIndex(0);
+    setStatus("playing");
+  }, [steps.length, status, index]);
+
+  const pause = useCallback((): void => {
+    if (status === "idle") return;
+    setStatus("paused");
+  }, [status]);
+
+  const next = useCallback((): void => {
+    if (steps.length === 0) return;
+    setStatus("paused");
+    setIndex((i) => Math.min(Math.max(0, i) + 1, steps.length - 1));
+  }, [steps.length]);
+
+  const prev = useCallback((): void => {
+    if (steps.length === 0) return;
+    setStatus("paused");
+    setIndex((i) => Math.max(0, i - 1));
+  }, [steps.length]);
+
+  const reset = useCallback((): void => {
+    clearTimer();
+    setIndex(-1);
+    setStatus("idle");
+  }, [clearTimer]);
+
+  const setSpeed = useCallback((s: number): void => {
+    setSpeedState(Math.max(0.25, Math.min(4, s)));
+  }, []);
+
+  return {
+    pulse,
+    status,
+    currentStep: index,
+    totalSteps: steps.length,
+    speed,
+    steps,
+    play,
+    pause,
+    next,
+    prev,
+    reset,
+    setSpeed,
+  };
 }
 
 export function buildSimulationPlaybackSteps(

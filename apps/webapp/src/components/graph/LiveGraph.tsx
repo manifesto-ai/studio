@@ -40,6 +40,7 @@ import {
 import { detectClusters } from "./clusters";
 import { useLivePulse } from "./useLivePulse";
 import { useSimulationPlayback } from "./useSimulationPlayback";
+import { PlaybackControlBar } from "./PlaybackControlBar";
 import { GraphSearch } from "./GraphSearch";
 
 /**
@@ -267,12 +268,24 @@ export function LiveGraph({
   // focusLayout rect (FLIP). Nodes not in the focus set stay at their
   // base position but fade out. Edges re-render from the focus
   // subgraph.
+  // Simulation playback controller must be instantiated before the
+  // focused-subgraph memo so the subgraph can include playback step
+  // nodes (keeps propagation path visible while focus is active).
+  const simulateController = useSimulationPlayback(model, simulationPlayback, {
+    disabled: disableDispatch,
+  });
+
   const focusedNodeSet = useMemo<ReadonlySet<GraphNode["id"]>>(() => {
     if (focusNodeId === null) return new Set();
     const out = new Set<GraphNode["id"]>([focusNodeId]);
     for (const id of neighbourhood.nodeIds) out.add(id);
+    // Union playback step nodes so focus mode can still render the
+    // propagation path for a running simulation without forcing the
+    // user to exit focus. The focus layout grows to accommodate.
+    for (const step of simulateController.steps) out.add(step.nodeId);
     return out;
-  }, [focusNodeId, neighbourhood.nodeIds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusNodeId, neighbourhood.nodeIds, simulateController.steps]);
   const focusedModel = useMemo<GraphModel | null>(() => {
     if (focusNodeId === null) return null;
     const nodes = model.nodes.filter((n) => focusedNodeSet.has(n.id));
@@ -424,9 +437,7 @@ export function LiveGraph({
 
   // --- Propagation pulse ----------------------------------------------
   const livePulse = useLivePulse(model);
-  const simulatePulse = useSimulationPlayback(model, simulationPlayback, {
-    disabled: disableDispatch,
-  });
+  const simulatePulse = simulateController.pulse;
   const livePulsingEdgeIds = useMemo(() => {
     if (livePulse.touched.size === 0) return new Set<string>();
     const ids = new Set<string>();
@@ -944,6 +955,7 @@ export function LiveGraph({
           }}
         />
       )}
+      <PlaybackControlBar controller={simulateController} />
     </div>
     <GraphSearch
       open={searchOpen}
