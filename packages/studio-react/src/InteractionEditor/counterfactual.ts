@@ -71,7 +71,7 @@ function formatValue(v: unknown): string {
   if (v === null) return "null";
   if (typeof v === "string") return `"${v}"`;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
-  return "(복합값)";
+  return "(complex value)";
 }
 
 function comparisonHint(
@@ -101,17 +101,17 @@ function comparisonHint(
   const v = formatValue(lit);
   switch (op) {
     case "eq":
-      return { text: `${ref} 가 ${v} 가 되면 통과합니다.`, refPath: ref };
+      return { text: `Passes when ${ref} becomes ${v}.`, refPath: ref };
     case "neq":
-      return { text: `${ref} 가 ${v} 가 아니게 되면 통과합니다.`, refPath: ref };
+      return { text: `Passes when ${ref} stops being ${v}.`, refPath: ref };
     case "gt":
-      return { text: `${ref} 가 ${v} 보다 크면 통과합니다.`, refPath: ref };
+      return { text: `Passes when ${ref} becomes greater than ${v}.`, refPath: ref };
     case "gte":
-      return { text: `${ref} 가 ${v} 이상이면 통과합니다.`, refPath: ref };
+      return { text: `Passes when ${ref} becomes ≥ ${v}.`, refPath: ref };
     case "lt":
-      return { text: `${ref} 가 ${v} 보다 작으면 통과합니다.`, refPath: ref };
+      return { text: `Passes when ${ref} becomes less than ${v}.`, refPath: ref };
     case "lte":
-      return { text: `${ref} 가 ${v} 이하이면 통과합니다.`, refPath: ref };
+      return { text: `Passes when ${ref} becomes ≤ ${v}.`, refPath: ref };
     default:
       return null;
   }
@@ -123,15 +123,15 @@ function isNullHint(node: Node, polarity: "isNull" | "isNotNull"): Counterfactua
   const r = refPath(args[0]);
   if (r === null) return null;
   if (polarity === "isNull") {
-    return { text: `${r} 가 null 이 되면 통과합니다.`, refPath: r };
+    return { text: `Passes when ${r} becomes null.`, refPath: r };
   }
-  return { text: `${r} 가 null 이 아니게 되면 통과합니다.`, refPath: r };
+  return { text: `Passes when ${r} becomes non-null.`, refPath: r };
 }
 
 function bareRefHint(node: Node): CounterfactualHint | null {
   const r = refPath(node);
   if (r === null) return null;
-  return { text: `${r} 가 true 가 되면 통과합니다.`, refPath: r };
+  return { text: `Passes when ${r} becomes true.`, refPath: r };
 }
 
 /**
@@ -157,7 +157,7 @@ export function deriveCounterfactualHint(expr: unknown): CounterfactualHint | nu
       const inner = args[0];
       const r = refPath(inner);
       if (r !== null) {
-        return { text: `${r} 가 false 가 되면 통과합니다.`, refPath: r };
+        return { text: `Passes when ${r} becomes false.`, refPath: r };
       }
       // Negation of a comparison is the inverse operator.
       if (inner.kind === "call" && typeof inner.op === "string" && Array.isArray(inner.args) && inner.args.length === 2) {

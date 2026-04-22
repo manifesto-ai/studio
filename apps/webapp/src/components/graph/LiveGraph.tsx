@@ -70,12 +70,15 @@ export function LiveGraph({
   readonly disableDispatch?: boolean;
 }): JSX.Element {
   const {
+    core,
     module,
     snapshot: liveSnapshot,
     whyNot,
     createIntent,
-    simulationPlayback,
+    simulation,
+    exitSimulation,
   } = useStudio();
+  const simulationPlayback = simulation?.playback ?? null;
   const effectiveSnapshot = snapshotOverride ?? liveSnapshot ?? null;
 
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -243,6 +246,21 @@ export function LiveGraph({
   const { focus, setFocus, clear: clearFocus } = useFocus();
   const focusNodeId: GraphNode["id"] | null =
     focus !== null && focus.kind === "node" ? focus.id : null;
+
+  // Auto-exit simulation when the user focuses a different node. A
+  // simulation session was opened against a specific intent + its
+  // projected propagation; switching attention to another part of the
+  // graph means that context is no longer what the user is asking
+  // about, so the playback bar should disappear. The ref tracks the
+  // last focused id across renders so we fire only on actual focus
+  // transitions, not on every parent re-render.
+  const lastFocusIdForSimRef = useRef<GraphNode["id"] | null>(focusNodeId);
+  useEffect(() => {
+    if (lastFocusIdForSimRef.current === focusNodeId) return;
+    lastFocusIdForSimRef.current = focusNodeId;
+    if (simulation !== null) exitSimulation("focus-changed");
+  }, [focusNodeId, simulation, exitSimulation]);
+
   const focusNode = useCallback(
     (id: GraphNode["id"]): void => {
       setFocus({ kind: "node", id, origin: "graph" });
@@ -550,9 +568,14 @@ export function LiveGraph({
           target.tagName === "SELECT" ||
           (target as HTMLElement).isContentEditable);
       if (e.key === "Escape") {
+        // Priority order for Esc: close the most "current" overlay
+        // first so repeated Esc peels back through the UI like
+        // onion layers — search > simulation > focus selection.
         if (searchOpen) {
           setSearchOpen(false);
           setSearchQuery("");
+        } else if (simulation !== null) {
+          exitSimulation("user-close");
         } else {
           clearFocus();
         }
@@ -576,17 +599,68 @@ export function LiveGraph({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [searchOpen]);
+  }, [searchOpen, simulation, exitSimulation, clearFocus]);
 
-  // --- Dispatchability (live only — past mode hides this) --------------
+  // --- Action surface readiness (live only — past mode hides this) -----
+  //
+  // Three states surfaced on the action card:
+  //
+  //   "ready"      — `available when` passes. The action is on the
+  //                  callable surface; whether a particular intent
+  //                  dispatches still depends on user input.
+  //   "input"      — `available when` passes BUT a default-input
+  //                  intent fails `dispatchable when`. We can't know
+  //                  in advance whether real input will pass; the
+  //                  card just signals "this needs a specific input
+  //                  to dispatch" so the user isn't surprised when
+  //                  the ladder shows a blocker.
+  //   "blocked"    — `available when` fails. Action isn't reachable
+  //                  in the current snapshot regardless of input.
+  //
+  // The previous behaviour folded all `dispatchable when` failures on
+  // the synthetic default-input intent into "blocked", which made
+  // actions like `set(value: number) dispatchable when value > 0`
+  // permanently look broken even though they were perfectly callable
+  // with a positive value.
   const actionDispatchability = useMemo(() => {
     const map = new Map<
       string,
-      { readonly dispatchable: boolean; readonly blockerCount: number }
+      {
+        readonly status: "ready" | "input" | "blocked";
+        readonly availableBlockerCount: number;
+      }
     >();
     if (module === null || disableDispatch) return map;
     for (const node of model.nodes) {
       if (node.kind !== "action") continue;
+      const available = core.isActionAvailable(node.name);
+      if (!available) {
+        // Available-layer failure. We try to count blockers via the
+        // default-input intent; the SDK guarantees the first failing
+        // layer short-circuits, so any blockers we see here are at
+        // the available layer.
+        let availableBlockerCount = 0;
+        try {
+          const descriptor = descriptorForAction(module.schema, node.name);
+          const defaults =
+            descriptor === null
+              ? undefined
+              : createInitialFormValue(descriptor, { sparseOptional: true });
+          const intent = createIntent(
+            node.name,
+            ...createIntentArgsForValue(descriptor, defaults),
+          );
+          const blockers = whyNot(intent);
+          availableBlockerCount = blockers?.length ?? 0;
+        } catch {
+          // Couldn't build a probe intent; status is still "blocked"
+          // — we just can't show a count.
+        }
+        map.set(node.id, { status: "blocked", availableBlockerCount });
+        continue;
+      }
+      // Available passes. Probe with default input to see whether the
+      // action is plug-and-play or input-bound.
       try {
         const descriptor = descriptorForAction(module.schema, node.name);
         const defaults =
@@ -599,15 +673,17 @@ export function LiveGraph({
         );
         const blockers = whyNot(intent);
         if (blockers === null || blockers.length === 0) {
-          map.set(node.id, { dispatchable: true, blockerCount: 0 });
+          map.set(node.id, { status: "ready", availableBlockerCount: 0 });
         } else {
-          map.set(node.id, {
-            dispatchable: false,
-            blockerCount: blockers.length,
-          });
+          // Available passed, dispatchable failed on default input —
+          // user-supplied input may still pass.
+          map.set(node.id, { status: "input", availableBlockerCount: 0 });
         }
       } catch {
-        map.set(node.id, { dispatchable: false, blockerCount: 0 });
+        // createIntent threw — usually an input-shape issue. Same
+        // signal as a dispatchable failure: action is reachable in
+        // principle but needs a specific input.
+        map.set(node.id, { status: "input", availableBlockerCount: 0 });
       }
     }
     return map;
@@ -615,6 +691,7 @@ export function LiveGraph({
     model.nodes,
     module,
     liveSnapshot,
+    core,
     whyNot,
     createIntent,
     disableDispatch,
@@ -936,8 +1013,10 @@ export function LiveGraph({
                 nodeId={node.id}
                 name={node.name}
                 argLabel={meta.argLabel}
-                dispatchable={disableDispatch ? null : info?.dispatchable ?? null}
-                blockerCount={info?.blockerCount ?? 0}
+                actionStatus={
+                  disableDispatch ? "unknown" : info?.status ?? "unknown"
+                }
+                blockerCount={info?.availableBlockerCount ?? 0}
                 rect={rect}
                 highlighted={highlighted}
                 focused={focused}
@@ -956,7 +1035,11 @@ export function LiveGraph({
         })}
       </div>
 
-      <PlaybackControlBar controller={simulateController} model={model} />
+      <PlaybackControlBar
+        controller={simulateController}
+        model={model}
+        onExit={() => exitSimulation("user-close")}
+      />
     </div>
     <GraphSearch
       open={searchOpen}
@@ -1159,7 +1242,7 @@ const ComputedCardItem = memo(function ComputedCardItem(
 type ActionCardItemProps = CardHandlerProps & {
   readonly name: string;
   readonly argLabel: string;
-  readonly dispatchable: boolean | null;
+  readonly actionStatus: "ready" | "input" | "blocked" | "unknown";
   readonly blockerCount: number;
   readonly highlighted: boolean;
   readonly focused: boolean;
@@ -1185,7 +1268,7 @@ const ActionCardItem = memo(function ActionCardItem(
         id={props.nodeId}
         name={props.name}
         argLabel={props.argLabel}
-        dispatchable={props.dispatchable}
+        actionStatus={props.actionStatus}
         blockerCount={props.blockerCount}
         rect={props.rect}
         highlighted={props.highlighted}

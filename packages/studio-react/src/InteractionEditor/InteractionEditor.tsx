@@ -48,6 +48,15 @@ export type InteractionEditorProps = {
    */
   readonly onSelectAction?: (name: string) => void;
   /**
+   * Called when the user clicks the "↗ source" link in the legality
+   * ladder. Hosts wire this to their Monaco reveal flow so the
+   * editor scrolls to the action's source span. Coordinates are 1-
+   * indexed Monaco positions (line/column). Receives the action's
+   * span start (we don't yet have per-guard spans from the SDK; the
+   * action block is the closest target).
+   */
+  readonly onRevealSourceSpan?: (line: number, column: number) => void;
+  /**
    * Whether Dispatch is gated behind a resolved simulate for the
    * current bound intent (UX philosophy Rule S1).
    *
@@ -84,7 +93,7 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
     simulate,
     dispatch,
     createIntent,
-    publishSimulationPlayback,
+    enterSimulation,
   } = useStudio();
 
   const actionNames = useMemo(() => {
@@ -252,7 +261,23 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
 
   const onSimulate = useCallback(() => {
     const intent = buildIntent();
-    if (intent === null) return;
+    if (intent === null) {
+      // buildIntent set runtimeError on its own catch path but the
+      // ladder only renders when `lastInteraction` is something —
+      // surface the input-invalid state by pinning the interaction
+      // slot to "simulate" with a cleared explanation, so the ladder
+      // derives step 2 (input-valid) as blocked-here rather than
+      // staying empty while a terse error box does all the talking.
+      updateActiveSession((prev) => ({
+        ...prev,
+        lastInteraction: "simulate",
+        lastInsightValueSignature: prev.valueSignature,
+        lastExplanation: null,
+        lastSimulateResult: null,
+        lastDispatchResult: null,
+      }));
+      return;
+    }
     setPending("simulate");
     try {
       const explained = explainIntent(intent);
@@ -268,10 +293,11 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
       }
       const result = simulate(intent);
       if (result.diagnostics?.trace !== undefined) {
-        publishSimulationPlayback({
-          actionName: intent.type,
+        enterSimulation({
+          origin: { kind: "simulate-button", actionName: intent.type },
           trace: result.diagnostics.trace,
           source: "interaction-editor",
+          mode: "sequence",
         });
       }
       updateActiveSession((prev) => ({
@@ -293,22 +319,37 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
   }, [
     buildIntent,
     explainIntent,
-    publishSimulationPlayback,
+    enterSimulation,
     simulate,
     updateActiveSession,
   ]);
 
   const onDispatch = useCallback(async () => {
     const intent = buildIntent();
-    if (intent === null) return;
+    if (intent === null) {
+      // See the matching block in `onSimulate` — surface the
+      // input-invalid state in the ladder instead of letting the
+      // click look silently swallowed.
+      updateActiveSession((prev) => ({
+        ...prev,
+        lastInteraction: "simulate",
+        lastInsightValueSignature: prev.valueSignature,
+        lastExplanation: null,
+        lastSimulateResult: null,
+        lastDispatchResult: null,
+      }));
+      return;
+    }
 
-    // Rule S1 as a chain, not a gate. We always resolve legality
-    // (explainIntent + simulate) first; only if the intent is admitted
-    // do we actually dispatch. If it's blocked we stop at simulate and
-    // let the ladder surface the blocker narrative — same end state
-    // as the old gated path, but without a dead-feeling Dispatch
-    // button.
-    setPending("simulate");
+    // Pure dispatch. Legality (the fine-grained `available`/
+    // `dispatchable` ladder) is still checked up-front via
+    // `explainIntent` so a blocked intent surfaces the same blocker
+    // narrative in the ladder without a round-trip to the SDK — but we
+    // deliberately do NOT auto-run a trace simulation on the user's
+    // behalf. Simulation mode is a separate user gesture (the Simulate
+    // button). Dispatch-triggered sessions were surprising and broke
+    // the contract in §SimulationSession ("entry is always explicit").
+    setPending("dispatch");
     try {
       const explained = explainIntent(intent);
       if (explained.kind === "blocked") {
@@ -321,24 +362,6 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
         }));
         return;
       }
-      const simResult = simulate(intent);
-      if (simResult.diagnostics?.trace !== undefined) {
-        publishSimulationPlayback({
-          actionName: intent.type,
-          trace: simResult.diagnostics.trace,
-          source: "interaction-editor",
-        });
-      }
-      updateActiveSession((prev) => ({
-        ...prev,
-        runtimeError: null,
-        lastInteraction: "simulate",
-        lastInsightValueSignature: prev.valueSignature,
-        lastExplanation: explained,
-        lastSimulateResult: simResult,
-      }));
-
-      setPending("dispatch");
       const result = await dispatch(intent);
       updateActiveSession((prev) => ({
         ...prev,
@@ -361,8 +384,6 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
     buildIntent,
     dispatch,
     explainIntent,
-    publishSimulationPlayback,
-    simulate,
     updateActiveSession,
   ]);
 
@@ -498,16 +519,12 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
           type="button"
           onClick={onDispatch}
           disabled={pending !== null || selectedAction === null}
-          title="Simulate runs first automatically; only an admitted intent proceeds to dispatch."
+          title="Checks legality (available + dispatchable guards) before writing. Blocked intents surface in the ladder instead of dispatching."
           data-testid="ie-dispatch-btn"
           data-simulate-ready={ladderState.simulateReadyForDispatch ? "1" : "0"}
           style={primaryBtnStyle}
         >
-          {pending === "simulate"
-            ? "Checking…"
-            : pending === "dispatch"
-              ? "Dispatching…"
-              : "Dispatch"}
+          {pending === "dispatch" ? "Dispatching…" : "Dispatch"}
         </button>
       </div>
 
@@ -536,7 +553,21 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
       (lastInteraction === "simulate" ||
         (lastInteraction === "dispatch" &&
           visibleDispatchResult?.kind === "rejected")) ? (
-        <IntentLadder state={ladderState} />
+        <IntentLadder
+          state={ladderState}
+          resolveRef={(refPath) =>
+            resolveExpressionRef(refPath, snapshot, value, descriptor)
+          }
+          onRevealSource={
+            props.onRevealSourceSpan === undefined || selectedAction === null
+              ? undefined
+              : () => {
+                  const span = lookupActionSourceSpan(module, selectedAction);
+                  if (span === null) return;
+                  props.onRevealSourceSpan!(span.line, span.column);
+                }
+          }
+        />
       ) : null}
 
       {showInsight ? (
@@ -870,3 +901,83 @@ const staleBoxStyle: CSSProperties = {
   fontSize: 11.5,
   fontFamily: MONO_STACK,
 };
+
+// --------------------------------------------------------------------
+// Ref resolution for the legality ladder's inline value substitution.
+// --------------------------------------------------------------------
+//
+// When a guard expression references `phase`, `input.value`,
+// `computed.todoCount`, etc., the ladder asks back for the actual
+// value at that path so it can render `gte(-10 (input.value), 0) →
+// false` instead of leaving the user to flip back to the snapshot
+// inspector. This is a best-effort resolver: we try the explicit
+// namespaces first (`computed.*`, `input.*`), then fall back through
+// state → computed → form input, returning `undefined` if nothing
+// matches. The renderer paints `undefined` as `?`.
+function resolveExpressionRef(
+  refPath: string,
+  snapshot: { readonly data?: unknown; readonly computed?: unknown } | null,
+  formValue: unknown,
+  _descriptor: FormDescriptor | null,
+): unknown {
+  if (refPath === "" || snapshot === undefined) return undefined;
+  // Canonical MEL `get { path }` paths carry their namespace prefix
+  // explicitly. Honour that first so we don't accidentally shadow
+  // `data.foo` with a same-name field elsewhere.
+  if (refPath.startsWith("data.")) {
+    return resolveDottedPath(snapshot?.data, refPath.slice("data.".length));
+  }
+  if (refPath.startsWith("computed.")) {
+    return resolveDottedPath(snapshot?.computed, refPath.slice("computed.".length));
+  }
+  if (refPath.startsWith("input.")) {
+    return resolveDottedPath(formValue, refPath.slice("input.".length));
+  }
+  if (refPath === "data") return snapshot?.data;
+  if (refPath === "computed") return snapshot?.computed;
+  if (refPath === "input") return formValue;
+  // Bare path with no prefix — fall through state → computed → input.
+  // Action params surface here when a guard reads them by name.
+  const stateVal = resolveDottedPath(snapshot?.data, refPath);
+  if (stateVal !== undefined) return stateVal;
+  const computedVal = resolveDottedPath(snapshot?.computed, refPath);
+  if (computedVal !== undefined) return computedVal;
+  return resolveDottedPath(formValue, refPath);
+}
+
+/**
+ * Look up the start position of an action's source span via the
+ * compiler's source map. Returns null if the module hasn't built yet,
+ * the action isn't in the schema, or the source map doesn't have an
+ * entry for it. The local-key shape is `action:<name>` per the source
+ * map's local-target convention.
+ */
+function lookupActionSourceSpan(
+  module: ReturnType<typeof useStudio>["module"],
+  actionName: string,
+): { line: number; column: number } | null {
+  if (module === null) return null;
+  const entries = module.sourceMap?.entries as
+    | Record<string, { readonly span?: { readonly start?: { readonly line?: number; readonly column?: number } } }>
+    | undefined;
+  if (entries === undefined) return null;
+  const entry = entries[`action:${actionName}`];
+  const start = entry?.span?.start;
+  if (start === undefined) return null;
+  if (typeof start.line !== "number" || typeof start.column !== "number") {
+    return null;
+  }
+  return { line: start.line, column: start.column };
+}
+
+function resolveDottedPath(root: unknown, path: string): unknown {
+  if (root === null || root === undefined) return undefined;
+  if (path === "") return root;
+  let cursor: unknown = root;
+  for (const segment of path.split(".")) {
+    if (cursor === null || cursor === undefined) return undefined;
+    if (typeof cursor !== "object") return undefined;
+    cursor = (cursor as Record<string, unknown>)[segment];
+  }
+  return cursor;
+}

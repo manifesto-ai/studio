@@ -1,4 +1,4 @@
-import { type CSSProperties, useCallback, useMemo, useState } from "react";
+import { type CSSProperties, type ReactNode, useCallback, useMemo, useState } from "react";
 import { useStudio } from "./useStudio.js";
 import {
   COLORS,
@@ -87,12 +87,20 @@ export function SnapshotTree({ focus = null }: SnapshotTreeProps = {}): JSX.Elem
     };
   }, [focus, data, computed]);
 
+  const computedEntries = useMemo<readonly (readonly [string, unknown])[]>(() => {
+    if (computed === null || typeof computed !== "object") return [];
+    return Object.entries(computed);
+  }, [computed]);
+  const hasComputed = computedEntries.length > 0;
+
   const title = focus === null ? "Snapshot" : "Inspect";
   const rightLabel =
     focus === null
       ? snapshot === null
         ? "—"
-        : "data"
+        : hasComputed
+          ? "state · computed"
+          : "state"
       : `${focus.kind} · ${focus.name}`;
 
   return (
@@ -102,7 +110,7 @@ export function SnapshotTree({ focus = null }: SnapshotTreeProps = {}): JSX.Elem
         <span style={{ color: COLORS.muted, fontSize: 11 }}>{rightLabel}</span>
       </div>
       <div style={PANEL_BODY}>
-        {renderBody(focus, scoped, data)}
+        {renderBody(focus, scoped, data, computed, hasComputed)}
       </div>
     </div>
   );
@@ -112,9 +120,12 @@ function renderBody(
   focus: SnapshotFocus | null,
   scoped: ReturnType<typeof buildScoped>,
   data: unknown,
+  computed: Record<string, unknown> | null,
+  hasComputed: boolean,
 ): JSX.Element {
   if (focus === null) {
-    if (data === null || data === undefined) {
+    const hasState = data !== null && data !== undefined;
+    if (!hasState && !hasComputed) {
       return (
         <div style={PANEL_EMPTY}>
           No snapshot yet. Build + dispatch to populate, or click a graph
@@ -122,9 +133,22 @@ function renderBody(
         </div>
       );
     }
+    // Two top-level sections — state and computed — so the user sees
+    // the full deterministic snapshot at a glance. `computed` is
+    // hidden when the module declares no computed fields, so simple
+    // domains don't show an empty chrome box.
     return (
-      <div style={{ padding: "10px 14px" }}>
-        <TreeNode path="data" value={data} depth={0} />
+      <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+        {hasState ? (
+          <TreeSection label="state">
+            <TreeNode path="data" value={data} depth={0} />
+          </TreeSection>
+        ) : null}
+        {hasComputed && computed !== null ? (
+          <TreeSection label="computed">
+            <TreeNode path="computed" value={computed} depth={0} />
+          </TreeSection>
+        ) : null}
       </div>
     );
   }
@@ -167,6 +191,27 @@ type ScopedResult =
   | null;
 function buildScoped(): ScopedResult {
   return null;
+}
+
+/**
+ * Labelled top-level container so "state" and "computed" read as
+ * sibling sections rather than one merged tree. Label is a muted
+ * uppercase strip so the section chrome doesn't compete with the
+ * actual values.
+ */
+function TreeSection({
+  label,
+  children,
+}: {
+  readonly label: string;
+  readonly children: ReactNode;
+}): JSX.Element {
+  return (
+    <div>
+      <div style={sectionLabelStyle}>{label}</div>
+      {children}
+    </div>
+  );
 }
 
 function TreeNode({
@@ -263,6 +308,16 @@ function primitiveColor(value: unknown): string {
   return COLORS.text;
 }
 
+const sectionLabelStyle: CSSProperties = {
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  color: COLORS.muted,
+  padding: "2px 0 4px",
+  borderBottom: `1px solid ${COLORS.line}`,
+  marginBottom: 4,
+};
 const rootStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",

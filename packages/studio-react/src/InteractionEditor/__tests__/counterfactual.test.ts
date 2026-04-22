@@ -15,67 +15,67 @@ describe("deriveCounterfactualHint — decodable forms", () => {
   it("eq(ref, literal)", () => {
     const h = deriveCounterfactualHint(call("eq", ref("phase"), lit("playing")));
     expect(h).not.toBeNull();
-    expect(h?.text).toBe('phase 가 "playing" 가 되면 통과합니다.');
+    expect(h?.text).toBe('Passes when phase becomes "playing".');
     expect(h?.refPath).toBe("phase");
   });
 
   it("eq(literal, ref) (operand order reversed)", () => {
     const h = deriveCounterfactualHint(call("eq", lit(5), ref("count")));
-    expect(h?.text).toBe("count 가 5 가 되면 통과합니다.");
+    expect(h?.text).toBe("Passes when count becomes 5.");
   });
 
   it("neq, gt, gte, lt, lte", () => {
     expect(deriveCounterfactualHint(call("neq", ref("x"), lit(0)))?.text).toBe(
-      "x 가 0 가 아니게 되면 통과합니다.",
+      "Passes when x stops being 0.",
     );
     expect(deriveCounterfactualHint(call("gt", ref("n"), lit(3)))?.text).toBe(
-      "n 가 3 보다 크면 통과합니다.",
+      "Passes when n becomes greater than 3.",
     );
     expect(deriveCounterfactualHint(call("gte", ref("n"), lit(3)))?.text).toBe(
-      "n 가 3 이상이면 통과합니다.",
+      "Passes when n becomes ≥ 3.",
     );
     expect(deriveCounterfactualHint(call("lt", ref("n"), lit(3)))?.text).toBe(
-      "n 가 3 보다 작으면 통과합니다.",
+      "Passes when n becomes less than 3.",
     );
     expect(deriveCounterfactualHint(call("lte", ref("n"), lit(3)))?.text).toBe(
-      "n 가 3 이하이면 통과합니다.",
+      "Passes when n becomes ≤ 3.",
     );
   });
 
   it("isNull(ref) and isNotNull(ref)", () => {
     expect(deriveCounterfactualHint(call("isNull", ref("user")))?.text).toBe(
-      "user 가 null 이 되면 통과합니다.",
+      "Passes when user becomes null.",
     );
     expect(deriveCounterfactualHint(call("isNotNull", ref("user")))?.text).toBe(
-      "user 가 null 이 아니게 되면 통과합니다.",
+      "Passes when user becomes non-null.",
     );
   });
 
   it("bare boolean ref", () => {
     expect(deriveCounterfactualHint(ref("canShoot"))?.text).toBe(
-      "canShoot 가 true 가 되면 통과합니다.",
+      "Passes when canShoot becomes true.",
     );
   });
 
   it("not(ref) flips polarity to false", () => {
     expect(deriveCounterfactualHint(call("not", ref("isLoading")))?.text).toBe(
-      "isLoading 가 false 가 되면 통과합니다.",
+      "Passes when isLoading becomes false.",
     );
   });
 
   it("not(eq(ref, lit)) inverts to neq", () => {
     expect(
       deriveCounterfactualHint(call("not", call("eq", ref("x"), lit(1))))?.text,
-    ).toBe('x 가 1 가 아니게 되면 통과합니다.');
+    ).toBe('Passes when x stops being 1.');
   });
 
   it("binary ==, !=, > etc. (alternative AST shape)", () => {
     expect(
       deriveCounterfactualHint({ kind: "binary", op: "==", left: ref("x"), right: lit("open") })?.text,
-    ).toBe('x 가 "open" 가 되면 통과합니다.');
+    ).toBe('Passes when x becomes "open".');
     expect(
       deriveCounterfactualHint({ kind: "binary", op: ">=", left: ref("n"), right: lit(10) })?.text,
-    ).toBe('n 가 10 이상이면 통과합니다.');
+    ).toBe('Passes when n becomes ≥ 10.');
   });
 });
 

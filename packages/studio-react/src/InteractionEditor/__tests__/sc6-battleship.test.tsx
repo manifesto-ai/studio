@@ -72,12 +72,13 @@ async function mountBattleship() {
 }
 
 function SimulationPlaybackProbe(): JSX.Element {
-  const { simulationPlayback } = useStudio();
+  const { simulation } = useStudio();
+  const playback = simulation?.playback ?? null;
   return (
     <output hidden data-testid="simulation-playback-probe">
-      {simulationPlayback === null
+      {playback === null
         ? ""
-        : `${simulationPlayback.generation}:${simulationPlayback.source}:${simulationPlayback.mode}:${simulationPlayback.actionName}:${simulationPlayback.traceNodeId ?? ""}`}
+        : `${playback.generation}:${playback.source}:${playback.mode}:${playback.actionName}:${playback.traceNodeId ?? ""}`}
     </output>
   );
 }
@@ -204,6 +205,16 @@ describe("P1-SC-7 — blocker UX", () => {
     });
     const step1 = container.querySelector('[data-testid="ladder-step-available"]') as HTMLElement;
     expect(step1?.dataset.status).toBe("blocked-here");
+    // Trailing pending steps are collapsed under a footer by default;
+    // expand it to verify their demoted status. The footer's mere
+    // existence proves the steps are tracked and not silently dropped.
+    const pendingFooter = container.querySelector(
+      '[data-testid="ladder-pending-footer"]',
+    ) as HTMLElement;
+    expect(pendingFooter).not.toBeNull();
+    await act(async () => {
+      pendingFooter.click();
+    });
     for (const id of ["input-valid", "dispatchable", "simulated", "admitted"]) {
       const el = container.querySelector(`[data-testid="ladder-step-${id}"]`) as HTMLElement;
       expect(el?.dataset.status).toBe("not-yet-evaluated");
