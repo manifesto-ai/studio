@@ -42,23 +42,19 @@ domain TaskFlow {
     clock: ClockStamp | null = null
   }
 
-  computed activeTasks = filter(tasks, isNull($item.deletedAt))
-  computed deletedTasks = filter(tasks, isNotNull($item.deletedAt))
-  computed todoTasks = filter(activeTasks, eq($item.status, "todo"))
-  computed inProgressTasks = filter(activeTasks, eq($item.status, "in-progress"))
-  computed reviewTasks = filter(activeTasks, eq($item.status, "review"))
-  computed doneTasks = filter(activeTasks, eq($item.status, "done"))
-  computed schedulableTasks = filter(activeTasks, and(gt($item.dueDateTimestamp, 0), neq($item.status, "done")))
-  computed dueTodayTasks = cond(
-    isNull(clock),
-    [],
-    filter(schedulableTasks, and(gte($item.dueDateTimestamp, clock.todayStartTs), lte($item.dueDateTimestamp, clock.todayEndTs)))
-  )
-  computed overdueTasks = cond(
-    isNull(clock),
-    [],
-    filter(schedulableTasks, lt($item.dueDateTimestamp, clock.todayStartTs))
-  )
+  computed activeTasks = filter(tasks, $item.deletedAt == null)
+  computed deletedTasks = filter(tasks, $item.deletedAt != null)
+  computed todoTasks = filter(activeTasks, $item.status == "todo")
+  computed inProgressTasks = filter(activeTasks, $item.status == "in-progress")
+  computed reviewTasks = filter(activeTasks, $item.status == "review")
+  computed doneTasks = filter(activeTasks, $item.status == "done")
+  computed schedulableTasks = filter(activeTasks, $item.dueDateTimestamp > 0 && $item.status != "done")
+  computed dueTodayTasks = isNull(clock)
+    ? []
+    : filter(schedulableTasks, $item.dueDateTimestamp >= clock.todayStartTs && $item.dueDateTimestamp <= clock.todayEndTs)
+  computed overdueTasks = isNull(clock)
+    ? []
+    : filter(schedulableTasks, $item.dueDateTimestamp < clock.todayStartTs)
   computed selectedTask = findById(tasks, selectedTaskId)
   computed totalCount = len(activeTasks)
   computed todoCount = len(todoTasks)
@@ -138,15 +134,15 @@ domain TaskFlow {
   }
 
   action emptyTrash(stamp: ClockStamp)
-    available when gt(deletedCount, 0) {
+    available when deletedCount > 0 {
     onceIntent {
-      patch tasks = filter(tasks, isNull($item.deletedAt))
+      patch tasks = filter(tasks, $item.deletedAt == null)
       patch clock = stamp
     }
   }
 
   action selectTask(taskId: string | null, stamp: ClockStamp)
-    dispatchable when or(isNull(taskId), existsById(tasks, taskId)) {
+    dispatchable when taskId == null || existsById(tasks, taskId) {
     onceIntent {
       patch selectedTaskId = taskId
       patch clock = stamp

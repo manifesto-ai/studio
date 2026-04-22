@@ -337,9 +337,17 @@ const BLANK_SOURCE = `domain Untitled {
     count: number = 0
   }
 
+  computed doubled = count * 2
+
   action increment() {
     onceIntent {
-      patch count = add(count, 1)
+      patch count = count + 1
+    }
+  }
+
+  action decrement() available when count > 0 {
+    onceIntent {
+      patch count = count - 1
     }
   }
 }

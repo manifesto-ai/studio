@@ -1,56 +1,104 @@
 domain TodoApp {
+  type Priority = "low" | "med" | "high"
   type Todo = {
     id: string,
     title: string,
+    priority: Priority,
     completed: boolean
   }
 
   state {
     todos: Array<Todo> = []
     filterMode: "all" | "active" | "completed" = "all"
+    capacity: number = 5
   }
 
   computed todoCount = len(todos)
   computed completedCount = len(filter(todos, $item.completed))
-  computed activeCount = sub(todoCount, completedCount)
-  computed hasCompleted = gt(completedCount, 0)
+  computed activeCount = todoCount - completedCount
+  computed hasCompleted = completedCount > 0
+  computed atCapacity = todoCount >= capacity
+  computed canAdd = !atCapacity
 
-  action addTodo(title: string) {
-    onceIntent when neq(trim(title), "") {
+  // Add a todo. Two layers of legality:
+  //   available when canAdd        — coarse, state-only: list isn't full
+  //   dispatchable when ...        — fine, input-bound: title is non-empty,
+  //                                  ≤ 60 chars
+  // Try setting capacity = 5 and adding 6 items to trip `available`.
+  action addTodo(title: string, priority: Priority)
+    available when canAdd
+    dispatchable when trim(title) != "" && len(trim(title)) <= 60
+  {
+    onceIntent {
       patch todos = append(todos, {
         id: $system.uuid,
         title: trim(title),
+        priority: priority,
         completed: false
       })
     }
   }
 
-  action toggleTodo(id: string) {
+  // Toggle: action only callable when at least one todo exists, and
+  // a specific intent is only dispatchable for an id that's actually
+  // in the list. The Interact form's id-suggestion dropdown surfaces
+  // the live ids; type a fake one to see the dispatchable failure.
+  action toggleTodo(id: string)
+    available when todoCount > 0
+    dispatchable when existsById(todos, id)
+  {
     onceIntent {
       patch todos = map(todos,
-        cond(eq($item.id, id),
-          { id: $item.id, title: $item.title, completed: not($item.completed) },
-          $item
-        )
+        $item.id == id
+          ? {
+              id: $item.id,
+              title: $item.title,
+              priority: $item.priority,
+              completed: !$item.completed
+            }
+          : $item
       )
     }
   }
 
-  action removeTodo(id: string) {
+  action removeTodo(id: string)
+    available when todoCount > 0
+    dispatchable when existsById(todos, id)
+  {
     onceIntent {
-      patch todos = filter(todos, neq($item.id, id))
+      patch todos = filter(todos, $item.id != id)
     }
   }
 
+  // Filter is always callable — no guard pressure here, exists as a
+  // counterpoint that "no guards" is also a legitimate shape.
   action setFilter(newFilter: "all" | "active" | "completed") {
     onceIntent {
       patch filterMode = newFilter
     }
   }
 
-  action clearCompleted() {
-    onceIntent when hasCompleted {
-      patch todos = filter(todos, not($item.completed))
+  // Coarse only: clear is unavailable (not just rejected) when
+  // there's nothing completed to clear. Surfaces as "blocked at
+  // Available" with hasCompleted == false.
+  action clearCompleted()
+    available when hasCompleted
+  {
+    onceIntent {
+      patch todos = filter(todos, !$item.completed)
+    }
+  }
+
+  // Two-layer guard with bounded growth: capacity can only be raised,
+  // never above 50, and only by a positive amount. Useful for
+  // demonstrating numeric `dispatchable` failures via the inline
+  // value substitution (`-3 (input.extra) > 0 → false`).
+  action expandCapacity(extra: number)
+    available when capacity < 50
+    dispatchable when extra > 0 && capacity + extra <= 50
+  {
+    onceIntent {
+      patch capacity = capacity + extra
     }
   }
 }
