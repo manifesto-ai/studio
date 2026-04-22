@@ -10,6 +10,7 @@ import {
   FileText,
 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -288,11 +289,17 @@ function RenameDialog({
   readonly initialName: string;
   readonly onSubmit: (name: string) => void | Promise<void>;
   readonly onCancel: () => void;
-}): JSX.Element {
+}): JSX.Element | null {
   const [name, setName] = useState(initialName);
-  return (
+  // Portal to <body> so the dialog escapes the TopBar's containing
+  // block. TopBar uses `backdrop-filter` which establishes a new
+  // containing block for descendants, trapping `position: fixed`
+  // inside the TopBar's bounding rect — the dialog would otherwise
+  // sit at the top of the screen instead of the viewport centre.
+  if (typeof document === "undefined") return null;
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-void)]/60 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-[var(--color-void)]/60 backdrop-blur-sm"
       onClick={onCancel}
     >
       <form
@@ -353,7 +360,8 @@ function RenameDialog({
           </button>
         </div>
       </form>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
