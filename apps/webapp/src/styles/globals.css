@@ -310,25 +310,60 @@
   }
 
   /* Focus pulse — Monaco whole-line decoration applied when the user
-   * lands on a graph node from outside the editor (graph click,
-   * diagnostic click). Violet wash that rises, holds, and fades out
-   * — long enough to read as a "landing indicator" rather than a
-   * flash that's gone before the eye arrives. */
+   * lands on a graph node from outside the editor. Two static layers,
+   * 1250ms total:
+   *   - a solid violet gutter bar on the left edge via inset
+   *     box-shadow (attention anchor);
+   *   - a sustained wash across the whole line (peripheral visibility,
+   *     scales cleanly to multi-line blocks because every rendered
+   *     line shows the same steady color at the same time).
+   * Fast rise, long hold, short fade — no sweep, no gradient, no
+   * motion. Reads as "landed" rather than "swept across". */
   .mf-focus-pulse {
-    animation: mf-focus-pulse 1500ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+    background-color: transparent;
+    box-shadow:
+      inset 3px 0 0 transparent,
+      0 0 0 0 transparent;
+    animation: mf-focus-pulse 1250ms cubic-bezier(0.22, 0.61, 0.36, 1)
+      forwards;
   }
   @keyframes mf-focus-pulse {
     0% {
-      background: transparent;
+      background-color: transparent;
+      box-shadow:
+        inset 3px 0 0 transparent,
+        0 0 0 0 transparent;
     }
-    14% {
-      background: color-mix(in oklch, var(--color-violet-hot) 40%, transparent);
+    /* Rise — snap into place by ~75ms. */
+    6% {
+      background-color: color-mix(
+        in oklch,
+        var(--color-violet-hot) 22%,
+        transparent
+      );
+      box-shadow:
+        inset 3px 0 0 var(--color-violet-hot),
+        0 0 10px 1px color-mix(in oklch, var(--color-violet-hot) 30%, transparent);
     }
-    55% {
-      background: color-mix(in oklch, var(--color-violet-hot) 26%, transparent);
+    /* Hold — ~800ms of stable visibility so the user can track
+     * attention into the span without chasing a moving highlight. */
+    72% {
+      background-color: color-mix(
+        in oklch,
+        var(--color-violet-hot) 22%,
+        transparent
+      );
+      box-shadow:
+        inset 3px 0 0 var(--color-violet-hot),
+        0 0 10px 1px color-mix(in oklch, var(--color-violet-hot) 26%, transparent);
     }
+    /* Release — ~350ms fade-out keeps the dismissal feeling
+     * intentional rather than abrupt. */
     100% {
-      background: transparent;
+      background-color: transparent;
+      box-shadow:
+        inset 3px 0 0 transparent,
+        0 0 0 0 transparent;
     }
   }
 }

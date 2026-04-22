@@ -88,10 +88,16 @@ export function LensPane({
   value,
   onChange,
   onRevealMarker,
+  onRevealSourceSpan,
 }: {
   readonly value: LensId;
   readonly onChange: (next: LensId) => void;
   readonly onRevealMarker: (marker: Marker) => void;
+  /**
+   * Forwarded to InteractionEditor so the legality ladder's "↗
+   * source" button can scroll Monaco to the failing action's span.
+   */
+  readonly onRevealSourceSpan?: (line: number, column: number) => void;
 }): JSX.Element {
   const active = LENSES.find((l) => l.id === value) ?? LENSES[0];
 
@@ -205,6 +211,7 @@ export function LensPane({
                       origin: "interact",
                     })
                   }
+                  onRevealSourceSpan={onRevealSourceSpan}
                 />
               </div>
               {value === "snapshot" ? <SnapshotTree focus={snapshotFocus} /> : null}

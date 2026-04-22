@@ -92,10 +92,19 @@ describe("IntentLadder — blocked at available (step 1)", () => {
     expect(step1).not.toBeNull();
     expect(step1.dataset.status).toBe("blocked-here");
 
-    // Steps 2..5: visible, but demoted.
+    // Steps 2..5 are collapsed under a footer by default — clicking
+    // it should reveal them as demoted (the "demoted not hidden"
+    // contract still holds; collapse is a UX layer on top).
+    const footer = container.querySelector(
+      '[data-testid="ladder-pending-footer"]',
+    ) as HTMLElement;
+    expect(footer, "pending footer must be visible").not.toBeNull();
+    act(() => {
+      footer.click();
+    });
     for (const id of ["input-valid", "dispatchable", "simulated", "admitted"]) {
       const el = container.querySelector(`[data-testid="ladder-step-${id}"]`) as HTMLElement;
-      expect(el, `step ${id} must be visible (not hidden)`).not.toBeNull();
+      expect(el, `step ${id} must be visible after expand`).not.toBeNull();
       expect(el.dataset.status).toBe("not-yet-evaluated");
     }
 
@@ -112,8 +121,8 @@ describe("IntentLadder — blocked at available (step 1)", () => {
     const { container, cleanup } = mount(<IntentLadder state={state} />);
     const step1 = container.querySelector('[data-testid="ladder-step-available"]');
     const text = step1?.textContent ?? "";
-    expect(text).toMatch(/호출 가능한 표면/);
-    expect(text).not.toMatch(/비활성|disabled/i);
+    expect(text).toMatch(/callable surface/i);
+    expect(text).not.toMatch(/disabled/i);
     cleanup();
   });
 
@@ -153,6 +162,15 @@ describe("IntentLadder — blocked at dispatchable (step 3)", () => {
     expect(
       (container.querySelector('[data-testid="ladder-step-dispatchable"]') as HTMLElement).dataset.status,
     ).toBe("blocked-here");
+    // Steps 4-5 are collapsed by default; expand the footer to see
+    // their demoted state.
+    const footer = container.querySelector(
+      '[data-testid="ladder-pending-footer"]',
+    ) as HTMLElement;
+    expect(footer).not.toBeNull();
+    act(() => {
+      footer.click();
+    });
     expect(
       (container.querySelector('[data-testid="ladder-step-simulated"]') as HTMLElement).dataset.status,
     ).toBe("not-yet-evaluated");
@@ -171,7 +189,7 @@ describe("IntentLadder — blocked at dispatchable (step 3)", () => {
     });
     const { container, cleanup } = mount(<IntentLadder state={state} />);
     const text = container.querySelector('[data-testid="ladder-step-dispatchable"]')?.textContent ?? "";
-    expect(text).toMatch(/특정 intent|다른 입력/);
+    expect(text).toMatch(/specific intent|different input/i);
     cleanup();
   });
 
@@ -186,7 +204,7 @@ describe("IntentLadder — blocked at dispatchable (step 3)", () => {
     const hint = container.querySelector('[data-testid="ladder-hint-dispatchable"]');
     expect(hint).not.toBeNull();
     expect(hint?.textContent ?? "").toMatch(/cellStatus/);
-    expect(hint?.textContent ?? "").toMatch(/통과합니다/);
+    expect(hint?.textContent ?? "").toMatch(/Passes when/i);
     cleanup();
   });
 });

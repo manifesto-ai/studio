@@ -114,9 +114,9 @@ describe("deriveLadderState — step 1: coarse availability", () => {
     const state = deriveLadderState(
       base({ explanation: blockedUnavailable([blocker("available")]) }),
     );
-    expect(state.steps[0].narrative).toMatch(/호출 가능한 표면/);
+    expect(state.steps[0].narrative).toMatch(/callable surface/i);
     // Rule L2: must NOT frame as disabled.
-    expect(state.steps[0].narrative ?? "").not.toMatch(/비활성|disabled/i);
+    expect(state.steps[0].narrative ?? "").not.toMatch(/disabled/i);
   });
 });
 
@@ -135,7 +135,7 @@ describe("deriveLadderState — step 2: input validation", () => {
 
   it("narrative for `input-valid` failure mentions dispatchability is only evaluated next", () => {
     const state = deriveLadderState(base({ inputInvalid: true }));
-    expect(state.steps[1].narrative ?? "").toMatch(/입력|Dispatchable|후에/);
+    expect(state.steps[1].narrative ?? "").toMatch(/input|Dispatchability|after/i);
   });
 });
 
@@ -157,7 +157,7 @@ describe("deriveLadderState — step 3: dispatchability", () => {
     const state = deriveLadderState(
       base({ explanation: blockedDispatchable([blocker("dispatchable")]) }),
     );
-    expect(state.steps[2].narrative ?? "").toMatch(/특정 intent|다른 입력/);
+    expect(state.steps[2].narrative ?? "").toMatch(/specific intent|different input/i);
   });
 
   it("blockers at step 3 do NOT contain blockers from step 1 (Rule L1 — no cross-layer mixing)", () => {

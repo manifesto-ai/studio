@@ -122,10 +122,10 @@ function DeterminismIndicator({
   // being reproducible against the current snapshot.
   const explanation =
     status === "ok"
-      ? "MEL은 비-튜링 완전 언어입니다. 현 스냅샷에 대한 가용성·디스패치가능성·시뮬레이션 판정은 모두 정적으로 결정되며 재현 가능합니다."
+      ? "MEL is non-Turing-complete. Availability, dispatchability, and simulation verdicts against the current snapshot are statically determined and reproducible."
       : status === "err"
-        ? "컴파일러가 오류를 보고했습니다. 합법성 판정은 오류가 해결되기 전까지 유효하지 않습니다."
-        : "아직 빌드된 모듈이 없습니다. 소스를 빌드하면 결정적 판정이 가능해집니다.";
+        ? "The compiler reported errors. Legality verdicts are not valid until the errors are resolved."
+        : "No module has been built yet. Build the source to enable deterministic verdicts.";
   return (
     <TooltipProvider delayDuration={250}>
       <Tooltip>

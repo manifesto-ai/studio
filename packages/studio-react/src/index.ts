@@ -6,9 +6,12 @@ export {
   type DispatchDiff,
   type DispatchHistoryEntry,
   type SimulationPlayback,
-  type SimulationPlaybackEvent,
   type SimulationPlaybackMode,
   type SimulationPlaybackSource,
+  type SimulationSession,
+  type SimulationSessionOrigin,
+  type EnterSimulationInput,
+  type SimulationExitReason,
 } from "./StudioProvider.js";
 
 export {
@@ -102,6 +105,7 @@ export {
 export {
   IntentLadder,
   type IntentLadderProps,
+  type RefResolver,
 } from "./InteractionEditor/IntentLadder.js";
 export {
   deriveLadderState,

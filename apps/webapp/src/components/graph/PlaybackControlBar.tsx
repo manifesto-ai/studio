@@ -1,5 +1,5 @@
 import { motion } from "motion/react";
-import { Pause, Play, RotateCcw, SkipBack, SkipForward } from "lucide-react";
+import { Pause, Play, RotateCcw, SkipBack, SkipForward, X } from "lucide-react";
 import type { GraphModel } from "@manifesto-ai/studio-react";
 import { cn } from "@/lib/cn";
 import type { SimulationPlaybackController } from "./useSimulationPlayback";
@@ -20,9 +20,17 @@ import type { SimulationPlaybackController } from "./useSimulationPlayback";
 export function PlaybackControlBar({
   controller,
   model,
+  onExit,
 }: {
   readonly controller: SimulationPlaybackController;
   readonly model: GraphModel;
+  /**
+   * Called when the user dismisses the simulation session via the ×
+   * button or the Escape hotkey. Host apps wire this to their
+   * `exitSimulation` context action so the bar and the simulation's
+   * visual layer go away together.
+   */
+  readonly onExit?: () => void;
 }): JSX.Element | null {
   const {
     status,
@@ -152,6 +160,11 @@ export function PlaybackControlBar({
           <CtrlBtn label="Reset" onClick={reset}>
             <RotateCcw className="h-[13px] w-[13px]" />
           </CtrlBtn>
+          {onExit !== undefined ? (
+            <CtrlBtn label="Exit simulation" onClick={onExit}>
+              <X className="h-[13px] w-[13px]" />
+            </CtrlBtn>
+          ) : null}
         </span>
       </div>
 

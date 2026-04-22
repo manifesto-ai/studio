@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import { COLORS, FONT_STACK, MONO_STACK } from "../style-tokens.js";
 import type {
   IntentExplanation,
@@ -30,6 +30,7 @@ export function SimulatePreview({
   dispatchResult = null,
   stale = false,
 }: SimulatePreviewProps): JSX.Element | null {
+  const [expanded, setExpanded] = useState(false);
   if (stale) return null;
   const insight = buildInsight({
     beforeSnapshot,
@@ -38,6 +39,44 @@ export function SimulatePreview({
     dispatchResult,
   });
   if (insight === null) return null;
+
+  // Collapse to a one-liner when the intent is blocked AND there's no
+  // simulate / dispatch payload to show. The full sections in this
+  // state are all "(no projected change)" / "(no availability change)"
+  // / "(no host effects)" — the actual blocker info already lives in
+  // the ladder above. The user can still expand if they want the
+  // explicit pills.
+  const isBlockedNoData =
+    insight.tone === "err" &&
+    result === null &&
+    dispatchResult === null &&
+    insight.changedPaths.length === 0 &&
+    insight.unlocked.length === 0 &&
+    insight.locked.length === 0 &&
+    insight.requirements.length === 0;
+
+  if (isBlockedNoData && !expanded) {
+    return (
+      <div style={collapsedRootStyle} data-testid="intent-insight">
+        <span style={dotStyle(insight.tone)} />
+        <span style={{ fontWeight: 600 }}>Intent Insight</span>
+        <span style={statusLabelStyle(insight.tone)}>
+          {insight.outcomeLabel}
+        </span>
+        <span style={{ marginLeft: "auto", color: COLORS.muted, fontSize: 10.5 }}>
+          {insight.outcomeSummary}
+        </span>
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          style={collapsedExpandBtnStyle}
+          aria-label="Expand intent insight"
+        >
+          details
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div style={rootStyle} data-testid="intent-insight">
@@ -49,6 +88,16 @@ export function SimulatePreview({
           {insight.changedPaths.length} path
           {insight.changedPaths.length === 1 ? "" : "s"}
         </span>
+        {isBlockedNoData ? (
+          <button
+            type="button"
+            onClick={() => setExpanded(false)}
+            style={collapsedExpandBtnStyle}
+            aria-label="Collapse intent insight"
+          >
+            collapse
+          </button>
+        ) : null}
       </header>
 
       <Section title="Legality">
@@ -541,4 +590,29 @@ const emptyHintStyle: CSSProperties = {
   fontSize: 11,
   color: COLORS.muted,
   fontStyle: "italic",
+};
+
+const collapsedRootStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "8px 12px",
+  background: COLORS.panel,
+  border: `1px solid ${COLORS.line}`,
+  borderRadius: 6,
+  fontFamily: FONT_STACK,
+  fontSize: 12,
+  color: COLORS.text,
+};
+
+const collapsedExpandBtnStyle: CSSProperties = {
+  marginLeft: 4,
+  padding: "2px 8px",
+  fontSize: 10.5,
+  fontFamily: FONT_STACK,
+  color: COLORS.muted,
+  background: "transparent",
+  border: `1px solid ${COLORS.line}`,
+  borderRadius: 3,
+  cursor: "pointer",
 };

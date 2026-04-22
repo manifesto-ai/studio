@@ -31,7 +31,7 @@ export function FocusSync({
  *
  * Focus → Source (when origin ∈ {"graph", "diagnostic"}): reveal the
  *   node's span in Monaco, add a whole-line Decoration with the
- *   `mf-focus-pulse` class for ~700ms, then clear it. We skip this for
+ *   `mf-focus-pulse` class for ~1.25s, then clear it. We skip this for
  *   origin="source" to avoid re-centering the viewport on every keystroke.
  *
  * Graph model is computed here (not shared with ObservatoryPane) — the
@@ -80,29 +80,67 @@ export function useFocusSync(
   // Key insight: we only run this for focus.origin ∈ {"graph","diagnostic"}.
   // For origin="source" the cursor is already there — re-revealing would
   // yank the viewport every keystroke.
-  const lastRevealedIdRef = useRef<string | null>(null);
+  //
+  // Decoration lifecycle is tracked in a ref, NOT via React effect
+  // cleanup. Reason: calling `editor.setPosition` from inside the
+  // effect fires Monaco's cursor-change event, which after the 150ms
+  // source→focus debouncer re-publishes the focus with
+  // origin="source". React sees that as a dep change and runs the
+  // effect's cleanup — which, if it owned the deco, would tear it
+  // down ~150ms into a 2000ms animation. The symptom was a full-slow
+  // pulse on same-node / no-cursor-move cases and a truncated flash
+  // on every different-node click. Managing the deco + timer in a
+  // ref lets the cursor echo bounce harmlessly through the origin
+  // guard without affecting the pulse in flight.
+  const activePulseRef = useRef<{
+    readonly nodeId: string;
+    readonly collection: monaco.editor.IEditorDecorationsCollection;
+    readonly timer: number;
+  } | null>(null);
+
+  const clearActivePulse = (): void => {
+    const active = activePulseRef.current;
+    if (active === null) return;
+    window.clearTimeout(active.timer);
+    active.collection.clear();
+    activePulseRef.current = null;
+  };
+
   useEffect(() => {
     if (editor === null) return;
     if (focus === null || focus.kind !== "node") {
-      lastRevealedIdRef.current = null;
+      // Focus cleared (background click, schema rebuild, etc.) —
+      // cancel any pulse in flight so the user sees the deselection.
+      clearActivePulse();
       return;
     }
-    if (focus.origin === "source") return;
-    // Dedupe: if the same node is re-focused from the graph, don't
-    // re-pulse. The user will perceive a second click as "I already see
-    // this" rather than "flash it again."
-    if (lastRevealedIdRef.current === focus.id) return;
-    lastRevealedIdRef.current = focus.id;
+    if (focus.origin === "source") {
+      // Cursor moved, not a new selection. Leave any active pulse
+      // alone so its animation finishes.
+      return;
+    }
+    // Same-node re-click dedupes: an existing pulse keeps playing.
+    if (
+      activePulseRef.current !== null &&
+      activePulseRef.current.nodeId === focus.id
+    ) {
+      return;
+    }
 
     const node = graphModel?.nodes.find((n) => n.id === focus.id) ?? null;
     if (node === null || node.sourceSpan === null) return;
     const span = node.sourceSpan;
 
+    // Tear down any previous pulse (different node, animation still
+    // in flight) before starting the new one.
+    clearActivePulse();
+
     editor.revealLineInCenterIfOutsideViewport(span.start.line);
     // Move the cursor to the span start so subsequent keyboard edits
-    // happen at a sensible place. `setPosition` fires onDidChangeCursor
-    // which would normally bounce focus back as origin="source", but
-    // our dedupe guard on the source→focus side swallows the echo.
+    // happen at a sensible place. `setPosition` fires
+    // onDidChangeCursor which would normally bounce focus back as
+    // origin="source"; the `focus.origin === "source"` early-return
+    // above swallows that echo without disturbing the pulse.
     editor.setPosition({
       lineNumber: span.start.line,
       column: span.start.column,
@@ -122,14 +160,24 @@ export function useFocusSync(
         },
       },
     ]);
-    // Matches the 1500ms keyframe animation + a small buffer so the
-    // decoration stays alive until the pulse finishes rendering.
-    const timer = window.setTimeout(() => collection.clear(), 1600);
-    return () => {
-      window.clearTimeout(timer);
-      collection.clear();
-    };
+    // 1250ms keyframe animation + a small buffer so the decoration
+    // stays alive until the pulse finishes rendering.
+    const timer = window.setTimeout(() => {
+      if (activePulseRef.current?.timer === timer) {
+        activePulseRef.current.collection.clear();
+        activePulseRef.current = null;
+      }
+    }, 1350);
+    activePulseRef.current = { nodeId: focus.id, collection, timer };
   }, [editor, focus, graphModel]);
+
+  // Tear down any lingering pulse on unmount.
+  useEffect(() => {
+    return () => {
+      clearActivePulse();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 }
 
 function findNodeAtPosition(

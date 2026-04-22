@@ -277,7 +277,22 @@ type ActionCardProps = {
   readonly id: string;
   readonly name: string;
   readonly argLabel: string;
-  readonly dispatchable: boolean | null;
+  /**
+   * Three-state surface readiness for the action:
+   *  - `ready`    available + default-input intent dispatchable
+   *  - `input`    available, but `dispatchable when` rejects the
+   *               default-input intent. Real input may still pass —
+   *               we surface this as "needs input" rather than
+   *               "blocked" so the card doesn't lie about an action
+   *               like `set(value: number) dispatchable when value > 0`
+   *               that's perfectly callable with a positive value.
+   *  - `blocked`  `available when` itself fails — action isn't
+   *               reachable in the current snapshot regardless of
+   *               input. `blockerCount` carries the count of
+   *               available-layer blockers from `whyNot`.
+   *  - `unknown`  no module / dispatch disabled (e.g. time scrubbing).
+   */
+  readonly actionStatus: "ready" | "input" | "blocked" | "unknown";
   readonly blockerCount: number;
   readonly rect: Rect;
   readonly highlighted: boolean;
@@ -288,24 +303,24 @@ type ActionCardProps = {
 };
 
 function ActionCardImpl(props: ActionCardProps): JSX.Element {
-  const status =
-    props.dispatchable === null
-      ? "unknown"
-      : props.dispatchable
-        ? "ready"
-        : "blocked";
   const statusColor =
-    status === "ready"
+    props.actionStatus === "ready"
       ? "var(--color-sig-determ)"
-      : status === "blocked"
+      : props.actionStatus === "blocked"
         ? "var(--color-err)"
-        : "var(--color-ink-mute)";
+        : props.actionStatus === "input"
+          ? "var(--color-warn)"
+          : "var(--color-ink-mute)";
   const statusLabel =
-    status === "ready"
-      ? "dispatchable"
-      : status === "blocked"
-        ? `${props.blockerCount} blocker${props.blockerCount === 1 ? "" : "s"}`
-        : "—";
+    props.actionStatus === "ready"
+      ? "ready"
+      : props.actionStatus === "blocked"
+        ? props.blockerCount > 0
+          ? `${props.blockerCount} blocker${props.blockerCount === 1 ? "" : "s"}`
+          : "blocked"
+        : props.actionStatus === "input"
+          ? "needs input"
+          : "—";
 
   return (
     <CardShell

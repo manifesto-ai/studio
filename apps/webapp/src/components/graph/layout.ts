@@ -405,115 +405,136 @@ export function computeFocusLayout(
   if (focus === undefined) {
     return computeLayout(model, containerWidth, containerHeight);
   }
-  const others = model.nodes.filter((n) => n.id !== focusNodeId);
-  const topActions = others.filter((n) => n.kind === "action");
-  const leftStates = others.filter((n) => n.kind === "state");
-  const rightComputeds = others.filter((n) => n.kind === "computed");
 
-  // Adaptive canvas — grow with neighbour count so cards never overlap
-  // even when a single focus has many connections. The camera fit pass
-  // downstream (LiveGraph) zooms the canvas into the viewport, and
-  // semantic zoom collapses card detail at low k, so "big canvas +
-  // zoomed out" is a clean read rather than an overflow.
+  // Three-column layout in causal flow order, reading left to right:
+  //
+  //   actions (left)   →   state (centre)   →   computed (right)
+  //
+  // Rationale: an action's intent is the *cause*, a patch on state is
+  // the *effect*, and computed fields are the *derived consequence*.
+  // Aligning the columns to that flow makes the edge direction feel
+  // obvious rather than requiring the reader to mentally rotate an
+  // L-shape. The focus card stays in its own kind's column at the
+  // vertical centre of that column; its glow + scale keep it
+  // unmistakable regardless of geometric position, and the downstream
+  // camera fit zooms the whole bounding box into the viewport so
+  // everything is visible.
+  const actions = model.nodes.filter((n) => n.kind === "action");
+  const states = model.nodes.filter((n) => n.kind === "state");
+  const computeds = model.nodes.filter((n) => n.kind === "computed");
+
+  // Adaptive canvas — grow with the neighbour count on any column so
+  // cards never overlap even when a single focus has many connections.
   const stackHeight = (count: number): number =>
     count === 0 ? 0 : count * CARD_HEIGHT + (count - 1) * GAP;
-  const stripWidth = (count: number): number =>
-    count === 0 ? 0 : count * CARD_WIDTH + (count - 1) * GAP;
 
-  // Column offset from canvas centre: columns sit OUTSIDE the top
-  // strip's X footprint so actions don't hover over state/computed
-  // cards. Baseline keeps columns close to the focus when there are
-  // few actions; for wide strips the offset grows so columns end up
-  // clear of the strip's edges.
-  const topStripW = stripWidth(topActions.length);
   const columnMargin = GAP * 3;
-  const colCenterOffset = Math.max(
-    CARD_WIDTH + columnMargin,
-    topStripW / 2 + CARD_WIDTH / 2 + columnMargin,
-  );
+  // Centre-to-centre distance between adjacent columns. One card width
+  // plus a visible gutter so edges between columns route cleanly.
+  const colSpacing = CARD_WIDTH + columnMargin;
 
-  // Top strip height sits above the focus card; it doesn't compete
-  // with the flanking columns on Y any more, so verticalNeed only
-  // needs to accommodate the taller column stack plus the strip.
-  const topStripH =
-    topActions.length > 0 ? CARD_HEIGHT + columnMargin : 0;
-  const columnStackH = Math.max(
-    stackHeight(leftStates.length),
-    stackHeight(rightComputeds.length),
-    CARD_HEIGHT, // focus card itself
+  const maxStackH = Math.max(
+    stackHeight(actions.length),
+    stackHeight(states.length),
+    stackHeight(computeds.length),
+    CARD_HEIGHT,
   );
-  const verticalNeed =
-    ZONE_MARGIN * 2 + topStripH + columnStackH + columnMargin;
-
-  // Canvas must fit focus + both columns + outside margins.
+  const verticalNeed = ZONE_MARGIN * 2 + maxStackH;
   const horizontalNeed =
-    ZONE_MARGIN * 2 +
-    CARD_WIDTH + // the widest column card
-    (colCenterOffset + CARD_WIDTH / 2) * 2;
+    ZONE_MARGIN * 2 + CARD_WIDTH + colSpacing * 2;
 
   const W = Math.max(containerWidth, horizontalNeed);
   const H = Math.max(containerHeight, verticalNeed);
   const cx = W / 2;
   const cy = H / 2;
-  const focusX = cx - CARD_WIDTH / 2;
-  const focusY = cy - CARD_HEIGHT / 2;
+
+  // Column x (card left edge). Middle column is centred on cx.
+  const middleColX = cx - CARD_WIDTH / 2;
+  const leftColX = middleColX - colSpacing;
+  const rightColX = middleColX + colSpacing;
 
   const bounds = new Map<GraphNode["id"], Rect>();
-  bounds.set(focus.id, {
-    x: focusX,
-    y: focusY,
-    width: CARD_WIDTH,
-    height: CARD_HEIGHT,
-  });
 
-  // Left column — state neighbours. Placed outside the top strip's X
-  // range (colCenterOffset guarantees no horizontal overlap with
-  // actions), so the strip can sweep across without sitting atop the
-  // state cards.
-  const leftColX = cx - colCenterOffset - CARD_WIDTH / 2;
-  const leftHeight = stackHeight(leftStates.length);
-  const leftStartY = cy - leftHeight / 2;
-  leftStates.forEach((n, i) => {
-    bounds.set(n.id, {
-      x: leftColX,
-      y: leftStartY + i * (CARD_HEIGHT + GAP),
-      width: CARD_WIDTH,
-      height: CARD_HEIGHT,
-    });
-  });
+  // Place a kind's cards into its column. If the focus belongs to this
+  // kind, pin it to the centre of the column and stack the remaining
+  // neighbours symmetrically above + below, preserving input order.
+  const placeColumn = (kind: GraphNode["kind"], colX: number): void => {
+    const column = kind === "action" ? actions : kind === "state" ? states : computeds;
+    if (column.length === 0) return;
+    const focusIndexInColumn =
+      focus.kind === kind ? column.findIndex((n) => n.id === focus.id) : -1;
 
-  // Right column — computed neighbours. Mirrors the left column.
-  const rightColX = cx + colCenterOffset - CARD_WIDTH / 2;
-  const rightHeight = stackHeight(rightComputeds.length);
-  const rightStartY = cy - rightHeight / 2;
-  rightComputeds.forEach((n, i) => {
-    bounds.set(n.id, {
-      x: rightColX,
-      y: rightStartY + i * (CARD_HEIGHT + GAP),
-      width: CARD_WIDTH,
-      height: CARD_HEIGHT,
-    });
-  });
+    if (focusIndexInColumn >= 0) {
+      // Focus in this column — it sits at cy, neighbours stack
+      // symmetrically around it. Preserve the source order: nodes
+      // before the focus go above, nodes after go below.
+      const above = column.slice(0, focusIndexInColumn);
+      const below = column.slice(focusIndexInColumn + 1);
+      bounds.set(focus.id, {
+        x: colX,
+        y: cy - CARD_HEIGHT / 2,
+        width: CARD_WIDTH,
+        height: CARD_HEIGHT,
+      });
+      // Above: walk outward from the focus, using negative y delta.
+      above.forEach((n, i) => {
+        const distance = above.length - i; // 1 = just above focus
+        bounds.set(n.id, {
+          x: colX,
+          y: cy - CARD_HEIGHT / 2 - distance * (CARD_HEIGHT + GAP),
+          width: CARD_WIDTH,
+          height: CARD_HEIGHT,
+        });
+      });
+      below.forEach((n, i) => {
+        bounds.set(n.id, {
+          x: colX,
+          y: cy + CARD_HEIGHT / 2 + GAP + i * (CARD_HEIGHT + GAP),
+          width: CARD_WIDTH,
+          height: CARD_HEIGHT,
+        });
+      });
+    } else {
+      // No focus in this column — centre the whole stack on cy.
+      const totalH = stackHeight(column.length);
+      const startY = cy - totalH / 2;
+      column.forEach((n, i) => {
+        bounds.set(n.id, {
+          x: colX,
+          y: startY + i * (CARD_HEIGHT + GAP),
+          width: CARD_WIDTH,
+          height: CARD_HEIGHT,
+        });
+      });
+    }
+  };
 
-  // Top strip — action neighbours, centered above the focus card.
-  // Strip width is contained by `colCenterOffset` so the edges of
-  // the strip can reach toward (but not cover) the column cards.
-  const topStartX = cx - topStripW / 2;
-  const topY = Math.max(ZONE_MARGIN, focusY - CARD_HEIGHT - columnMargin);
-  topActions.forEach((n, i) => {
-    bounds.set(n.id, {
-      x: topStartX + i * (CARD_WIDTH + GAP),
-      y: topY,
-      width: CARD_WIDTH,
-      height: CARD_HEIGHT,
-    });
-  });
+  placeColumn("action", leftColX);
+  placeColumn("state", middleColX);
+  placeColumn("computed", rightColX);
 
   let maxX = W;
   let maxY = H;
+  let minY = 0;
   for (const rect of bounds.values()) {
     maxX = Math.max(maxX, rect.x + rect.width + ZONE_MARGIN);
     maxY = Math.max(maxY, rect.y + rect.height + ZONE_MARGIN);
+    minY = Math.min(minY, rect.y - ZONE_MARGIN);
+  }
+  // If any card ended up above y=0 (focus + tall stack pushing the
+  // topmost card into negative space), shift everything down so the
+  // whole layout sits inside the positive canvas.
+  if (minY < 0) {
+    const shift = -minY;
+    for (const [id, rect] of bounds) {
+      bounds.set(id, {
+        x: rect.x,
+        y: rect.y + shift,
+        width: rect.width,
+        height: rect.height,
+      });
+    }
+    maxY += shift;
   }
   return { bounds, canvasWidth: maxX, canvasHeight: maxY };
 }

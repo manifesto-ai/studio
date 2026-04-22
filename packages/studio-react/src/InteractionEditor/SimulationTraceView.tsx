@@ -30,32 +30,35 @@ export function SimulationTraceView({
   defaultOpen = false,
   playbackSource = null,
 }: SimulationTraceViewProps): JSX.Element {
-  const { publishSimulationPlayback } = useStudio();
+  const { enterSimulation } = useStudio();
   const [open, setOpen] = useState(defaultOpen);
   const nodeCount = useMemo(() => countTraceNodes(trace), [trace]);
   const compact = density === "compact";
   const replayEnabled = playbackSource !== null;
   const replayAll = useCallback(() => {
     if (playbackSource === null) return;
-    publishSimulationPlayback({
-      actionName: trace.intent.type,
+    enterSimulation({
+      origin: { kind: "simulate-button", actionName: trace.intent.type },
       trace,
       source: playbackSource,
       mode: "sequence",
     });
-  }, [playbackSource, publishSimulationPlayback, trace]);
+  }, [playbackSource, enterSimulation, trace]);
   const replayNode = useCallback(
     (node: SimulationTraceNode) => {
       if (playbackSource === null) return;
-      publishSimulationPlayback({
-        actionName: trace.intent.type,
+      enterSimulation({
+        origin: {
+          kind: "trace-node",
+          actionName: trace.intent.type,
+          traceNodeId: node.id,
+        },
         trace,
         source: playbackSource,
         mode: "step",
-        traceNodeId: node.id,
       });
     },
-    [playbackSource, publishSimulationPlayback, trace],
+    [playbackSource, enterSimulation, trace],
   );
 
   return (

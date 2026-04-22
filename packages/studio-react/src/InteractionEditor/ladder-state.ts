@@ -167,7 +167,7 @@ export function deriveLadderState(inputs: LadderInputs): LadderState {
       status: "blocked-here",
       blockers: explanation.blockers,
       narrative:
-        "이 액션은 지금 호출 가능한 표면에 존재하지 않습니다. 아래 가드 조건이 만족되는 상태가 되어야 표면에 나타납니다.",
+        "This action is not present on the callable surface right now. It will appear once the guard conditions below are satisfied.",
     };
     const steps = [
       step1,
@@ -192,7 +192,7 @@ export function deriveLadderState(inputs: LadderInputs): LadderState {
       label: STEP_LABELS["input-valid"],
       status: "blocked-here",
       narrative:
-        "입력이 액션 파라미터 스키마를 만족하지 않습니다. Dispatchable 여부는 입력이 유효해진 후에만 평가됩니다.",
+        "Input does not satisfy the action's parameter schema. Dispatchability is only evaluated after the input becomes valid.",
     };
     const steps = [
       step1,
@@ -221,7 +221,7 @@ export function deriveLadderState(inputs: LadderInputs): LadderState {
       status: "blocked-here",
       blockers: explanation.blockers,
       narrative:
-        "이 특정 intent가 거절됩니다. 동일 액션은 다른 입력으로 여전히 호출 가능합니다.",
+        "This specific intent is rejected. The same action may still be callable with different input.",
     };
     const steps = [
       step1,

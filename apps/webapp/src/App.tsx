@@ -159,19 +159,22 @@ function AppShell(): JSX.Element {
     return () => disp.dispose();
   }, [editor, scheduleAutosave]);
 
-  const revealSpan = (line: number, column: number): void => {
-    if (editor === null) return;
-    const l = Math.max(1, line);
-    const c = Math.max(1, column);
-    editor.revealLineInCenterIfOutsideViewport(l);
-    editor.setPosition({ lineNumber: l, column: c });
-    editor.focus();
-  };
+  const revealSpan = useCallback(
+    (line: number, column: number): void => {
+      if (editor === null) return;
+      const l = Math.max(1, line);
+      const c = Math.max(1, column);
+      editor.revealLineInCenterIfOutsideViewport(l);
+      editor.setPosition({ lineNumber: l, column: c });
+      editor.focus();
+    },
+    [editor],
+  );
   const revealMarker = useCallback(
     (marker: Marker): void => {
       revealSpan(marker.span.start.line, marker.span.start.column);
     },
-    [editor],
+    [revealSpan],
   );
 
   const mainRef = useRef<HTMLDivElement | null>(null);
@@ -268,6 +271,7 @@ function AppShell(): JSX.Element {
               value={lens}
               onChange={setLens}
               onRevealMarker={revealMarker}
+              onRevealSourceSpan={revealSpan}
             />
           </div>
         </main>

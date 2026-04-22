@@ -113,12 +113,13 @@ const optionalSource = `domain OptionalInput {
 }`;
 
 function SimulationPlaybackProbe(): JSX.Element {
-  const { simulationPlayback } = useStudio();
+  const { simulation } = useStudio();
+  const playback = simulation?.playback ?? null;
   return (
     <output hidden data-testid="simulation-playback-probe">
-      {simulationPlayback === null
+      {playback === null
         ? ""
-        : `${simulationPlayback.generation}:${simulationPlayback.source}:${simulationPlayback.mode}:${simulationPlayback.actionName}:${simulationPlayback.traceNodeId ?? ""}`}
+        : `${playback.generation}:${playback.source}:${playback.mode}:${playback.actionName}:${playback.traceNodeId ?? ""}`}
     </output>
   );
 }
