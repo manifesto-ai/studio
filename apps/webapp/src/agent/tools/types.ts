@@ -25,7 +25,21 @@
  * a test stub can mock the minimum surface. See `./legality.ts` for
  * the first example.
  */
-import type { ToolSpec } from "../provider/types.js";
+/**
+ * JSON-schema shape advertised to the LLM. Mirrors the OpenAI
+ * function-tool payload so the AI SDK's `tool()` factory can accept
+ * it directly. Kept here (not imported from a provider module)
+ * because the provider layer moved to the Vercel AI SDK and we no
+ * longer maintain our own transport types.
+ */
+export type ToolSpec = {
+  readonly type: "function";
+  readonly function: {
+    readonly name: string;
+    readonly description: string;
+    readonly parameters: Record<string, unknown>;
+  };
+};
 
 /**
  * A JSON-shaped result from a tool run. We allow the loose shape

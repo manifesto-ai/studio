@@ -18,6 +18,7 @@ import {
   registerMelLanguage,
 } from "@manifesto-ai/studio-adapter-monaco";
 import { StudioHotkeys, StudioProvider } from "@manifesto-ai/studio-react";
+import { Analytics } from "@vercel/analytics/react";
 import { StudioUiProvider, useStudioUi } from "@/domain/StudioUiRuntime";
 
 import { TopBar } from "@/components/chrome/TopBar";
@@ -53,6 +54,10 @@ export function App(): JSX.Element {
   return (
     <ProjectsProvider>
       <AppShell />
+      {/* Vercel Analytics — ships a tiny <script> that batches
+        * page / route telemetry. Respects the user's Do-Not-Track.
+        * No-op in non-Vercel environments. */}
+      <Analytics />
     </ProjectsProvider>
   );
 }

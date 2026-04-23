@@ -1,40 +1,47 @@
 /**
- * AgentLens — the 6th LensPane tab. Phase α agent surface, rebuilt
- * around the taskflow pattern (see `docs/studio-agent-roadmap.md`
- * and `taskflow/docs/ARCHITECTURE.md`):
+ * AgentLens — post-Vercel-AI-SDK-migration.
  *
- *   - A fat, Manifesto-native context is rebuilt every turn: MEL
- *     source + snapshot + availability list go straight into the
- *     system prompt. The model does not discover the domain through
- *     tool calls.
- *   - Writes go through one generic `dispatch` tool — the runtime's
- *     own legality gates remain authoritative, so we don't need per-
- *     action tools or a cached "allowed list" in the prompt.
- *   - `explainLegality` stays as an explain-only aux tool for "why
- *     is X blocked?" questions.
+ * Transport: browser ⇄ `/api/agent/chat` ⇄ Vercel AI Gateway. The
+ * server handler streams `toUIMessageStreamResponse()` back; `useChat`
+ * consumes it and manages the message list.
  *
- * Import discipline: this file is allowed to use React + webapp
- * aliases. Everything under `../agents/`, `../tools/`, `../session/`
- * remains React-free (see `../__tests__/import-boundaries.test.ts`).
+ * Tool execution: client-side. `onToolCall` dispatches the model's
+ * tool calls against our local `ToolRegistry` (which wraps the live
+ * Manifesto runtime) and resolves with the result. AI SDK then
+ * auto-resubmits via `sendAutomaticallyWhen` so the model can
+ * observe the tool result and continue reasoning.
+ *
+ * Message shape: each `UIMessage.parts[]` entry is either:
+ *   - `{type: "text", text}` — assistant/user prose
+ *   - `{type: "tool-<name>", state, input, output?}` — tool invocation
+ *   - `{type: "reasoning", text}` — thinking tokens (for capable models)
+ *
+ * The UI walks these parts in order so a single assistant turn can
+ * interleave "think → call → explain → call → conclude" naturally.
+ *
+ * Styling stays true to the earlier Manifesto-flavored pass:
+ *   - Hairline status strip (model name, clear button).
+ *   - User bubbles right-aligned in violet-hot.
+ *   - Assistant blocks prefixed by a 2px violet accent bar.
+ *   - Tool rows as `▸ toolName { args } → ok/error`, channel-colored.
+ *   - Reasoning as muted italic monospace, collapsible.
  */
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStudio } from "@manifesto-ai/studio-react";
 import type { EditorAdapter, StudioCore } from "@manifesto-ai/studio-core";
 import { useStudioUi } from "@/domain/StudioUiRuntime";
 import {
-  createOllamaProvider,
-  probeOllama,
-  readOllamaConfigFromEnv,
-  type OllamaConfig,
-} from "../provider/ollama.js";
-import { LlmProviderError, type LlmProvider } from "../provider/types.js";
+  useChat,
+  type UseChatHelpers,
+} from "@ai-sdk/react";
+import {
+  DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithToolCalls,
+  type UIMessage,
+  type UIMessagePart,
+  type UIDataTypes,
+  type UITools,
+} from "ai";
 import {
   bindTool,
   createToolRegistry,
@@ -71,6 +78,14 @@ import {
   type InspectAvailabilityContext,
 } from "../tools/inspect-availability.js";
 import {
+  createGenerateMockTool,
+  type GenerateMockContext,
+} from "../tools/generate-mock.js";
+import {
+  createSeedMockTool,
+  type SeedMockContext,
+} from "../tools/seed-mock.js";
+import {
   createInspectLineageTool,
   type FullLineageEntry,
   type InspectLineageContext,
@@ -82,108 +97,27 @@ import {
   type InspectConversationContext,
 } from "../tools/inspect-conversation.js";
 import {
-  createGenerateMockTool,
-  type GenerateMockContext,
-} from "../tools/generate-mock.js";
-import {
-  createSeedMockTool,
-  type SeedMockContext,
-} from "../tools/seed-mock.js";
-import { runOrchestrator } from "../agents/orchestrator.js";
-import {
   buildAgentSystemPrompt,
   readStudioAgentContext,
   type RecentTurn,
 } from "../session/agent-context.js";
 import {
-  createTranscriptStore,
-  groupByTurn,
-  type TranscriptEntry,
-  type TranscriptStore,
-  type TranscriptTurn,
-} from "../session/transcript.js";
+  buildToolSchemaMap,
+  executeToolLocally,
+} from "../adapters/ai-sdk-tools.js";
 import { MarkdownBody } from "./MarkdownBody.js";
 
-type ProbeState =
-  | { readonly kind: "loading" }
-  | {
-      readonly kind: "ready";
-      readonly config: OllamaConfig;
-      readonly models: readonly string[];
-    }
-  | {
-      readonly kind: "error";
-      readonly message: string;
-      readonly config?: OllamaConfig;
-    };
+const MODEL_LABEL_FALLBACK = "google/gemma-4-26b-a4b-it";
+const RECENT_TURN_LIMIT = 5;
+const RECENT_TURN_EXCERPT_CAP = 280;
 
 export function AgentLens(): JSX.Element {
   const { core, adapter } = useStudio();
   const ui = useStudioUi();
 
-  const [probe, setProbe] = useState<ProbeState>({ kind: "loading" });
-  useEffect(() => {
-    let cancelled = false;
-    let config: OllamaConfig;
-    try {
-      config = readOllamaConfigFromEnv();
-    } catch (err) {
-      const message =
-        err instanceof LlmProviderError || err instanceof Error
-          ? err.message
-          : String(err);
-      setProbe({ kind: "error", message });
-      return;
-    }
-    void probeOllama(config).then((result) => {
-      if (cancelled) return;
-      if (result.ok) {
-        setProbe({ kind: "ready", config, models: result.models });
-      } else {
-        setProbe({
-          kind: "error",
-          message: result.error,
-          config,
-        });
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Provider persists across the lens' lifetime; registry + contexts
-  // are rebuilt whenever either core's identity changes (e.g. project
-  // switch rebuilds the user core) so the bound tools always point at
-  // the live runtime.
-  const providerRef = useRef<LlmProvider | null>(null);
-  const transcript = useMemo<TranscriptStore>(
-    () => createTranscriptStore(),
-    [],
-  );
-
-  useEffect(() => {
-    if (probe.kind !== "ready") {
-      providerRef.current = null;
-      return;
-    }
-    providerRef.current = createOllamaProvider(probe.config);
-  }, [probe]);
-
-  // `useSyncExternalStore` for the transcript. Single subscription,
-  // single getSnapshot — React handles bail-out on equal refs.
-  const entries = useSyncExternalStore(
-    transcript.subscribe,
-    transcript.getSnapshot,
-    transcript.getSnapshot,
-  );
-  const turns = useMemo(() => groupByTurn(entries), [entries]);
-
-  // Tools read live values via refs, not closed-over snapshots, so
-  // the registry stays stable across focus/dispatch changes and the
-  // tool context always sees current state at call time. This is the
-  // introspection contract: agent calls `inspectFocus()` and gets the
-  // value as it is *now*, not as it was when the prompt was built.
+  // Tool contexts — same pattern as before. Each tool sees only the
+  // narrow slice it declares. Refs let closures read live values
+  // without busting the useMemo cache every render.
   const uiSnapshotRef = useRef(ui.snapshot);
   uiSnapshotRef.current = ui.snapshot;
 
@@ -248,69 +182,21 @@ export function AgentLens(): JSX.Element {
     const generateMockCtx: GenerateMockContext = {
       getModule: () => core.getModule(),
     };
-    // Project TranscriptStore entries into the tool's narrow
-    // FullConversationTurn shape. Done at tool-call time (via the
-    // ref) so the agent always sees the live transcript, not a
-    // frozen copy captured when the registry was memoized.
-    const inspectConversationCtx: InspectConversationContext = {
-      getTurns: () => {
-        const entries = transcript.getSnapshot();
-        const turns = groupByTurn(entries);
-        // Newest-first for pagination symmetry with inspectLineage.
-        return [...turns].reverse().map<FullConversationTurn>((t) => {
-          const toolCalls: {
-            name: string;
-            argumentsJson: string;
-            ok: boolean;
-          }[] = [];
-          let assistantText = "";
-          let reasoning = "";
-          for (const step of t.steps) {
-            if (step.kind === "tool") {
-              toolCalls.push({
-                name: step.toolCall.name,
-                argumentsJson: step.toolCall.argumentsJson,
-                ok: parseToolOk(step.resultJson),
-              });
-              continue;
-            }
-            if (step.kind === "llm") {
-              const c = step.message.content;
-              if (typeof c === "string" && c.length > 0) assistantText = c;
-              if (typeof step.reasoning === "string") reasoning = step.reasoning;
-              continue;
-            }
-            if (step.kind === "llm-pending") {
-              // Partial still in flight — attribute to this turn so
-              // the tool can report `hasAssistantText` correctly even
-              // mid-stream, without blocking the response.
-              if (assistantText === "" && step.content.length > 0) {
-                assistantText = step.content;
-              }
-              if (reasoning === "" && step.reasoning.length > 0) {
-                reasoning = step.reasoning;
-              }
-            }
-          }
-          return {
-            turnId: t.turnId,
-            userPrompt: t.userPrompt,
-            assistantText,
-            reasoning,
-            toolCalls,
-            endedAt: t.end !== null ? t.end.at : null,
-            stoppedAtCap: t.end !== null ? t.end.stoppedAtCap : false,
-          };
-        });
-      },
+    const seedMockCtx: SeedMockContext = {
+      getModule: () => core.getModule(),
+      createIntent: (action, ...args) => core.createIntent(action, ...args),
+      dispatchAsync: (intent) =>
+        core.dispatchAsync(
+          intent as Parameters<typeof core.dispatchAsync>[0],
+        ) as unknown as Promise<{ kind: string }>,
     };
-
+    // inspectConversation reads the live useChat messages — see
+    // conversationTurnsRef below. Context is captured at tool-run
+    // time, not tool-bind time.
+    const inspectConversationCtx: InspectConversationContext = {
+      getTurns: () => conversationTurnsRef.current,
+    };
     const inspectLineageCtx: InspectLineageContext = {
-      // Project StudioCore's WorldLineage into the tool's own
-      // FullLineageEntry shape exactly once. The tool itself then
-      // filters, paginates, and projects fields — we return the full
-      // shape here and let the tool decide what reaches the model.
-      // Newest-first: core stores the chain head-last, so we reverse.
       getLineage: () => {
         const lineage = core.getLineage();
         const worlds = lineage.worlds ?? [];
@@ -333,9 +219,6 @@ export function AgentLens(): JSX.Element {
             schemaHash: String(w.schemaHash ?? ""),
             origin: projected,
             changedPaths: Array.isArray(w.changedPaths) ? w.changedPaths : [],
-            // Core stores `recordedAt` as epoch ms; normalize to ISO
-            // for the agent's consumption (matches the rest of the
-            // tool-output conventions — ISO timestamps everywhere).
             createdAt:
               typeof w.recordedAt === "number"
                 ? new Date(w.recordedAt).toISOString()
@@ -343,19 +226,6 @@ export function AgentLens(): JSX.Element {
           };
         });
       },
-    };
-    // seedMock reuses the user-domain write seam: same createIntent
-    // and dispatchAsync the `dispatch` tool is bound to. The tool
-    // internally runs a sequential generate → dispatch loop and
-    // returns a tally, so the agent can seed in one call instead
-    // of fanning N dispatches itself.
-    const seedMockCtx: SeedMockContext = {
-      getModule: () => core.getModule(),
-      createIntent: (action, ...args) => core.createIntent(action, ...args),
-      dispatchAsync: (intent) =>
-        core.dispatchAsync(
-          intent as Parameters<typeof core.dispatchAsync>[0],
-        ) as unknown as Promise<{ kind: string }>,
     };
     const tools = [
       bindTool(createDispatchTool(), userCtx),
@@ -378,108 +248,106 @@ export function AgentLens(): JSX.Element {
   }, [core, ui.core]);
 
   // Reading MEL source can't go through useMemo — adapter.getSource()
-  // reads live editor content, which isn't a value React tracks.
-  // We call it at send time (see onSend below). The adapter may still
-  // be null if the editor host hasn't mounted yet; fall back to "".
+  // reads live editor content, which isn't a value React tracks. We
+  // call it at send time (see prepareSendMessagesRequest below).
   const readMelSource = useCallback(
     (): string => (adapter !== null ? safeGetSource(adapter) : ""),
     [adapter],
   );
 
+  // useChat transport + handlers. prepareSendMessagesRequest injects
+  // the system prompt + tool schemas fresh per turn so the server
+  // sees the current MEL + tool set without the client having to
+  // re-create the Chat instance.
+  const conversationTurnsRef = useRef<readonly FullConversationTurn[]>([]);
+  const toolSchemas = useMemo(() => buildToolSchemaMap(registry), [registry]);
+
+  const chat: UseChatHelpers<UIMessage> = useChat({
+    id: "manifesto-agent",
+    transport: new DefaultChatTransport({
+      api: "/api/agent/chat",
+      // Stream the body per request. Prepare function reads the
+      // latest studio state every time so focus / source / recent
+      // turns reflect what's on screen at send-time, not at mount.
+      prepareSendMessagesRequest: ({ messages, id }) => {
+        const ctx = readStudioAgentContext(
+          core,
+          readMelSource(),
+          buildRecentTurnsFromMessages(messages as UIMessage[]),
+        );
+        const system = buildAgentSystemPrompt(ctx);
+        return {
+          body: {
+            id,
+            messages,
+            system,
+            tools: toolSchemas,
+            // Server caps the loop; 10 steps is plenty for
+            // inspect → explain → dispatch chains.
+            maxSteps: 10,
+            temperature: 0.2,
+          },
+        };
+      },
+    }),
+    // Client-side tool execution — dispatches against our local
+    // Manifesto runtime and resolves with a JSON result.
+    onToolCall: async ({ toolCall }) => {
+      const result = await executeToolLocally(
+        registry,
+        toolCall.toolName,
+        toolCall.input,
+      );
+      chat.addToolResult({
+        tool: toolCall.toolName,
+        toolCallId: toolCall.toolCallId,
+        output: result as never,
+      });
+    },
+    // Auto-continue after a tool call lands a result — that's the
+    // multi-step agent loop. Without this, each tool would require
+    // a manual re-send from the client.
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    onFinish: ({ message }) => {
+      // Commit this turn into studio.mel so it joins the runtime's
+      // lineage (see studio.mel recordAgentTurn). We only do this on
+      // assistant turns that finished naturally; aborts / errors are
+      // out of scope.
+      const prompt = findMostRecentUserText(chat.messages);
+      const answer = extractAssistantText(message);
+      if (prompt !== null) {
+        ui.recordAgentTurn(prompt, answer === "" ? "(tool-only turn)" : answer);
+      }
+    },
+  });
+
+  // Keep conversation-turns ref in sync for inspectConversation tool.
+  useEffect(() => {
+    conversationTurnsRef.current = messagesToConversationTurns(chat.messages);
+  }, [chat.messages]);
+
   const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+
+  const onSend = useCallback(() => {
+    const prompt = draft.trim();
+    if (prompt === "") return;
+    setDraft("");
+    void chat.sendMessage({ text: prompt });
+  }, [chat, draft]);
 
   const onStop = useCallback(() => {
-    abortRef.current?.abort();
-  }, []);
+    void chat.stop();
+  }, [chat]);
 
-  const onSend = useCallback(async () => {
-    const prompt = draft.trim();
-    const provider = providerRef.current;
-    if (prompt === "" || provider === null || sending) return;
-    setSending(true);
-    setDraft("");
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const turnId = transcript.beginTurn(prompt);
-    try {
-      // System prompt only needs identity + tool catalog + MEL. All
-      // dynamic values (focus, snapshot, availability, edges) are
-      // pulled via inspect* tools at turn time.
-      // Pull the last few turns out of the transcript and inject them
-      // into the system prompt for short-horizon continuity. Deeper
-      // history is left to `inspectConversation` on demand.
-      const recentTurns = buildRecentTurnsForPrompt(
-        groupByTurn(transcript.getSnapshot()),
-      );
-      const ctx = readStudioAgentContext(
-        core,
-        readMelSource(),
-        recentTurns,
-      );
-      const system = buildAgentSystemPrompt(ctx);
-      const result = await runOrchestrator({
-        userPrompt: prompt,
-        system,
-        provider,
-        registry,
-        // Model default is 1.0 for gemma4 and similar families — too
-        // hot for tool-use routing, where we want the model to commit
-        // to a specific tool/arg choice given the grounded context.
-        // 0.2 still leaves some slack for the clarifying-question
-        // branch when the request really is ambiguous.
-        temperature: 0.2,
-        signal: controller.signal,
-        onStep: (step) => transcript.appendStep(turnId, step),
-        onStream: (event, meta) => {
-          if (event.kind === "content") {
-            transcript.appendStreamDelta(turnId, meta.stepIndex, {
-              content: event.delta,
-            });
-          } else if (event.kind === "reasoning") {
-            transcript.appendStreamDelta(turnId, meta.stepIndex, {
-              reasoning: event.delta,
-            });
-          }
-          // tool_call events arrive only after the full payload is
-          // assembled — they flow through onStep as regular tool-step
-          // entries, no pending UI needed.
-        },
-      });
-      transcript.endTurn(turnId, {
-        stoppedAtCap: result.stoppedAtCap,
-        toolUses: result.toolUses,
-      });
-      // Commit the turn into studio.mel as a single-entry memory +
-      // a lineage advance. The agent's next inspectFocus call will
-      // see the new lastUserPrompt/lastAgentAnswer, and
-      // inspectLineage can walk through past turns via the studio
-      // runtime's world chain.
-      const finalText =
-        result.finalMessage.content ?? summarizeToolOnlyTurn(result);
-      ui.recordAgentTurn(prompt, finalText);
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "agent call failed";
-      transcript.appendStep(turnId, {
-        kind: "llm",
-        message: {
-          role: "assistant",
-          content: controller.signal.aborted
-            ? "[stopped by user]"
-            : `[agent error] ${message}`,
-        },
-      });
-      transcript.endTurn(turnId, { stoppedAtCap: false, toolUses: 0 });
-    } finally {
-      abortRef.current = null;
-      setSending(false);
-    }
-  }, [core, draft, readMelSource, registry, sending, transcript, ui]);
+  const onClear = useCallback(() => {
+    chat.setMessages([]);
+  }, [chat]);
 
-  // Manifesto-flavored prompts: each one targets a Studio construct
-  // (guard, snapshot, action, node) using its native vocabulary.
+  const sending = chat.status === "streaming" || chat.status === "submitted";
+  const modelLabel =
+    (import.meta.env?.VITE_AGENT_MODEL as string | undefined)?.trim() ??
+    MODEL_LABEL_FALLBACK;
+
   const examplePrompts = useMemo<readonly string[]>(
     () => [
       "What guards this action?",
@@ -489,52 +357,67 @@ export function AgentLens(): JSX.Element {
     ],
     [],
   );
-  const pickExample = useCallback((text: string) => {
-    setDraft(text);
-  }, []);
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <ProbeStatus probe={probe} onClear={() => transcript.clear()}
-        canClear={entries.length > 0 && !sending} />
-      <Messages turns={turns} sending={sending} />
+      <StatusStrip
+        modelLabel={modelLabel}
+        status={chat.status}
+        error={chat.error}
+        onClear={onClear}
+        canClear={chat.messages.length > 0 && !sending}
+      />
+      <Messages messages={chat.messages} />
       <Composer
         draft={draft}
         setDraft={setDraft}
         onSend={onSend}
         onStop={onStop}
         sending={sending}
-        disabled={probe.kind !== "ready"}
-        examples={turns.length === 0 ? examplePrompts : undefined}
-        onPickExample={pickExample}
+        examples={chat.messages.length === 0 ? examplePrompts : undefined}
+        onPickExample={(text) => setDraft(text)}
       />
     </div>
   );
 }
 
-/**
- * Hairline status strip — mirrors the Studio TopBar's dot-plus-text
- * idiom so the agent's connection state reads as part of the same
- * system, not a third-party chat widget. A red dot means offline, a
- * state-green one means connected. Model tag + an optional "clear"
- * ghost link sit on the right.
- */
-function ProbeStatus({
-  probe,
+// --------------------------------------------------------------------
+// Status strip
+// --------------------------------------------------------------------
+
+function StatusStrip({
+  modelLabel,
+  status,
+  error,
   onClear,
   canClear,
 }: {
-  readonly probe: ProbeState;
+  readonly modelLabel: string;
+  readonly status: UseChatHelpers<UIMessage>["status"];
+  readonly error: Error | undefined;
   readonly onClear: () => void;
   readonly canClear: boolean;
 }): JSX.Element {
-  const { tone, label, detail } = resolveProbe(probe);
+  const tone: "ok" | "warn" | "info" =
+    error !== undefined
+      ? "warn"
+      : status === "streaming" || status === "submitted"
+        ? "info"
+        : "ok";
   const dotColor =
     tone === "ok"
       ? "var(--color-sig-state)"
       : tone === "warn"
         ? "var(--color-sig-effect)"
-        : "var(--color-ink-mute)";
+        : "var(--color-violet-hot)";
+  const label =
+    error !== undefined
+      ? "error"
+      : status === "streaming"
+        ? "streaming…"
+        : status === "submitted"
+          ? "thinking…"
+          : "ready";
   return (
     <div
       className="
@@ -550,10 +433,14 @@ function ProbeStatus({
         className="h-[6px] w-[6px] rounded-full shrink-0"
         style={{ background: dotColor, boxShadow: `0 0 8px ${dotColor}` }}
       />
-      <span className="text-[var(--color-ink-dim)] truncate">{label}</span>
-      {detail !== undefined ? (
-        <span className="text-[var(--color-ink-mute)] truncate">
-          · {detail}
+      <span className="text-[var(--color-ink-dim)] truncate">{modelLabel}</span>
+      <span className="text-[var(--color-ink-mute)] truncate">· {label}</span>
+      {error !== undefined ? (
+        <span
+          className="text-[var(--color-sig-effect)] truncate"
+          title={error.message}
+        >
+          · {error.message}
         </span>
       ) : null}
       <button
@@ -574,48 +461,17 @@ function ProbeStatus({
   );
 }
 
-function resolveProbe(
-  probe: ProbeState,
-): { tone: "info" | "ok" | "warn"; label: string; detail?: string } {
-  if (probe.kind === "loading") {
-    return { tone: "info", label: "probing runtime…" };
-  }
-  if (probe.kind === "error") {
-    return {
-      tone: "warn",
-      label: "offline",
-      detail: probe.message,
-    };
-  }
-  const { config, models } = probe;
-  if (!models.includes(config.model)) {
-    return {
-      tone: "warn",
-      label: config.model,
-      detail: "model not listed by endpoint",
-    };
-  }
-  return { tone: "ok", label: config.model };
-}
+// --------------------------------------------------------------------
+// Messages
+// --------------------------------------------------------------------
 
-/**
- * Messages list. Auto-scrolls to bottom on new entries unless the
- * user has scrolled up (sticky-bottom pattern). Renders user
- * prompts, assistant bubbles (streaming-aware), tool-call cards,
- * and reasoning panes.
- */
 function Messages({
-  turns,
-  sending,
+  messages,
 }: {
-  readonly turns: readonly TranscriptTurn[];
-  readonly sending: boolean;
+  readonly messages: readonly UIMessage[];
 }): JSX.Element {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const stickyRef = useRef(true);
-
-  // Track whether the user is near the bottom. If so, future content
-  // auto-scrolls; if they've scrolled up to read, we don't yank them.
   const onScroll = useCallback((): void => {
     const el = scrollerRef.current;
     if (el === null) return;
@@ -623,18 +479,21 @@ function Messages({
     stickyRef.current = dist < 40;
   }, []);
 
-  // Signature that invalidates on every content change so the effect
-  // runs exactly when there's something new to scroll to.
-  const signature = turns.reduce((acc, t) => {
-    const last = t.steps[t.steps.length - 1];
-    const sig =
-      last === undefined
-        ? ""
-        : last.kind === "llm-pending"
-          ? `${last.stepIndex}:${last.content.length}:${last.reasoning.length}`
-          : String(last.seq);
-    return `${acc}|${t.turnId}:${sig}`;
-  }, "");
+  // Re-scroll on any content change (new messages or streaming
+  // parts). Joining part ids + lengths gives a cheap signature.
+  const signature = messages
+    .map((m) =>
+      m.parts
+        .map((p) => {
+          if ("text" in p && typeof p.text === "string") {
+            return `${m.id}:${p.type}:${p.text.length}`;
+          }
+          if (isToolPart(p)) return `${m.id}:${p.type}:${p.state}`;
+          return `${m.id}:${p.type}`;
+        })
+        .join("|"),
+    )
+    .join("||");
 
   useEffect(() => {
     const el = scrollerRef.current;
@@ -647,17 +506,20 @@ function Messages({
     <div
       ref={scrollerRef}
       onScroll={onScroll}
-      // No border / box — messages flow directly in the panel so the
-      // agent reads as "continuation of the Studio," not a nested
-      // widget. Padding keeps content off the chrome but stays airy.
       className="flex-1 min-h-0 overflow-y-auto px-4 py-5"
     >
-      {turns.length === 0 ? (
-        <EmptyState sending={sending} />
+      {messages.length === 0 ? (
+        <EmptyState />
       ) : (
         <ol className="flex flex-col gap-5">
-          {turns.map((turn) => (
-            <TurnBlock key={turn.turnId} turn={turn} />
+          {messages.map((m) => (
+            <li key={m.id} className="list-none">
+              {m.role === "user" ? (
+                <UserBubble text={extractUserText(m)} />
+              ) : m.role === "assistant" ? (
+                <AssistantBlock message={m} />
+              ) : null}
+            </li>
           ))}
         </ol>
       )}
@@ -665,45 +527,20 @@ function Messages({
   );
 }
 
-function EmptyState({ sending }: { readonly sending: boolean }): JSX.Element {
+function EmptyState(): JSX.Element {
   return (
     <div className="flex flex-col items-start justify-center h-full min-h-[240px] gap-2 select-none">
-      {/* Two hairlines + a violet accent — echoes the schema-graph
-       * edge idiom elsewhere in Studio. No logo, no emoji. */}
       <div className="flex items-center gap-2">
-        <span
-          aria-hidden
-          className="h-px w-5 bg-[var(--color-violet-hot)]"
-        />
+        <span aria-hidden className="h-px w-5 bg-[var(--color-violet-hot)]" />
         <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--color-ink-mute)]">
           manifesto · agent
         </span>
       </div>
       <div className="text-[14px] font-sans leading-snug text-[var(--color-ink)] max-w-[420px]">
-        {sending
-          ? "Preparing the runtime session…"
-          : "Ask the runtime about itself — why an action is blocked, what the snapshot looks like, what to dispatch next."}
+        Ask the runtime about itself — why an action is blocked, what the
+        snapshot looks like, what to dispatch next.
       </div>
     </div>
-  );
-}
-
-function TurnBlock({ turn }: { readonly turn: TranscriptTurn }): JSX.Element {
-  return (
-    <li className="flex flex-col gap-3 list-none">
-      <UserBubble text={turn.userPrompt} />
-      {turn.steps.map((step) => {
-        if (step.kind === "tool") return <ToolCard key={step.seq} step={step} />;
-        if (step.kind === "llm-pending") {
-          return <AssistantBubble key={step.seq} pending step={step} />;
-        }
-        if (step.kind === "llm") {
-          return <AssistantBubble key={step.seq} step={step} />;
-        }
-        return null;
-      })}
-      {turn.end !== null ? <TurnFooter end={turn.end} /> : null}
-    </li>
   );
 }
 
@@ -719,42 +556,18 @@ function UserBubble({ text }: { readonly text: string }): JSX.Element {
           break-words
         "
       >
-        {/* User input is plaintext intent — we don't render markdown
-         * here so a user who types '*hello*' sees asterisks. */}
         <div className="whitespace-pre-wrap">{text}</div>
       </div>
     </div>
   );
 }
 
-type AssistantBubbleProps =
-  | {
-      readonly pending: true;
-      readonly step: Extract<TranscriptEntry, { kind: "llm-pending" }>;
-    }
-  | {
-      readonly pending?: false;
-      readonly step: Extract<TranscriptEntry, { kind: "llm" }>;
-    };
-
-function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
-  const isPending = props.pending === true;
-  const content = isPending
-    ? props.step.content
-    : props.step.message.content ?? "";
-  const reasoning = isPending
-    ? props.step.reasoning
-    : props.step.reasoning ?? "";
-  const toolCallsOnly =
-    !isPending &&
-    content === "" &&
-    props.step.message.toolCalls !== undefined &&
-    props.step.message.toolCalls.length > 0;
+function AssistantBlock({
+  message,
+}: {
+  readonly message: UIMessage;
+}): JSX.Element {
   return (
-    // Left-side 2px accent bar (violet-hot), no bubble background.
-    // This mirrors SnapshotTree's highlight motif and the Studio's
-    // schema-graph "edge into node" visual — the agent's voice
-    // literally enters from the runtime's side.
     <div className="flex gap-3">
       <div
         aria-hidden
@@ -764,30 +577,25 @@ function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
         "
       />
       <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-        {reasoning !== "" ? <ReasoningPane text={reasoning} /> : null}
-        {content !== "" || isPending ? (
-          <div className="text-[13px] font-sans leading-relaxed text-[var(--color-ink)] break-words">
-            {/* react-markdown handles partial fragments gracefully
-             * during streaming (unclosed fence, lone `**`, etc.). */}
-            <MarkdownBody>{content}</MarkdownBody>
-            {isPending ? (
-              <span
-                className="
-                  inline-block w-[6px] h-[14px] ml-[2px] align-[-2px]
-                  bg-[var(--color-violet-hot)]
-                  animate-[mf-cursor_1s_steps(2)_infinite]
-                "
-                aria-hidden
-              />
-            ) : null}
-          </div>
-        ) : toolCallsOnly ? (
-          <div className="text-[11px] font-mono text-[var(--color-ink-mute)] italic">
-            {/* Assistant turn emitted tool call(s) only — the result
-             * rows above already speak for the turn. */}
-            observed the runtime.
-          </div>
-        ) : null}
+        {message.parts.map((part, idx) => {
+          if (part.type === "text") {
+            return (
+              <div
+                key={idx}
+                className="text-[13px] font-sans leading-relaxed text-[var(--color-ink)] break-words"
+              >
+                <MarkdownBody>{part.text}</MarkdownBody>
+              </div>
+            );
+          }
+          if (part.type === "reasoning") {
+            return <ReasoningPane key={idx} text={part.text} />;
+          }
+          if (isToolPart(part)) {
+            return <ToolRow key={idx} part={part} />;
+          }
+          return null;
+        })}
       </div>
     </div>
   );
@@ -799,8 +607,6 @@ function ReasoningPane({ text }: { readonly text: string }): JSX.Element {
     <details
       open={open}
       onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
-      // No border, no fill — reasoning reads as a muted pre-script,
-      // visibly subordinate to the answer below it.
       className="-ml-[2px]"
     >
       <summary
@@ -821,19 +627,41 @@ function ReasoningPane({ text }: { readonly text: string }): JSX.Element {
   );
 }
 
-function ToolCard({
-  step,
-}: {
-  readonly step: Extract<TranscriptEntry, { kind: "tool" }>;
-}): JSX.Element {
+type ToolPart = Extract<
+  UIMessagePart<UIDataTypes, UITools>,
+  { readonly type: `tool-${string}` }
+>;
+
+function isToolPart(
+  p: UIMessagePart<UIDataTypes, UITools>,
+): p is ToolPart {
+  return typeof p.type === "string" && p.type.startsWith("tool-");
+}
+
+function ToolRow({ part }: { readonly part: ToolPart }): JSX.Element {
   const [open, setOpen] = useState(false);
-  const result = parseToolResult(step.resultJson);
-  const ok = result.ok;
-  const channel = resolveToolChannel(step.toolCall.name);
+  const toolName = part.type.slice("tool-".length);
+  const state = (part as { state: string }).state;
+  const isDone =
+    state === "output-available" || state === "output-error";
+  const ok = state === "output-available";
+  const channel = resolveToolChannel(toolName);
+  const input = (part as { input?: unknown }).input;
+  const output = (part as { output?: unknown }).output;
+  const errorText = (part as { errorText?: string }).errorText;
+  const statusLabel = !isDone
+    ? state === "input-streaming"
+      ? "…"
+      : "running"
+    : ok
+      ? "ok"
+      : "error";
+  const statusColor = !isDone
+    ? "text-[var(--color-ink-mute)]"
+    : ok
+      ? "text-[var(--color-ink-dim)]"
+      : "text-[var(--color-sig-effect)]";
   return (
-    // One-line, graph-edge-esque row: `▸ toolName(args) → verdict`.
-    // Channel color on the tool name nods to state/action/computed/
-    // effect channel tokens used elsewhere in Studio.
     <details
       open={open}
       onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
@@ -850,20 +678,12 @@ function ToolCard({
         <span className="text-[var(--color-ink-mute)] shrink-0">
           {open ? "▾" : "▸"}
         </span>
-        <span style={{ color: channel }}>{step.toolCall.name}</span>
+        <span style={{ color: channel }}>{toolName}</span>
         <span className="text-[var(--color-ink-mute)] truncate">
-          {formatArgsInline(step.toolCall.argumentsJson)}
+          {formatInputInline(input)}
         </span>
         <span className="text-[var(--color-ink-mute)] shrink-0">→</span>
-        <span
-          className={
-            ok
-              ? "text-[var(--color-ink-dim)] shrink-0"
-              : "text-[var(--color-sig-effect)] shrink-0"
-          }
-        >
-          {ok ? "ok" : "error"}
-        </span>
+        <span className={`${statusColor} shrink-0`}>{statusLabel}</span>
       </summary>
       <pre
         className="
@@ -873,83 +693,15 @@ function ToolCard({
           border-l border-[var(--color-rule)]
         "
       >
-        {formatResult(step.resultJson)}
+        {formatToolDisplay(input, output, errorText)}
       </pre>
     </details>
   );
 }
 
-function TurnFooter({
-  end,
-}: {
-  readonly end: Extract<TranscriptEntry, { kind: "turn-end" }>;
-}): JSX.Element {
-  return (
-    <div className="text-[10px] font-mono uppercase tracking-wider text-[var(--color-ink-mute)] pl-5">
-      {end.toolUses === 0
-        ? "no tool calls"
-        : `${end.toolUses} tool call${end.toolUses === 1 ? "" : "s"}`}
-      {end.stoppedAtCap ? " · capped" : ""}
-    </div>
-  );
-}
-
-/**
- * Map tool names to Studio's signal-channel palette so the transcript
- * reads as a runtime op log, not a generic function call trace. Writes
- * (dispatch / seed) = action. Reads (inspect*) = computed. Explainers
- * = effect (warn-ish orange). Generators = computed.
- */
-function resolveToolChannel(name: string): string {
-  if (name === "dispatch" || name === "studioDispatch" || name === "seedMock") {
-    return "var(--color-sig-action)";
-  }
-  if (name.startsWith("inspect") || name === "generateMock") {
-    // inspectLineage, inspectSnapshot, inspectFocus, etc. are all reads.
-    return "var(--color-sig-computed)";
-  }
-  if (name === "explainLegality") {
-    return "var(--color-sig-effect)";
-  }
-  return "var(--color-ink)";
-}
-
-/**
- * Inline-safe pretty-print of a tool-call arguments JSON. Drops
- * redundant quotes around short JSON so the transcript line reads
- * more like an edge label than a stringified blob. Long args get
- * truncated — the expand view has the full payload.
- */
-function formatArgsInline(raw: string): string {
-  if (raw === "" || raw === "{}") return "{}";
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed)
-    ) {
-      const entries = Object.entries(parsed as Record<string, unknown>);
-      if (entries.length === 0) return "{}";
-      const rendered = entries
-        .map(([k, v]) => `${k}: ${formatInlineValue(v)}`)
-        .join(", ");
-      return `{ ${truncate(rendered, 56)} }`;
-    }
-    return truncate(JSON.stringify(parsed), 56);
-  } catch {
-    return truncate(raw, 56);
-  }
-}
-
-function formatInlineValue(v: unknown): string {
-  if (typeof v === "string") return `"${truncate(v, 20)}"`;
-  if (v === null) return "null";
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  if (Array.isArray(v)) return `[${v.length}]`;
-  if (typeof v === "object") return "{…}";
-  return String(v);
-}
+// --------------------------------------------------------------------
+// Composer
+// --------------------------------------------------------------------
 
 function Composer({
   draft,
@@ -957,7 +709,6 @@ function Composer({
   onSend,
   onStop,
   sending,
-  disabled,
   examples,
   onPickExample,
 }: {
@@ -966,19 +717,15 @@ function Composer({
   readonly onSend: () => void;
   readonly onStop: () => void;
   readonly sending: boolean;
-  readonly disabled: boolean;
   readonly examples?: readonly string[];
   readonly onPickExample: (text: string) => void;
 }): JSX.Element {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-
-  // Auto-grow textarea up to 8 lines tall. Resetting height first is
-  // required because scrollHeight won't shrink on deletion otherwise.
   useEffect(() => {
     const el = textareaRef.current;
     if (el === null) return;
     el.style.height = "0px";
-    const max = 8 * 18 + 16; // 8 lines × line-height + padding
+    const max = 8 * 18 + 16;
     el.style.height = `${Math.min(el.scrollHeight, max)}px`;
   }, [draft]);
 
@@ -1022,12 +769,7 @@ function Composer({
           ref={textareaRef}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          disabled={disabled}
-          placeholder={
-            disabled
-              ? "Runtime offline — waiting for Ollama"
-              : "Speak with the runtime…"
-          }
+          placeholder="Speak with the runtime…"
           rows={1}
           className="
             flex-1 resize-none bg-transparent
@@ -1035,7 +777,6 @@ function Composer({
             text-[var(--color-ink)]
             placeholder:text-[var(--color-ink-mute)]
             focus:outline-none
-            disabled:opacity-50
             min-h-[22px] max-h-[160px]
             py-[3px]
           "
@@ -1066,7 +807,7 @@ function Composer({
             <button
               type="button"
               onClick={onSend}
-              disabled={draft.trim() === "" || disabled}
+              disabled={draft.trim() === ""}
               className="
                 w-7 h-7 rounded-full flex items-center justify-center
                 bg-[var(--color-violet-hot)] text-[var(--color-void)]
@@ -1087,86 +828,69 @@ function Composer({
   );
 }
 
-/**
- * Summarize a tool-call-only turn (one with no assistant text but
- * N tool invocations) so the lineage entry we commit has something
- * human-legible. The agent itself can introspect the full trace via
- * the React transcript; this is just the "headline" persisted into
- * studio.mel.
- */
-const RECENT_TURN_LIMIT = 5;
-const RECENT_TURN_EXCERPT_CAP = 280;
+// --------------------------------------------------------------------
+// Helpers: tool rendering
+// --------------------------------------------------------------------
 
 /**
- * Project the transcript's most-recent completed turns into the
- * compact `RecentTurn` shape the system prompt expects. Newest-
- * first (matches the "Recent conversation" header's ordering).
- *
- * Only finalized turns are included — we skip in-flight `llm-
- * pending` entries because their content is mid-stream and the
- * excerpt would be a jagged fragment. The current user prompt
- * (this very turn) isn't in the transcript yet when this runs, so
- * we don't have to filter it out explicitly.
- *
- * Assistant excerpts are trimmed + capped so a single long answer
- * can't swell the tail; the agent can always pull the full text
- * via `inspectConversation({fields:["assistantText"]})`.
+ * Map tool names to Studio's signal-channel palette so the transcript
+ * reads as a runtime op log, not a generic function call trace.
  */
-function buildRecentTurnsForPrompt(
-  turns: readonly TranscriptTurn[],
-): readonly RecentTurn[] {
-  if (turns.length === 0) return [];
-  const reversed = [...turns].reverse();
-  const recent = reversed.slice(0, RECENT_TURN_LIMIT);
-  return recent.map<RecentTurn>((t) => {
-    let assistantText = "";
-    let toolCount = 0;
-    for (const step of t.steps) {
-      if (step.kind === "tool") {
-        toolCount += 1;
-        continue;
-      }
-      if (step.kind === "llm") {
-        const c = step.message.content;
-        if (typeof c === "string" && c.length > 0) assistantText = c;
-      }
-      // llm-pending intentionally ignored — content is partial.
-    }
-    return {
-      turnId: t.turnId,
-      userPrompt: t.userPrompt,
-      assistantExcerpt: capRecentExcerpt(assistantText),
-      toolCount,
-    };
-  });
+function resolveToolChannel(name: string): string {
+  if (name === "dispatch" || name === "studioDispatch" || name === "seedMock") {
+    return "var(--color-sig-action)";
+  }
+  if (name.startsWith("inspect") || name === "generateMock") {
+    return "var(--color-sig-computed)";
+  }
+  if (name === "explainLegality") {
+    return "var(--color-sig-effect)";
+  }
+  return "var(--color-ink)";
 }
 
-function capRecentExcerpt(s: string): string {
-  const collapsed = s.replace(/\s+/g, " ").trim();
-  if (collapsed.length <= RECENT_TURN_EXCERPT_CAP) return collapsed;
-  return collapsed.slice(0, RECENT_TURN_EXCERPT_CAP - 1) + "…";
+function formatInputInline(input: unknown): string {
+  if (input === undefined || input === null) return "{}";
+  if (typeof input !== "object") return truncate(String(input), 56);
+  const entries = Object.entries(input as Record<string, unknown>);
+  if (entries.length === 0) return "{}";
+  const rendered = entries
+    .map(([k, v]) => `${k}: ${formatInlineValue(v)}`)
+    .join(", ");
+  return `{ ${truncate(rendered, 56)} }`;
 }
 
-function summarizeToolOnlyTurn(result: {
-  readonly trace: readonly { readonly kind: string }[];
-  readonly toolUses: number;
-}): string {
-  return `(tool-only turn · ${result.toolUses} call${
-    result.toolUses === 1 ? "" : "s"
-  })`;
+function formatInlineValue(v: unknown): string {
+  if (typeof v === "string") return `"${truncate(v, 20)}"`;
+  if (v === null) return "null";
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) return `[${v.length}]`;
+  if (typeof v === "object") return "{…}";
+  return String(v);
 }
 
-/** Narrower form for places that only care about success/failure. */
-function parseToolOk(raw: string): boolean {
-  return parseToolResult(raw).ok;
+function formatToolDisplay(
+  input: unknown,
+  output: unknown,
+  errorText: string | undefined,
+): string {
+  const parts: string[] = [];
+  if (input !== undefined && Object.keys(input as object ?? {}).length > 0) {
+    parts.push("// input\n" + stringifySafe(input));
+  }
+  if (errorText !== undefined && errorText !== "") {
+    parts.push("// error\n" + errorText);
+  } else if (output !== undefined) {
+    parts.push("// output\n" + stringifySafe(output));
+  }
+  return parts.join("\n\n") || "(no data)";
 }
 
-function parseToolResult(raw: string): { readonly ok: boolean } {
+function stringifySafe(v: unknown): string {
   try {
-    const parsed = JSON.parse(raw) as { readonly ok?: unknown };
-    return { ok: parsed.ok === true };
+    return JSON.stringify(v, null, 2);
   } catch {
-    return { ok: false };
+    return String(v);
   }
 }
 
@@ -1174,35 +898,119 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
-function formatResult(raw: string): string {
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
-  } catch {
-    return raw;
-  }
+// --------------------------------------------------------------------
+// Helpers: message → derived data
+// --------------------------------------------------------------------
+
+function extractUserText(m: UIMessage): string {
+  return m.parts
+    .map((p) => (p.type === "text" ? p.text : ""))
+    .join("")
+    .trim();
 }
 
-/**
- * Glue between the real user-domain StudioCore and the tool-context
- * slices for `dispatch` and `explainLegality`. Each tool reads only
- * the fields its own `*Context` shape declares; the builder returns
- * the union so both tools can bind against the same context value.
- *
- * Casts are narrow — LegalityContext / DispatchContext deliberately
- * treat the Intent + DispatchReport as `unknown` so they don't pull
- * the SDK's generic parameters. The real `core.*` methods take the
- * concrete typed versions; since we pipe through our own
- * `createIntent`, identity is preserved at runtime even though TS
- * doesn't see it.
- */
-/**
- * User-domain tool context. Both `dispatch` and `explainLegality`
- * read the narrow `*Context` slices they declare from the same
- * StudioCore. React freshness is handled at the core-subscription
- * level (see `StudioProvider` → `core.subscribeAfterDispatch`), so
- * this builder can hit `core.dispatchAsync` directly without
- * plumbing a React-aware dispatch helper through.
- */
+function extractAssistantText(m: UIMessage): string {
+  return m.parts
+    .map((p) => (p.type === "text" ? p.text : ""))
+    .join("")
+    .trim();
+}
+
+function findMostRecentUserText(
+  messages: readonly UIMessage[],
+): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === "user") {
+      const txt = extractUserText(m);
+      return txt === "" ? null : txt;
+    }
+  }
+  return null;
+}
+
+function buildRecentTurnsFromMessages(
+  messages: readonly UIMessage[],
+): readonly RecentTurn[] {
+  // Pair user → next assistant into turns, newest-first, capped at 5.
+  const turns: RecentTurn[] = [];
+  for (let i = 0; i < messages.length && turns.length < RECENT_TURN_LIMIT; i++) {
+    const m = messages[i]!;
+    if (m.role !== "user") continue;
+    const userText = extractUserText(m);
+    const next = messages[i + 1];
+    if (next === undefined || next.role !== "assistant") continue;
+    const answer = extractAssistantText(next);
+    const toolCount = next.parts.filter(isToolPart).length;
+    turns.push({
+      turnId: m.id,
+      userPrompt: userText,
+      assistantExcerpt: capExcerpt(answer),
+      toolCount,
+    });
+  }
+  // Reverse to newest-first for the system-prompt tail.
+  return turns.reverse();
+}
+
+function messagesToConversationTurns(
+  messages: readonly UIMessage[],
+): readonly FullConversationTurn[] {
+  const turns: FullConversationTurn[] = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role !== "assistant") continue;
+    // Find the preceding user message for this turn.
+    let userText = "";
+    let userId: string | null = null;
+    for (let j = i - 1; j >= 0; j--) {
+      const u = messages[j]!;
+      if (u.role === "user") {
+        userText = extractUserText(u);
+        userId = u.id;
+        break;
+      }
+    }
+    if (userId === null) continue;
+    const toolCalls = m.parts.filter(isToolPart).map((p) => {
+      const name = p.type.slice("tool-".length);
+      const input = (p as { input?: unknown }).input;
+      const state = (p as { state: string }).state;
+      return {
+        name,
+        argumentsJson: stringifySafe(input),
+        ok: state === "output-available",
+      };
+    });
+    let assistantText = "";
+    let reasoning = "";
+    for (const part of m.parts) {
+      if (part.type === "text") assistantText += part.text;
+      if (part.type === "reasoning") reasoning += part.text;
+    }
+    turns.push({
+      turnId: userId,
+      userPrompt: userText,
+      assistantText,
+      reasoning,
+      toolCalls,
+      endedAt: null,
+      stoppedAtCap: false,
+    });
+  }
+  return turns;
+}
+
+function capExcerpt(s: string): string {
+  const collapsed = s.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= RECENT_TURN_EXCERPT_CAP) return collapsed;
+  return collapsed.slice(0, RECENT_TURN_EXCERPT_CAP - 1) + "…";
+}
+
+// --------------------------------------------------------------------
+// Tool contexts — user + studio domain
+// --------------------------------------------------------------------
+
 function buildUserToolContext(
   core: StudioCore,
 ): LegalityContext & DispatchContext {
@@ -1228,12 +1036,6 @@ function buildUserToolContext(
   };
 }
 
-/**
- * studio.mel tool context. Same shape as the user context but
- * targeting the studio UI runtime. StudioUiRuntime subscribes to its
- * core's `subscribeAfterDispatch`, so writing here auto-bumps the
- * UI's version without extra plumbing.
- */
 function buildStudioToolContext(core: StudioCore): StudioDispatchContext {
   return {
     isActionAvailable: (name) => core.isActionAvailable(name),
@@ -1257,3 +1059,4 @@ function safeGetSource(adapter: EditorAdapter): string {
     return "";
   }
 }
+
