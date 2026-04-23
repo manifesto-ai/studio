@@ -72,7 +72,7 @@ export type RateLimitDecision =
       readonly remaining: number;
       readonly reset: number;
     }
-  | { readonly kind: "skipped" };
+  | { readonly kind: "skipped"; readonly reason: "no-config" | "error" };
 
 /**
  * Check the limiter against the caller IP. `identifier` is whatever
@@ -82,24 +82,39 @@ export type RateLimitDecision =
  *
  *   - `{kind:"allowed"}` — under budget, proceed.
  *   - `{kind:"limited", retryAfterSeconds, ...}` — block the call.
- *   - `{kind:"skipped"}` — no limiter configured (dev).
+ *   - `{kind:"skipped", reason}` — no limiter configured OR the
+ *     limiter itself threw. In the error case we **fail open**: a
+ *     misbehaving Redis shouldn't take the agent down. The gateway
+ *     budget is the hard cap; this is a shaping layer on top.
  */
 export async function enforceChatRateLimit(
   identifier: string,
 ): Promise<RateLimitDecision> {
   const limiter = getLimiter();
-  if (limiter === null) return { kind: "skipped" };
-  const res = await limiter.limit(identifier);
-  if (res.success) return { kind: "allowed" };
-  const now = Date.now();
-  const retryAfterSeconds = Math.max(1, Math.ceil((res.reset - now) / 1000));
-  return {
-    kind: "limited",
-    retryAfterSeconds,
-    limit: res.limit,
-    remaining: Math.max(0, res.remaining),
-    reset: res.reset,
-  };
+  if (limiter === null) return { kind: "skipped", reason: "no-config" };
+  try {
+    const res = await limiter.limit(identifier);
+    if (res.success) return { kind: "allowed" };
+    const now = Date.now();
+    const retryAfterSeconds = Math.max(1, Math.ceil((res.reset - now) / 1000));
+    return {
+      kind: "limited",
+      retryAfterSeconds,
+      limit: res.limit,
+      remaining: Math.max(0, res.remaining),
+      reset: res.reset,
+    };
+  } catch (err) {
+    // Upstash hiccup (auth blip, network glitch, region outage).
+    // Log once per error shape and fall through — a rate-limit
+    // outage must never take out the whole agent endpoint.
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[rate-limit] Upstash error, failing open:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return { kind: "skipped", reason: "error" };
+  }
 }
 
 /**
