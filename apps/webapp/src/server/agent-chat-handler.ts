@@ -30,7 +30,13 @@
  * `Response`. See `apps/webapp/api/agent/chat.ts` (serverless) and
  * `vite.config.ts` dev middleware.
  */
-import { streamText, type ToolSet } from "ai";
+import {
+  convertToModelMessages,
+  jsonSchema,
+  streamText,
+  type ToolSet,
+  type UIMessage,
+} from "ai";
 import { gateway } from "@ai-sdk/gateway";
 import { z } from "zod";
 import { enforceChatRateLimit, identifyRequest } from "./rate-limit.js";
@@ -50,6 +56,9 @@ const toolSchemaShape = z
   })
   .strict();
 
+// `.passthrough()` rather than `.strict()` — AI SDK's useChat ships
+// extra fields (id, trigger, etc.) that aren't ours to validate.
+// We only care about the four we read; anything else rides along.
 const chatBodyShape = z
   .object({
     messages: z.array(z.unknown()),
@@ -58,7 +67,7 @@ const chatBodyShape = z
     temperature: z.number().optional(),
     maxSteps: z.number().optional(),
   })
-  .strict();
+  .passthrough();
 
 export async function handleAgentChat(req: Request): Promise<Response> {
   if (req.method !== "POST") {
@@ -127,25 +136,32 @@ export async function handleAgentChat(req: Request): Promise<Response> {
   // the model's tool-call requests to the client, which runs them
   // against the live Manifesto runtime and posts the result back
   // in a follow-up request.
+  //
+  // AI SDK v6 expects `inputSchema` to be a `Schema<T>` — not a raw
+  // JSON Schema object. `jsonSchema(raw)` wraps a plain JSON schema
+  // into the right shape; without it the SDK tries to call the
+  // schema as a function ("schema is not a function").
   const sdkTools: ToolSet = tools
     ? Object.fromEntries(
         Object.entries(tools).map(([name, spec]) => [
           name,
           {
             description: spec.description,
-            // AI SDK expects a JSON Schema or a zod/valibot schema
-            // under `inputSchema`. We pass the JSON Schema through
-            // as-is (that's what our client-side adapter produces).
-            inputSchema: spec.parameters as never,
+            inputSchema: jsonSchema(spec.parameters as never),
           },
         ]),
       )
     : {};
 
+  // useChat sends UIMessage[] (parts-based, rich); streamText wants
+  // ModelMessage[] (content-based, model-native). Convert once here.
+  // `convertToModelMessages` is async in AI SDK v6.
+  const modelMessages = await convertToModelMessages(messages as UIMessage[]);
+
   const result = streamText({
     model: gateway(modelId),
     system,
-    messages: messages as never,
+    messages: modelMessages,
     tools: sdkTools,
     temperature,
     // stopWhen instead of maxSteps in AI SDK v6.
