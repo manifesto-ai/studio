@@ -37,7 +37,6 @@ import {
   type ToolSet,
   type UIMessage,
 } from "ai";
-import { gateway } from "@ai-sdk/gateway";
 import { z } from "zod";
 import { enforceChatRateLimit, identifyRequest } from "./rate-limit.js";
 
@@ -161,7 +160,11 @@ export async function handleAgentChat(req: Request): Promise<Response> {
   const modelMessages = await convertToModelMessages(messages as UIMessage[]);
 
   const result = streamText({
-    model: gateway(modelId),
+    // AI SDK v6 accepts a bare `"provider/model"` string here and
+    // auto-routes via Vercel AI Gateway when `AI_GATEWAY_API_KEY`
+    // is present. No `gateway(...)` wrapper needed; it's the same
+    // code path either way.
+    model: modelId,
     system,
     messages: modelMessages,
     tools: sdkTools,

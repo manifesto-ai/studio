@@ -13,7 +13,6 @@
     "test": "node ../../node_modules/vitest/vitest.mjs run"
   },
   "dependencies": {
-    "@ai-sdk/gateway": "^3.0.104",
     "@ai-sdk/react": "^3.0.170",
     "@manifesto-ai/studio-adapter-monaco": "workspace:*",
     "@manifesto-ai/studio-core": "workspace:*",
