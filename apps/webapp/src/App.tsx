@@ -18,13 +18,13 @@ import {
   registerMelLanguage,
 } from "@manifesto-ai/studio-adapter-monaco";
 import { StudioHotkeys, StudioProvider } from "@manifesto-ai/studio-react";
+import { StudioUiProvider, useStudioUi } from "@/domain/StudioUiRuntime";
 
 import { TopBar } from "@/components/chrome/TopBar";
 import { NowLine } from "@/components/chrome/NowLine";
 import { PaneDivider } from "@/components/chrome/PaneDivider";
 import { SnapshotRipple } from "@/components/motion/SnapshotRipple";
 import { TimeScrubProvider } from "@/hooks/useTimeScrub";
-import { FocusProvider } from "@/hooks/useFocus";
 import { FocusSync } from "@/hooks/useFocusSync";
 import { ViewportProvider } from "@/hooks/useViewport";
 import {
@@ -34,7 +34,7 @@ import {
 } from "@/hooks/useProjects";
 import { SourcePane } from "@/components/panes/SourcePane";
 import { ObservatoryPane } from "@/components/panes/ObservatoryPane";
-import { LensPane, type LensId } from "@/components/panes/LensPane";
+import { LensPane } from "@/components/panes/LensPane";
 import { PANE_LIMITS, usePaneSizes } from "@/hooks/usePaneSizes";
 
 /**
@@ -66,7 +66,6 @@ function AppShell(): JSX.Element {
   const [adapter, setAdapter] = useState<EditorAdapter | null>(null);
   const [editor, setEditor] =
     useState<monaco.editor.IStandaloneCodeEditor | null>(null);
-  const [lens, setLens] = useState<LensId>("interact");
 
   const { ready, activeProject, saveSource } = useProjects();
 
@@ -226,63 +225,98 @@ function AppShell(): JSX.Element {
 
   return (
     <div className="flex flex-col h-screen relative">
-      <StudioProvider core={core} adapter={adapter} historyPollMs={500}>
-        <FocusProvider>
-        <ViewportProvider>
-        <FocusSync editor={editor} />
-        <TimeScrubProvider>
-        <StudioHotkeys />
+      {/* StudioUiProvider must wrap StudioProvider so StudioProviderHost
+       * below can read the canonical simulation view-mode from the
+       * studio runtime and forward it into StudioProvider's required
+       * props. See packages/studio-react/StudioProvider.tsx — simulation
+       * ownership has moved out of that component; it now expects
+       * `uiViewMode` and dispatch callbacks from whoever hosts it. */}
+      <StudioUiProvider>
+        <StudioProviderHost core={core} adapter={adapter}>
+          <ViewportProvider>
+            <FocusSync editor={editor} />
+            <TimeScrubProvider>
+              <StudioHotkeys />
 
-        <TopBar />
+              <TopBar />
 
-        <main
-          ref={mainRef}
-          className="flex flex-1 min-h-0"
-        >
-          <div
-            style={{ width: sizes.left, flex: "none" }}
-            className="flex flex-col min-w-0 min-h-0"
-          >
-            <SourcePane ref={editorHostRef} />
-          </div>
+              <main
+                ref={mainRef}
+                className="flex flex-1 min-h-0"
+              >
+                <div
+                  style={{ width: sizes.left, flex: "none" }}
+                  className="flex flex-col min-w-0 min-h-0"
+                >
+                  <SourcePane ref={editorHostRef} />
+                </div>
 
-          <PaneDivider
-            onResize={handleResizeLeft}
-            getSize={() => sizes.left}
-            ariaLabel="Resize source pane"
-          />
+                <PaneDivider
+                  onResize={handleResizeLeft}
+                  getSize={() => sizes.left}
+                  ariaLabel="Resize source pane"
+                />
 
-          <div className="flex flex-col flex-1 min-w-0 min-h-0">
-            <ObservatoryPane />
-          </div>
+                <div className="flex flex-col flex-1 min-w-0 min-h-0">
+                  <ObservatoryPane />
+                </div>
 
-          <PaneDivider
-            onResize={handleResizeRight}
-            getSize={() => sizes.right}
-            ariaLabel="Resize lens pane"
-            invertDelta
-          />
+                <PaneDivider
+                  onResize={handleResizeRight}
+                  getSize={() => sizes.right}
+                  ariaLabel="Resize lens pane"
+                  invertDelta
+                />
 
-          <div
-            style={{ width: sizes.right, flex: "none" }}
-            className="flex flex-col min-w-0 min-h-0"
-          >
-            <LensPane
-              value={lens}
-              onChange={setLens}
-              onRevealMarker={revealMarker}
-              onRevealSourceSpan={revealSpan}
-            />
-          </div>
-        </main>
+                <div
+                  style={{ width: sizes.right, flex: "none" }}
+                  className="flex flex-col min-w-0 min-h-0"
+                >
+                  <LensPane
+                    onRevealMarker={revealMarker}
+                    onRevealSourceSpan={revealSpan}
+                  />
+                </div>
+              </main>
 
-        <NowLine />
-        <SnapshotRipple />
-        </TimeScrubProvider>
-        </ViewportProvider>
-        </FocusProvider>
-      </StudioProvider>
+              <NowLine />
+              <SnapshotRipple />
+            </TimeScrubProvider>
+          </ViewportProvider>
+        </StudioProviderHost>
+      </StudioUiProvider>
     </div>
+  );
+}
+
+/**
+ * Bridges the Studio UI runtime's view-mode into StudioProvider's new
+ * required props. Separated into its own component so the hook call
+ * (`useStudioUi`) is legal — StudioProvider needs the values but the
+ * provider itself must stay pure JSX below.
+ */
+function StudioProviderHost({
+  core,
+  adapter,
+  children,
+}: {
+  readonly core: ReturnType<typeof createStudioCore>;
+  readonly adapter: EditorAdapter | null;
+  readonly children: JSX.Element;
+}): JSX.Element {
+  const ui = useStudioUi();
+  return (
+    <StudioProvider
+      core={core}
+      adapter={adapter}
+      historyPollMs={500}
+      uiViewMode={ui.snapshot.viewMode}
+      uiSimulationActionName={ui.snapshot.simulationActionName}
+      onEnterSimulationRequest={ui.enterSimulation}
+      onExitSimulationRequest={ui.exitSimulation}
+    >
+      {children}
+    </StudioProvider>
   );
 }
 

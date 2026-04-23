@@ -1,4 +1,12 @@
-import { type CSSProperties, type ReactNode, useCallback, useMemo, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useStudio } from "./useStudio.js";
 import {
   COLORS,
@@ -10,10 +18,19 @@ import {
 
 /**
  * Optional focus binding — the host app passes which node the user is
- * inspecting. When set, the tree scopes to that sub-value. Provider
- * owns the focus state (the webapp has `useFocus`); `SnapshotTree`
- * stays agnostic and takes it as a prop so studio-react has no reverse
- * dependency on the app layer.
+ * inspecting. When set, the tree **highlights** the corresponding
+ * node (state or computed field) in place rather than scoping away
+ * the rest of the snapshot. This is deliberate: for data analysis
+ * the user wants to see the neighbours of the value they clicked,
+ * not a hollowed-out pane. Ancestors of the highlighted path auto-
+ * expand, and the element scrolls into view when focus changes.
+ *
+ * Action focus produces a small inline hint (actions don't have a
+ * snapshot value) but otherwise doesn't hide any tree content.
+ *
+ * Provider owns the focus state (the webapp has `useFocus`);
+ * `SnapshotTree` stays agnostic and takes it as a prop so studio-
+ * react has no reverse dependency on the app layer.
  */
 export type SnapshotFocus =
   | { readonly kind: "state"; readonly name: string }
@@ -60,48 +77,31 @@ export function SnapshotTree({ focus = null }: SnapshotTreeProps = {}): JSX.Elem
     return c ?? null;
   }, [snapshot]);
 
-  // Resolve the scoped value when a focus is set. `action` focus has no
-  // snapshot value — we show a placeholder explaining where to go.
-  const scoped = useMemo(() => {
-    if (focus === null) return null;
-    if (focus.kind === "action") {
-      return { kind: "action" as const };
-    }
-    if (focus.kind === "state") {
-      if (data === null || typeof data !== "object") {
-        return { kind: "missing" as const };
-      }
-      const v = (data as Record<string, unknown>)[focus.name];
-      return {
-        kind: "value" as const,
-        value: v,
-        path: `data.${focus.name}`,
-      };
-    }
-    // computed
-    if (computed === null) return { kind: "missing" as const };
-    return {
-      kind: "value" as const,
-      value: computed[focus.name],
-      path: `computed.${focus.name}`,
-    };
-  }, [focus, data, computed]);
-
   const computedEntries = useMemo<readonly (readonly [string, unknown])[]>(() => {
     if (computed === null || typeof computed !== "object") return [];
     return Object.entries(computed);
   }, [computed]);
   const hasComputed = computedEntries.length > 0;
 
-  const title = focus === null ? "Snapshot" : "Inspect";
-  const rightLabel =
-    focus === null
-      ? snapshot === null
-        ? "—"
-        : hasComputed
-          ? "state · computed"
-          : "state"
-      : `${focus.kind} · ${focus.name}`;
+  // Translate a graph focus into a snapshot path. `action` focus has
+  // no corresponding snapshot value, so we keep it null (no
+  // highlighting) and the body shows a hint instead.
+  const highlightedPath = useMemo<string | null>(() => {
+    if (focus === null) return null;
+    if (focus.kind === "state") return `data.${focus.name}`;
+    if (focus.kind === "computed") return `computed.${focus.name}`;
+    return null;
+  }, [focus]);
+
+  const title = "Snapshot";
+  const rightLabel = (() => {
+    if (focus === null) {
+      if (snapshot === null) return "—";
+      return hasComputed ? "state · computed" : "state";
+    }
+    if (focus.kind === "action") return `action · ${focus.name} (no value)`;
+    return `highlight: ${focus.kind}.${focus.name}`;
+  })();
 
   return (
     <div style={rootStyle}>
@@ -110,87 +110,84 @@ export function SnapshotTree({ focus = null }: SnapshotTreeProps = {}): JSX.Elem
         <span style={{ color: COLORS.muted, fontSize: 11 }}>{rightLabel}</span>
       </div>
       <div style={PANEL_BODY}>
-        {renderBody(focus, scoped, data, computed, hasComputed)}
+        {renderBody({
+          data,
+          computed,
+          hasComputed,
+          highlightedPath,
+          focus,
+        })}
       </div>
     </div>
   );
 }
 
-function renderBody(
-  focus: SnapshotFocus | null,
-  scoped: ReturnType<typeof buildScoped>,
-  data: unknown,
-  computed: Record<string, unknown> | null,
-  hasComputed: boolean,
-): JSX.Element {
-  if (focus === null) {
-    const hasState = data !== null && data !== undefined;
-    if (!hasState && !hasComputed) {
-      return (
-        <div style={PANEL_EMPTY}>
-          No snapshot yet. Build + dispatch to populate, or click a graph
-          node to inspect its value.
-        </div>
-      );
-    }
-    // Two top-level sections — state and computed — so the user sees
-    // the full deterministic snapshot at a glance. `computed` is
-    // hidden when the module declares no computed fields, so simple
-    // domains don't show an empty chrome box.
-    return (
-      <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-        {hasState ? (
-          <TreeSection label="state">
-            <TreeNode path="data" value={data} depth={0} />
-          </TreeSection>
-        ) : null}
-        {hasComputed && computed !== null ? (
-          <TreeSection label="computed">
-            <TreeNode path="computed" value={computed} depth={0} />
-          </TreeSection>
-        ) : null}
-      </div>
-    );
-  }
-  if (scoped === null) return <div style={PANEL_EMPTY}>—</div>;
-  if (scoped.kind === "action") {
+function renderBody({
+  data,
+  computed,
+  hasComputed,
+  highlightedPath,
+  focus,
+}: {
+  readonly data: unknown;
+  readonly computed: Record<string, unknown> | null;
+  readonly hasComputed: boolean;
+  readonly highlightedPath: string | null;
+  readonly focus: SnapshotFocus | null;
+}): JSX.Element {
+  const hasState = data !== null && data !== undefined;
+  if (!hasState && !hasComputed) {
     return (
       <div style={PANEL_EMPTY}>
-        Action nodes don't hold state. Switch to the <strong>Interact</strong>
-        {" "}lens to dispatch this action and see its effect here.
+        No snapshot yet. Build + dispatch to populate, or click a graph
+        node to inspect its value.
       </div>
     );
   }
-  if (scoped.kind === "missing") {
-    return (
-      <div style={PANEL_EMPTY}>
-        No value yet for <code>{focus?.name}</code>. Build the module and
-        dispatch an action that writes this field.
+
+  const actionHint =
+    focus !== null && focus.kind === "action" ? (
+      // Actions don't have a snapshot value to highlight. Surface a
+      // small inline note so the user knows clicking the action is
+      // noted, then still show them the full state+computed tree.
+      <div style={actionHintStyle}>
+        <code>{focus.name}</code> is an action — no snapshot value. Switch
+        to <strong>Interact</strong> to dispatch it.
       </div>
-    );
-  }
-  if (scoped.value === undefined) {
-    return (
-      <div style={PANEL_EMPTY}>
-        <code>{scoped.path}</code> is currently <code>undefined</code>.
-      </div>
-    );
-  }
+    ) : null;
+
   return (
-    <div style={{ padding: "10px 14px" }}>
-      <TreeNode path={scoped.path} value={scoped.value} depth={0} />
+    <div
+      style={{
+        padding: "10px 14px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+      }}
+    >
+      {actionHint}
+      {hasState ? (
+        <TreeSection label="state">
+          <TreeNode
+            path="data"
+            value={data}
+            depth={0}
+            highlightedPath={highlightedPath}
+          />
+        </TreeSection>
+      ) : null}
+      {hasComputed && computed !== null ? (
+        <TreeSection label="computed">
+          <TreeNode
+            path="computed"
+            value={computed}
+            depth={0}
+            highlightedPath={highlightedPath}
+          />
+        </TreeSection>
+      ) : null}
     </div>
   );
-}
-
-// Helper type alias so renderBody's signature compiles cleanly.
-type ScopedResult =
-  | { readonly kind: "action" }
-  | { readonly kind: "missing" }
-  | { readonly kind: "value"; readonly value: unknown; readonly path: string }
-  | null;
-function buildScoped(): ScopedResult {
-  return null;
 }
 
 /**
@@ -218,12 +215,38 @@ function TreeNode({
   path,
   value,
   depth,
+  highlightedPath,
 }: {
   readonly path: string;
   readonly value: unknown;
   readonly depth: number;
+  readonly highlightedPath: string | null;
 }): JSX.Element {
-  const [open, setOpen] = useState(depth < 3);
+  const isHighlighted = highlightedPath === path;
+  const isAncestorOfHighlight =
+    highlightedPath !== null && highlightedPath.startsWith(path + ".");
+
+  // Default-open rule: first few levels for skimming, plus any
+  // ancestor of the highlighted path so the highlight is visible
+  // without the user expanding by hand. Users can still collapse.
+  const [open, setOpen] = useState(depth < 3 || isAncestorOfHighlight);
+
+  // When focus changes and this node becomes an ancestor of the new
+  // highlight, force-open. Doesn't close what the user manually
+  // opened — only ever sets to true.
+  useEffect(() => {
+    if (isAncestorOfHighlight) setOpen(true);
+  }, [isAncestorOfHighlight]);
+
+  // Scroll into view when this is the highlighted node. `block:
+  // "center"` keeps context above + below the value rather than
+  // pinning it to the top of the scroller.
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!isHighlighted) return;
+    rowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [isHighlighted]);
+
   const node = classify(value);
 
   const copyPath = useCallback(() => {
@@ -232,9 +255,17 @@ function TreeNode({
     }
   }, [path]);
 
+  const rowHighlightStyle: CSSProperties = isHighlighted ? highlightStyle : {};
+
   if (node.kind === "primitive") {
     return (
-      <div style={leafStyle} onClick={copyPath} title={`click to copy: ${path}`}>
+      <div
+        ref={rowRef}
+        style={{ ...leafStyle, ...rowHighlightStyle }}
+        onClick={copyPath}
+        title={`click to copy: ${path}`}
+        data-highlighted={isHighlighted || undefined}
+      >
         <span style={keyLabelStyle}>{leafKeyOf(path)}</span>
         <span style={{ color: COLORS.muted }}>:</span>
         <span style={{ color: primitiveColor(node.value) }}>
@@ -250,10 +281,12 @@ function TreeNode({
   return (
     <div>
       <div
-        style={branchStyle}
+        ref={rowRef}
+        style={{ ...branchStyle, ...rowHighlightStyle }}
         onClick={() => setOpen((o) => !o)}
         data-testid="snapshot-branch"
         data-path={path}
+        data-highlighted={isHighlighted || undefined}
       >
         <span style={{ width: 12, color: COLORS.muted }}>{open ? "▾" : "▸"}</span>
         <span style={keyLabelStyle}>{leafKeyOf(path)}</span>
@@ -279,6 +312,7 @@ function TreeNode({
                   path={`${path}.${i}`}
                   value={child}
                   depth={depth + 1}
+                  highlightedPath={highlightedPath}
                 />
               ))
             : node.entries.map(([k, v]) => (
@@ -287,6 +321,7 @@ function TreeNode({
                   path={`${path}.${k}`}
                   value={v}
                   depth={depth + 1}
+                  highlightedPath={highlightedPath}
                 />
               ))}
         </div>
@@ -330,17 +365,21 @@ const branchStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: 6,
-  padding: "2px 0",
+  padding: "2px 4px",
   cursor: "pointer",
   fontSize: 11,
+  borderRadius: 3,
+  transition: "background 120ms, box-shadow 120ms",
 };
 const leafStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: 6,
-  padding: "2px 0 2px 18px",
+  padding: "2px 4px 2px 22px",
   cursor: "pointer",
   fontSize: 11,
+  borderRadius: 3,
+  transition: "background 120ms, box-shadow 120ms",
 };
 const keyLabelStyle: CSSProperties = {
   color: COLORS.textDim,
@@ -353,4 +392,20 @@ const copyBtnStyle: CSSProperties = {
   border: `1px solid ${COLORS.line}`,
   borderRadius: 3,
   cursor: "pointer",
+};
+// Highlight lifts the row with a subtle accent background + left
+// accent bar. Kept quiet so a deeply-nested highlighted leaf
+// doesn't scream over its neighbours — this is about orientation,
+// not alarm.
+const highlightStyle: CSSProperties = {
+  background: `color-mix(in oklch, ${COLORS.accent} 14%, transparent)`,
+  boxShadow: `inset 2px 0 0 ${COLORS.accent}`,
+};
+const actionHintStyle: CSSProperties = {
+  fontSize: 11,
+  color: COLORS.muted,
+  padding: "6px 8px",
+  background: COLORS.panel,
+  border: `1px solid ${COLORS.line}`,
+  borderRadius: 4,
 };

@@ -86,6 +86,7 @@ export {
 export {
   InteractionEditor,
   type InteractionEditorProps,
+  HarnessBadge,
 } from "./InteractionEditor/InteractionEditor.js";
 export {
   ActionForm,

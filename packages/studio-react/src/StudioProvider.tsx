@@ -209,6 +209,42 @@ export type StudioProviderProps = {
    * Polling is a belt-and-suspenders for the external-append case.
    */
   readonly historyPollMs?: number;
+  /**
+   * Canonical view mode from a host UI runtime (e.g. the webapp's
+   * `studio.mel`). When supplied together with the request handlers
+   * below, the provider treats its simulation state as derived: on
+   * every render it checks `uiViewMode === "simulate"` and auto-clears
+   * playback if not. This is the ownership boundary: semantic state
+   * (is-simulating + action-name) lives in the host runtime,
+   * ephemeral playback details (trace, origin metadata, enteredAt)
+   * live here.
+   *
+   * If omitted (alongside the handlers), the provider falls back to
+   * its own local useState-driven simulation lifecycle. This keeps
+   * the provider usable in tests + any standalone consumer that
+   * hasn't adopted an external UI runtime yet.
+   */
+  readonly uiViewMode?: "live" | "simulate" | "scrub";
+  /**
+   * Name of the action being simulated (non-null iff
+   * `uiViewMode === "simulate"`). Ignored in local-fallback mode.
+   */
+  readonly uiSimulationActionName?: string | null;
+  /**
+   * Called when a UI surface inside the provider (InteractionEditor's
+   * Simulate button, SimulationTraceView) wants to enter a
+   * simulation. The host is expected to dispatch the matching
+   * `enterSimulation(actionName)` on its UI runtime. Presence of
+   * this callback (plus `onExitSimulationRequest`) is what switches
+   * the provider out of local-fallback mode.
+   */
+  readonly onEnterSimulationRequest?: (actionName: string) => void;
+  /**
+   * Called when a UI surface wants to exit simulation (user close,
+   * focus change, search open, version bump). Pair with
+   * `onEnterSimulationRequest` — both omitted ⇒ local-fallback.
+   */
+  readonly onExitSimulationRequest?: () => void;
 };
 
 export function StudioProvider({
@@ -216,6 +252,10 @@ export function StudioProvider({
   adapter,
   children,
   historyPollMs = 500,
+  uiViewMode,
+  uiSimulationActionName,
+  onEnterSimulationRequest,
+  onExitSimulationRequest,
 }: StudioProviderProps): JSX.Element {
   const [version, setVersion] = useState(0);
   const [history, setHistory] = useState<readonly EditIntentEnvelope[]>([]);
@@ -223,7 +263,39 @@ export function StudioProvider({
     readonly DispatchHistoryEntry[]
   >([]);
   const dispatchSeqRef = useRef(0);
-  const [simulation, setSimulation] = useState<SimulationSession | null>(null);
+  // Simulation state is split into two pieces so that ownership can
+  // route either to an external UI runtime OR to an internal fallback:
+  //   - `sessionMeta` + `playback`: ephemeral render-side artifacts
+  //     (trace, origin metadata, enteredAt). Always owned here.
+  //   - view-mode + action-name: semantic "is this simulating?" state.
+  //     When the host passes `onEnterSimulationRequest`, that's routed
+  //     through the host's runtime (props `uiViewMode` +
+  //     `uiSimulationActionName`). Otherwise we keep a local fallback.
+  const [sessionMeta, setSessionMeta] = useState<
+    | {
+        readonly id: string;
+        readonly enteredAt: number;
+        readonly origin: SimulationSessionOrigin;
+      }
+    | null
+  >(null);
+  const [playback, setPlayback] = useState<SimulationPlayback | null>(null);
+  const hasExternalSimulationOwner =
+    onEnterSimulationRequest !== undefined &&
+    onExitSimulationRequest !== undefined;
+  const [localSimulationActionName, setLocalSimulationActionName] = useState<
+    string | null
+  >(null);
+  const effectiveViewMode: "live" | "simulate" | "scrub" =
+    hasExternalSimulationOwner
+      ? uiViewMode ?? "live"
+      : localSimulationActionName !== null
+        ? "simulate"
+        : "live";
+  const effectiveSimulationActionName: string | null =
+    hasExternalSimulationOwner
+      ? (uiSimulationActionName ?? null)
+      : localSimulationActionName;
   const simulationGenerationRef = useRef(0);
   const simulationSeqRef = useRef(0);
 
@@ -260,6 +332,24 @@ export function StudioProvider({
     }, historyPollMs);
     return () => clearInterval(id);
   }, [core, historyPollMs]);
+
+  // Subscribe to every dispatch — whoever fires it (this provider's
+  // own `dispatch`, the agent's tools, a programmatic mock seeder,
+  // anyone) bumps the version here. That makes the provider the
+  // single place React cares about dispatch freshness, regardless of
+  // call-site. Before this seam existed, every alternative path had
+  // to remember to call `setVersion` by hand.
+  useEffect(() => {
+    const detach = core.subscribeAfterDispatch((result) => {
+      if (result.kind !== "completed") return;
+      setVersion((v) => v + 1);
+      void core
+        .getEditHistory()
+        .then(setHistory)
+        .catch(() => {});
+    });
+    return detach;
+  }, [core]);
 
   const bump = useCallback(
     async <T,>(fn: () => Promise<T> | T): Promise<T> => {
@@ -313,13 +403,23 @@ export function StudioProvider({
     },
     [core],
   );
+  // Provider's dispatch helper — thin now that core fires
+  // subscribeAfterDispatch for every dispatch. We still record to
+  // `dispatchHistory` here because that timeline only tracks
+  // dispatches that flow through this provider (see
+  // `recordDispatch` comment). Agent / programmatic callers that
+  // hit `core.dispatchAsync` directly won't appear in
+  // `dispatchHistory`, which is intended — the timeline is a
+  // per-provider log, not a per-core log. Version bumps happen via
+  // the core-level subscription above, so whoever dispatches, React
+  // re-renders.
   const dispatch = useCallback(
     async (intent: Intent): Promise<StudioDispatchResult> => {
-      const result = await bump(() => core.dispatchAsync(intent));
+      const result = await core.dispatchAsync(intent);
       recordDispatch(intent, result);
       return result;
     },
-    [bump, core, recordDispatch],
+    [core, recordDispatch],
   );
   const explainIntent = useCallback(
     (intent: Intent) => core.explainIntent(intent),
@@ -360,7 +460,7 @@ export function StudioProvider({
       const actionName = extractActionName(input.origin);
       const traceNodeId =
         input.origin.kind === "trace-node" ? input.origin.traceNodeId : null;
-      const playback: SimulationPlayback = {
+      const nextPlayback: SimulationPlayback = {
         generation: simulationGenerationRef.current,
         actionName,
         trace: input.trace,
@@ -368,40 +468,94 @@ export function StudioProvider({
         mode: input.mode ?? (traceNodeId !== null ? "step" : "sequence"),
         traceNodeId,
       };
-      const session: SimulationSession = {
+      const nextMeta = {
         id: `sim-${simulationSeqRef.current}`,
         enteredAt: Date.now(),
         origin: input.origin,
+      } as const;
+      // Store ephemeral bits locally. Route semantic is-simulating
+      // state either to the host runtime (via the callback) or to
+      // local fallback state.
+      setPlayback(nextPlayback);
+      setSessionMeta(nextMeta);
+      if (onEnterSimulationRequest !== undefined) {
+        onEnterSimulationRequest(actionName);
+      } else {
+        setLocalSimulationActionName(actionName);
+      }
+      return {
+        ...nextMeta,
         actionName,
-        playback,
+        playback: nextPlayback,
       };
-      setSimulation(session);
-      return session;
     },
-    [],
+    [onEnterSimulationRequest],
   );
 
   const exitSimulation = useCallback(
     (_reason?: SimulationExitReason): void => {
-      setSimulation((prev) => (prev === null ? prev : null));
+      setPlayback(null);
+      setSessionMeta(null);
+      if (onExitSimulationRequest !== undefined) {
+        onExitSimulationRequest();
+      } else {
+        setLocalSimulationActionName(null);
+      }
     },
-    [],
+    [onExitSimulationRequest],
   );
+
+  // Auto-clear playback whenever the *effective* view mode drops out
+  // of "simulate". In external-owner mode this fires when the host
+  // runtime flips viewMode (agent, project switch, scrub entry); in
+  // local-fallback mode it fires when our own localSimulationActionName
+  // goes null via `exitSimulation`. Either way, playback goes with it.
+  useEffect(() => {
+    if (effectiveViewMode === "simulate") return;
+    setPlayback((prev) => (prev === null ? prev : null));
+    setSessionMeta((prev) => (prev === null ? prev : null));
+  }, [effectiveViewMode]);
 
   // Auto-exit whenever `version` advances. `version` bumps on build
   // success and on every successful dispatch, so any session entered
-  // against the prior world is now stale (either the schema changed,
-  // or the live snapshot advanced past the one the simulation was
-  // against). We guard on the prior version so the initial mount +
-  // first successful build don't clobber a session the user opens
-  // immediately afterwards. Safe even if the user has no session open
-  // — the setter is a no-op in that case.
+  // against the prior world is now stale. Route through the same
+  // branch logic as manual exitSimulation.
   const prevVersionForSimRef = useRef(0);
   useEffect(() => {
     if (prevVersionForSimRef.current === version) return;
     prevVersionForSimRef.current = version;
-    setSimulation((prev) => (prev === null ? prev : null));
+    if (effectiveViewMode !== "simulate") return;
+    if (onExitSimulationRequest !== undefined) {
+      onExitSimulationRequest();
+    } else {
+      setLocalSimulationActionName(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version]);
+
+  /**
+   * `simulation` is derived from effective view mode + action-name +
+   * ephemeral playback/meta. Non-null iff all three align: the
+   * ownership layer says we're simulating a named action AND the
+   * local playback has been populated by a recent enterSimulation
+   * call. An agent-initiated flip of viewMode with no UI-side
+   * construction leaves this null until a trace is built.
+   */
+  const simulation = useMemo<SimulationSession | null>(() => {
+    if (effectiveViewMode !== "simulate") return null;
+    if (effectiveSimulationActionName === null) return null;
+    if (playback === null || sessionMeta === null) return null;
+    return {
+      ...sessionMeta,
+      actionName: effectiveSimulationActionName,
+      playback,
+    };
+  }, [
+    effectiveViewMode,
+    effectiveSimulationActionName,
+    playback,
+    sessionMeta,
+  ]);
 
   const value = useMemo<StudioContextValue>(
     () => ({

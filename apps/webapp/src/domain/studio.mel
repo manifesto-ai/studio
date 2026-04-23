@@ -1,0 +1,153 @@
+// studio.mel — Studio UI contract (v0).
+//
+// This is *not* the user's domain. It is the contract between the
+// agent, the user, and the Studio UI: the semantic transitions the
+// UI is allowed to make, with legality gates enforcing mutual
+// exclusions.
+//
+// Rule of thumb for what lives here:
+//   - Must be a meaningful semantic transition the agent/user could
+//     request and that would benefit from a legality gate.
+//   - Must NOT be ephemeral (animations, trace playback, scrub tween,
+//     debounced cursor stream, dispatch logs) — those live in React /
+//     XState as side effects of the transitions declared here.
+
+domain Studio {
+  type FocusKind = "action" | "state" | "computed"
+  type FocusOrigin = "graph" | "source" | "diagnostic" | "interact" | "agent"
+  type LensId = "interact" | "snapshot" | "plan" | "history" | "diagnostics" | "agent"
+  // ViewMode is the mutual-exclusion discriminator for "what view of
+  // reality the Studio is currently presenting". `live` is the normal
+  // case; `simulate` is a what-if preview against the live snapshot;
+  // `scrub` is a point-in-time view of past schema state. The
+  // runtime's `dispatchable when` gates below enforce that the three
+  // modes never overlap.
+  type ViewMode = "live" | "simulate" | "scrub"
+
+  state {
+    // ── Focus ──────────────────────────────────────────────────────
+    // The currently-selected graph node. `focusedNodeId` encodes the
+    // node's kind + name in the existing `<kind>:<name>` format the
+    // webapp already uses (e.g. "action:toggleTodo"). Kind and origin
+    // are kept as sibling fields so the agent can read them without
+    // parsing the id.
+    focusedNodeId: string | null = null
+    focusedNodeKind: FocusKind | null = null
+    focusedNodeOrigin: FocusOrigin | null = null
+
+    // ── Lens ───────────────────────────────────────────────────────
+    activeLens: LensId = "interact"
+
+    // ── View mode (mutual exclusion: live / simulate / scrub) ──────
+    viewMode: ViewMode = "live"
+    // Which action is currently being what-if'd. Non-null iff
+    // viewMode == "simulate". The playback trace itself lives in
+    // React state (ephemeral).
+    simulationActionName: string | null = null
+    // Which edit-envelope the user is scrubbing to. Non-null iff
+    // viewMode == "scrub". The replayed module/snapshot live in
+    // React state (expensive, derivable).
+    scrubEnvelopeId: string | null = null
+
+    // ── Active project ─────────────────────────────────────────────
+    // Which bundled project the user is editing. Project source
+    // itself is owned by the Monaco editor — NOT mirrored here.
+    activeProjectName: string | null = null
+  }
+
+  computed hasFocus = focusedNodeId != null
+  computed isLive = viewMode == "live"
+  computed isSimulating = viewMode == "simulate"
+  computed isScrubbing = viewMode == "scrub"
+
+  // ── Focus actions ────────────────────────────────────────────────
+
+  action focusNode(id: string, kind: FocusKind, origin: FocusOrigin) {
+    onceIntent {
+      patch focusedNodeId = id
+      patch focusedNodeKind = kind
+      patch focusedNodeOrigin = origin
+    }
+  }
+
+  action clearFocus() {
+    onceIntent {
+      patch focusedNodeId = null
+      patch focusedNodeKind = null
+      patch focusedNodeOrigin = null
+    }
+  }
+
+  // ── Lens action ──────────────────────────────────────────────────
+
+  action openLens(id: LensId) {
+    onceIntent {
+      patch activeLens = id
+    }
+  }
+
+  // ── Simulation actions ──────────────────────────────────────────
+  // Entering simulation requires the Studio be live — you cannot
+  // what-if against a scrubbed past snapshot. Exiting is only valid
+  // while simulating. This is the heart of what studio.mel buys us:
+  // impossible UI transitions are rejected at the runtime boundary.
+
+  action enterSimulation(actionName: string)
+    dispatchable when viewMode == "live"
+  {
+    onceIntent {
+      patch viewMode = "simulate"
+      patch simulationActionName = actionName
+    }
+  }
+
+  action exitSimulation()
+    dispatchable when viewMode == "simulate"
+  {
+    onceIntent {
+      patch viewMode = "live"
+      patch simulationActionName = null
+    }
+  }
+
+  // ── Scrub actions ───────────────────────────────────────────────
+  // Scrubbing is allowed from live (entering) or from scrub
+  // (switching target). Simulation blocks entry — agent that wants
+  // both must exit simulation first.
+
+  action scrubTo(envelopeId: string)
+    dispatchable when viewMode == "live" || viewMode == "scrub"
+  {
+    onceIntent {
+      patch viewMode = "scrub"
+      patch scrubEnvelopeId = envelopeId
+    }
+  }
+
+  action resetScrub()
+    dispatchable when viewMode == "scrub"
+  {
+    onceIntent {
+      patch viewMode = "live"
+      patch scrubEnvelopeId = null
+    }
+  }
+
+  // ── Project switching ───────────────────────────────────────────
+  // Switching projects resets focus and view mode — the old focus
+  // refers to a node id in the previous project and is no longer
+  // meaningful. Mode resets to live since the old simulation/scrub
+  // target belonged to the previous snapshot history.
+
+  action switchProject(name: string) {
+    onceIntent {
+      patch activeProjectName = name
+      patch focusedNodeId = null
+      patch focusedNodeKind = null
+      patch focusedNodeOrigin = null
+      patch viewMode = "live"
+      patch simulationActionName = null
+      patch scrubEnvelopeId = null
+    }
+  }
+}

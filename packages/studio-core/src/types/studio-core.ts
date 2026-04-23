@@ -75,4 +75,21 @@ export type StudioCore = {
   readonly getLineage: () => WorldLineage;
   readonly getLatestHead: () => WorldHead | null;
   readonly getWorld: (id: WorldId) => World | null;
+  /**
+   * Notifier fired after every `dispatchAsync` call settles, with the
+   * full `StudioDispatchResult` (including rejected/failed). This is
+   * the "something happened to this runtime" seam: React providers
+   * bump their version counters here, programmatic callers (agent
+   * tools, seed palettes) get picked up regardless of who initiated
+   * the dispatch, and external observers (lineage timelines, auto-
+   * savers) can hook in uniformly.
+   *
+   * Listener order is insertion order. Errors thrown in a listener are
+   * swallowed with a console warning so one bad subscriber doesn't
+   * prevent others from running. Returns a `Detach` to unsubscribe —
+   * React `useEffect` cleanup is the typical caller.
+   */
+  readonly subscribeAfterDispatch: (
+    listener: (result: StudioDispatchResult, intent: Intent) => void,
+  ) => Detach;
 };

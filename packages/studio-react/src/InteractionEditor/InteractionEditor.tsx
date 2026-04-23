@@ -4,6 +4,7 @@ import {
   useMemo,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from "react";
 import { COLORS, FONT_STACK, MONO_STACK } from "../style-tokens.js";
 import { useStudio } from "../useStudio.js";
@@ -73,6 +74,25 @@ export type InteractionEditorProps = {
    * toggle is a no-op. Left on the type for call-site compatibility.
    */
   readonly enforceSimulateFirst?: boolean;
+  /**
+   * Render something after the action `<select>` in the header row.
+   * Typical caller is the webapp's LensPane, which injects a Mock-
+   * data button here so it sits right next to the action the user
+   * is editing. When provided, this REPLACES the default ready/
+   * blocked badge in that position — the host is expected to show
+   * availability somewhere else (e.g. panel header), using the
+   * availability passed through `onAvailabilityChange`.
+   */
+  readonly actionRowTrailing?: ReactNode;
+  /**
+   * Fires on mount and whenever the selected action's availability
+   * toggles. `available === true` means the action's `available
+   * when` guards hold against the current snapshot. Host apps use
+   * this to render their own availability indicator (e.g. a badge
+   * in the surrounding panel header) when they pass
+   * `actionRowTrailing` and thus hide the built-in badge.
+   */
+  readonly onAvailabilityChange?: (available: boolean) => void;
 };
 
 /**
@@ -122,6 +142,19 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
   const [selectedAction, setSelectedAction] = useState<string | null>(
     props.initialAction ?? null,
   );
+
+  // Report availability of the currently-selected action to the host.
+  // Fires on mount, on action change, and on snapshot change
+  // (via actionSplits identity flipping). Hosts that move the
+  // ready/blocked badge out of the default slot use this to render
+  // their own indicator.
+  const currentlyAvailable =
+    selectedAction !== null &&
+    actionSplits.available.includes(selectedAction);
+  const onAvailabilityChange = props.onAvailabilityChange;
+  useEffect(() => {
+    onAvailabilityChange?.(currentlyAvailable);
+  }, [currentlyAvailable, onAvailabilityChange]);
   const [sessions, setSessions] = useState<Record<string, InteractionSession>>({});
   const [currentSession, setCurrentSession] = useState<InteractionSession>(() =>
     createInteractionSession({}),
@@ -477,9 +510,18 @@ export function InteractionEditor(props: InteractionEditorProps = {}): JSX.Eleme
           )}
         </select>
         {selectedAction !== null ? (
-          <HarnessBadge
-            available={actionSplits.available.includes(selectedAction)}
-          />
+          // Host may override this slot (e.g. drop a Mock-data
+          // button in next to the selected action). When the host
+          // provides `actionRowTrailing`, we hide the default
+          // ready/blocked badge — the host is expected to surface
+          // availability elsewhere via `onAvailabilityChange`.
+          props.actionRowTrailing !== undefined ? (
+            props.actionRowTrailing
+          ) : (
+            <HarnessBadge
+              available={actionSplits.available.includes(selectedAction)}
+            />
+          )
         ) : null}
       </div>
 
@@ -620,7 +662,7 @@ function createInteractionSession(defaultValue: unknown): InteractionSession {
   };
 }
 
-function HarnessBadge({
+export function HarnessBadge({
   available,
 }: {
   readonly available: boolean;
