@@ -69,6 +69,11 @@ export type StudioUiSnapshot = {
   readonly simulationActionName: string | null;
   readonly scrubEnvelopeId: string | null;
   readonly activeProjectName: string | null;
+  /** Last finalized user/agent turn. Stored single-entry — full
+   *  transcript is a React concern. See studio.mel recordAgentTurn. */
+  readonly lastUserPrompt: string | null;
+  readonly lastAgentAnswer: string | null;
+  readonly agentTurnCount: number;
   /** Computed projections. */
   readonly hasFocus: boolean;
   readonly isLive: boolean;
@@ -85,6 +90,9 @@ const EMPTY_SNAPSHOT: StudioUiSnapshot = {
   simulationActionName: null,
   scrubEnvelopeId: null,
   activeProjectName: null,
+  lastUserPrompt: null,
+  lastAgentAnswer: null,
+  agentTurnCount: 0,
   hasFocus: false,
   isLive: true,
   isSimulating: false,
@@ -120,6 +128,7 @@ type StudioUiContextValue = {
   readonly scrubTo: (envelopeId: string) => void;
   readonly resetScrub: () => void;
   readonly switchProject: (name: string) => void;
+  readonly recordAgentTurn: (prompt: string, answer: string) => void;
   // ── Low-level dispatch seam (for tests + programmatic callers) ──
   // Typed helpers above cover every known studio.mel action. These
   // lower-level seams are kept for callers that need Promise-shaped
@@ -280,6 +289,8 @@ export function StudioUiProvider({
       scrubTo: (envelopeId) => dispatch("scrubTo", [envelopeId]),
       resetScrub: () => dispatch("resetScrub", []),
       switchProject: (name) => dispatch("switchProject", [name]),
+      recordAgentTurn: (prompt, answer) =>
+        dispatch("recordAgentTurn", [prompt, answer]),
       createIntent: createIntentFn,
       dispatchAsync: dispatchIntent,
     }),
@@ -316,6 +327,9 @@ function readSnapshot(core: StudioCore): StudioUiSnapshot {
     simulationActionName: asStringOrNull(data.simulationActionName),
     scrubEnvelopeId: asStringOrNull(data.scrubEnvelopeId),
     activeProjectName: asStringOrNull(data.activeProjectName),
+    lastUserPrompt: asStringOrNull(data.lastUserPrompt),
+    lastAgentAnswer: asStringOrNull(data.lastAgentAnswer),
+    agentTurnCount: typeof data.agentTurnCount === "number" ? data.agentTurnCount : 0,
     hasFocus: Boolean(computed.hasFocus),
     isLive: computed.isLive !== false,
     isSimulating: Boolean(computed.isSimulating),

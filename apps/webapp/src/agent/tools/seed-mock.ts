@@ -25,15 +25,25 @@ import {
 } from "../../mock/generate.js";
 import type { DomainModule } from "@manifesto-ai/studio-core";
 
+/** Shape we expect on dispatch result — we keep it loose (index
+ *  signature) to tolerate the runtime version-skew, while picking
+ *  out the fields the tool actually surfaces: kind, a rejection
+ *  code, and any human message. */
+export type SeedMockDispatchResult = {
+  readonly kind: "completed" | "rejected" | "failed" | string;
+  readonly rejection?: {
+    readonly code?: string;
+    readonly message?: string;
+    readonly expression?: string;
+  };
+  readonly error?: { readonly message?: string };
+  readonly [k: string]: unknown;
+};
+
 export type SeedMockContext = {
   readonly getModule: () => DomainModule | null;
   readonly createIntent: (action: string, ...args: unknown[]) => unknown;
-  readonly dispatchAsync: (
-    intent: unknown,
-  ) => Promise<{
-    readonly kind: "completed" | "rejected" | "failed" | string;
-    readonly [k: string]: unknown;
-  }>;
+  readonly dispatchAsync: (intent: unknown) => Promise<SeedMockDispatchResult>;
 };
 
 export type SeedMockInput = {
@@ -41,6 +51,18 @@ export type SeedMockInput = {
   readonly count?: number;
   readonly seed?: number;
 };
+
+export type SeedMockOutcome =
+  | { readonly kind: "completed" }
+  | {
+      readonly kind: "rejected";
+      /** Rejection code from the runtime (e.g. guard name). */
+      readonly code?: string;
+      /** Human-readable reason if the runtime surfaces one. */
+      readonly message?: string;
+    }
+  | { readonly kind: "failed"; readonly message?: string }
+  | { readonly kind: "error"; readonly message: string };
 
 export type SeedMockOutput = {
   readonly action: string;
@@ -56,16 +78,14 @@ export type SeedMockOutput = {
    */
   readonly samples: readonly (readonly unknown[])[];
   /**
-   * Per-sample outcome kinds, same length as `samples`. `"error"`
-   * means dispatch threw (unexpected) — separate from `rejected`
-   * (legality gate) and `failed` (runtime logic returned failure).
+   * Per-sample outcome detail, same length as `samples`.
+   * `rejected` entries carry the runtime's rejection code/message
+   * so the agent can tell the user *why* a batch failed instead of
+   * just "5/5 rejected." `error` means dispatch threw (unexpected) —
+   * separate from `rejected` (legality gate) and `failed` (runtime
+   * logic returned failure).
    */
-  readonly outcomes: readonly (
-    | "completed"
-    | "rejected"
-    | "failed"
-    | "error"
-  )[];
+  readonly outcomes: readonly SeedMockOutcome[];
 };
 
 export function createSeedMockTool(): AgentTool<
@@ -141,7 +161,7 @@ export function createSeedMockTool(): AgentTool<
         };
       }
 
-      const outcomes: SeedMockOutput["outcomes"][number][] = [];
+      const outcomes: SeedMockOutcome[] = [];
       let completed = 0;
       let rejected = 0;
       let failed = 0;
@@ -157,22 +177,39 @@ export function createSeedMockTool(): AgentTool<
           const report = await ctx.dispatchAsync(intent);
           if (report.kind === "completed") {
             completed += 1;
-            outcomes.push("completed");
+            outcomes.push({ kind: "completed" });
           } else if (report.kind === "rejected") {
             rejected += 1;
-            outcomes.push("rejected");
+            // Bubble the runtime's rejection code/message upward so
+            // the agent can explain WHY — "rejected because guard
+            // `existsById(...)` evaluated false" beats an opaque count.
+            outcomes.push({
+              kind: "rejected",
+              code: report.rejection?.code,
+              message:
+                report.rejection?.message ?? report.rejection?.expression,
+            });
           } else if (report.kind === "failed") {
             failed += 1;
-            outcomes.push("failed");
+            outcomes.push({
+              kind: "failed",
+              message: report.error?.message,
+            });
           } else {
-            // Unknown kind — treat as failed for accounting, mark
-            // as "error" so the agent can flag an unexpected result.
+            // Unknown kind — treat as errored so the agent flags an
+            // unexpected result shape rather than silently tallying.
             errored += 1;
-            outcomes.push("error");
+            outcomes.push({
+              kind: "error",
+              message: `unknown dispatch result kind: ${String(report.kind)}`,
+            });
           }
-        } catch {
+        } catch (err) {
           errored += 1;
-          outcomes.push("error");
+          outcomes.push({
+            kind: "error",
+            message: err instanceof Error ? err.message : String(err),
+          });
         }
       }
 

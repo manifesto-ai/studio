@@ -38,6 +38,11 @@ export type StudioUiState = {
   readonly simulationActionName: string | null;
   readonly scrubEnvelopeId: string | null;
   readonly activeProjectName: string | null;
+  /** Last finalized user/agent turn. Single-entry memory so the
+   *  agent can recall what it just said without a transcript store. */
+  readonly lastUserPrompt: string | null;
+  readonly lastAgentAnswer: string | null;
+  readonly agentTurnCount: number;
 };
 
 /**
@@ -53,6 +58,20 @@ export type StudioUiState = {
  * availability, graph edges) comes from tool calls — see
  * `apps/webapp/src/agent/tools/inspect-*.ts`.
  */
+/**
+ * Compact projection of a past turn for the "Recent conversation"
+ * tail of the system prompt. `assistantExcerpt` is length-capped so
+ * sticking the last 5 turns into every request doesn't blow the
+ * token budget. Full history is still available to the agent via
+ * the `inspectConversation` tool.
+ */
+export type RecentTurn = {
+  readonly turnId: string;
+  readonly userPrompt: string;
+  readonly assistantExcerpt: string;
+  readonly toolCount: number;
+};
+
 export type StudioAgentContext = {
   readonly hasModule: boolean;
   readonly melSource: string;
@@ -60,17 +79,24 @@ export type StudioAgentContext = {
     readonly errors: number;
     readonly warnings: number;
   };
+  /**
+   * Last few agent turns, newest-first. Empty on a fresh session
+   * (no turns yet). Capped length keeps the system prompt bounded.
+   */
+  readonly recentTurns: readonly RecentTurn[];
 };
 
 export function readStudioAgentContext(
   userCore: AgentContextCore,
   melSource: string,
+  recentTurns: readonly RecentTurn[] = [],
 ): StudioAgentContext {
   const mod = userCore.getModule();
   return {
     hasModule: mod !== null,
     melSource,
     diagnostics: countDiagnostics(userCore.getDiagnostics()),
+    recentTurns,
   };
 }
 
@@ -105,6 +131,8 @@ export function buildAgentSystemPrompt(ctx: StudioAgentContext): string {
     "- inspectSnapshot() — current state data + computed field values.",
     "- inspectAvailability() — list of actions with live availability flags.",
     "- inspectNeighbors(nodeId) — graph edges touching a node (feeds / mutates / unlocks).",
+    "- inspectLineage({limit?, beforeWorldId?, fields?, intentType?}) — runtime dispatch history. DEFAULT is compact (worldId + intent only); opt into `changedPaths` / `parent` / `schemaHash` / `createdAt` via `fields` when needed.",
+    "- inspectConversation({limit?, beforeTurnId?, fields?}) — this agent's own chat history (user prompts + your prior answers + tool traces). DEFAULT is compact (prompt + toolCount); opt into `assistantText` / `reasoning` / `toolCalls` via `fields`. Use to avoid repeating past explanations.",
     "- explainLegality(action, args) — why a specific action is blocked, with the failing guard expression.",
     "Act:",
     "- dispatch(action, args) — user-domain writes.",
@@ -129,6 +157,31 @@ export function buildAgentSystemPrompt(ctx: StudioAgentContext): string {
     );
     if (ctx.melSource.trim() !== "") {
       lines.push("", "```mel", ctx.melSource, "```");
+    }
+  }
+
+  // Recent conversation tail — always injected for short-horizon
+  // continuity so the agent can reference the last few turns without
+  // a tool round-trip. Intentionally placed AFTER the MEL so the
+  // identity+tools+MEL prefix stays stable for prompt-cache hits;
+  // only this tail varies per turn. Older history is searchable via
+  // `inspectConversation` (explicit pointer in the section header).
+  if (ctx.recentTurns.length > 0) {
+    lines.push(
+      "",
+      `# Recent conversation (${ctx.recentTurns.length} most recent turn${ctx.recentTurns.length === 1 ? "" : "s"}, newest first)`,
+      "Older turns are searchable via `inspectConversation({beforeTurnId, fields?})`.",
+      "",
+    );
+    for (const [i, t] of ctx.recentTurns.entries()) {
+      const label = `turn ${ctx.recentTurns.length - i}`;
+      const toolTag = t.toolCount > 0 ? ` · ${t.toolCount} tool` : "";
+      lines.push(`${label}${toolTag}`);
+      lines.push(`  user: ${t.userPrompt}`);
+      lines.push(
+        `  you: ${t.assistantExcerpt === "" ? "(tool-only turn)" : t.assistantExcerpt}`,
+      );
+      if (i < ctx.recentTurns.length - 1) lines.push("");
     }
   }
 

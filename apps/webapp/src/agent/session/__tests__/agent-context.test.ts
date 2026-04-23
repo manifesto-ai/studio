@@ -134,6 +134,57 @@ describe("buildAgentSystemPrompt — MEL body", () => {
   });
 });
 
+describe("buildAgentSystemPrompt — recent conversation tail", () => {
+  it("emits no tail when no turns have landed yet", () => {
+    const ctx = readStudioAgentContext(makeCore(), "state {}", []);
+    const prompt = buildAgentSystemPrompt(ctx);
+    expect(prompt).not.toContain("# Recent conversation");
+  });
+
+  it("emits the turns newest-first with user/you framing", () => {
+    const ctx = readStudioAgentContext(makeCore(), "state {}", [
+      {
+        turnId: "t3",
+        userPrompt: "why is this blocked?",
+        assistantExcerpt: "toggleTodo needs todoCount > 0.",
+        toolCount: 2,
+      },
+      {
+        turnId: "t2",
+        userPrompt: "seed 5 tasks",
+        assistantExcerpt: "Done — 5 completed.",
+        toolCount: 1,
+      },
+    ]);
+    const prompt = buildAgentSystemPrompt(ctx);
+    expect(prompt).toContain("# Recent conversation");
+    // Pointer to the search tool for older history.
+    expect(prompt).toContain("inspectConversation");
+    // Newest-first numbering: last entry in array is OLDEST shown.
+    // The label is "turn N" where N decreases as we go down.
+    const idxTurn2 = prompt.indexOf("turn 2");
+    const idxTurn1 = prompt.indexOf("turn 1");
+    expect(idxTurn2).toBeGreaterThan(-1);
+    expect(idxTurn1).toBeGreaterThan(idxTurn2);
+    expect(prompt).toContain("user: why is this blocked?");
+    expect(prompt).toContain("you: toggleTodo needs todoCount > 0.");
+    expect(prompt).toContain("· 2 tool");
+  });
+
+  it("marks a tool-only turn (empty excerpt) instead of printing blank", () => {
+    const ctx = readStudioAgentContext(makeCore(), "state {}", [
+      {
+        turnId: "t1",
+        userPrompt: "what's focused?",
+        assistantExcerpt: "",
+        toolCount: 1,
+      },
+    ]);
+    const prompt = buildAgentSystemPrompt(ctx);
+    expect(prompt).toContain("you: (tool-only turn)");
+  });
+});
+
 describe("buildAgentSystemPrompt — dynamic state is NOT in the prompt", () => {
   // The whole pivot is: dynamic state flows through tools, never the
   // prompt. These assertions guard against regression — a future

@@ -277,6 +277,80 @@ describe("generateForAction", () => {
   });
 });
 
+/**
+ * Smoke test covering the end-to-end "seedMock behavior" without
+ * involving the agent: generate N samples → dispatch all → verify
+ * the runtime's snapshot reflects exactly that many tasks. If this
+ * ever breaks, the UI's inspectSnapshot wasn't lying — the whole
+ * chain is out of sync and that's a much bigger bug.
+ */
+describe("end-to-end: generate + dispatch + snapshot stays consistent", () => {
+  // Inline fixture so this test doesn't depend on workspace fixtures
+  // on disk — keeps the expectation local and verifiable.
+  const inlineTaskFlow = `
+    domain InlineTaskFlow {
+      type Task = {
+        id: string,
+        title: string,
+        done: boolean
+      }
+      state {
+        tasks: Array<Task> = []
+      }
+      computed taskCount = len(tasks)
+      action createTask(task: Task) {
+        onceIntent {
+          patch tasks = append(tasks, task)
+        }
+      }
+    }
+  `;
+
+  it("dispatching N mock createTask intents yields tasks.length === N", async () => {
+    const { createStudioCore } = await import("@manifesto-ai/studio-core");
+    const { createHeadlessAdapter } = await import(
+      "@manifesto-ai/studio-adapter-headless"
+    );
+    const core = createStudioCore();
+    const adapter = createHeadlessAdapter({ initialSource: inlineTaskFlow });
+    core.attach(adapter);
+    const build = await core.build();
+    if (build.kind !== "ok") {
+      throw new Error(
+        `inline TaskFlow build failed: ${JSON.stringify(build.errors)}`,
+      );
+    }
+
+    const mod = core.getModule();
+    if (mod === null) throw new Error("no module");
+
+    const N = 10;
+    const result = generateForAction(mod, "createTask", {
+      count: N,
+      seed: 42,
+      now: NOW,
+    });
+    expect(result.samples).toHaveLength(N);
+
+    let completed = 0;
+    for (const args of result.samples) {
+      const intent = core.createIntent("createTask", ...args);
+      const report = await core.dispatchAsync(intent);
+      if (report.kind === "completed") completed++;
+    }
+    expect(completed).toBe(N);
+
+    // The real inspectSnapshot uses exactly this read path — if it
+    // ever returns stale data the bug shows up here first.
+    const snap = core.getSnapshot() as {
+      readonly data?: { readonly tasks?: readonly unknown[] };
+      readonly computed?: { readonly taskCount?: number };
+    };
+    expect(snap.data?.tasks?.length).toBe(N);
+    expect(snap.computed?.taskCount).toBe(N);
+  });
+});
+
 // --------------------------------------------------------------------
 // Test helpers
 // --------------------------------------------------------------------

@@ -24,7 +24,6 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type ReactNode,
 } from "react";
 import { useStudio } from "@manifesto-ai/studio-react";
 import type { EditorAdapter, StudioCore } from "@manifesto-ai/studio-core";
@@ -72,6 +71,17 @@ import {
   type InspectAvailabilityContext,
 } from "../tools/inspect-availability.js";
 import {
+  createInspectLineageTool,
+  type FullLineageEntry,
+  type InspectLineageContext,
+  type WorldOriginLike,
+} from "../tools/inspect-lineage.js";
+import {
+  createInspectConversationTool,
+  type FullConversationTurn,
+  type InspectConversationContext,
+} from "../tools/inspect-conversation.js";
+import {
   createGenerateMockTool,
   type GenerateMockContext,
 } from "../tools/generate-mock.js";
@@ -83,6 +93,7 @@ import { runOrchestrator } from "../agents/orchestrator.js";
 import {
   buildAgentSystemPrompt,
   readStudioAgentContext,
+  type RecentTurn,
 } from "../session/agent-context.js";
 import {
   createTranscriptStore,
@@ -190,6 +201,9 @@ export function AgentLens(): JSX.Element {
           simulationActionName: s.simulationActionName,
           scrubEnvelopeId: s.scrubEnvelopeId,
           activeProjectName: s.activeProjectName,
+          lastUserPrompt: s.lastUserPrompt,
+          lastAgentAnswer: s.lastAgentAnswer,
+          agentTurnCount: s.agentTurnCount,
         };
       },
     };
@@ -234,6 +248,102 @@ export function AgentLens(): JSX.Element {
     const generateMockCtx: GenerateMockContext = {
       getModule: () => core.getModule(),
     };
+    // Project TranscriptStore entries into the tool's narrow
+    // FullConversationTurn shape. Done at tool-call time (via the
+    // ref) so the agent always sees the live transcript, not a
+    // frozen copy captured when the registry was memoized.
+    const inspectConversationCtx: InspectConversationContext = {
+      getTurns: () => {
+        const entries = transcript.getSnapshot();
+        const turns = groupByTurn(entries);
+        // Newest-first for pagination symmetry with inspectLineage.
+        return [...turns].reverse().map<FullConversationTurn>((t) => {
+          const toolCalls: {
+            name: string;
+            argumentsJson: string;
+            ok: boolean;
+          }[] = [];
+          let assistantText = "";
+          let reasoning = "";
+          for (const step of t.steps) {
+            if (step.kind === "tool") {
+              toolCalls.push({
+                name: step.toolCall.name,
+                argumentsJson: step.toolCall.argumentsJson,
+                ok: parseToolOk(step.resultJson),
+              });
+              continue;
+            }
+            if (step.kind === "llm") {
+              const c = step.message.content;
+              if (typeof c === "string" && c.length > 0) assistantText = c;
+              if (typeof step.reasoning === "string") reasoning = step.reasoning;
+              continue;
+            }
+            if (step.kind === "llm-pending") {
+              // Partial still in flight — attribute to this turn so
+              // the tool can report `hasAssistantText` correctly even
+              // mid-stream, without blocking the response.
+              if (assistantText === "" && step.content.length > 0) {
+                assistantText = step.content;
+              }
+              if (reasoning === "" && step.reasoning.length > 0) {
+                reasoning = step.reasoning;
+              }
+            }
+          }
+          return {
+            turnId: t.turnId,
+            userPrompt: t.userPrompt,
+            assistantText,
+            reasoning,
+            toolCalls,
+            endedAt: t.end !== null ? t.end.at : null,
+            stoppedAtCap: t.end !== null ? t.end.stoppedAtCap : false,
+          };
+        });
+      },
+    };
+
+    const inspectLineageCtx: InspectLineageContext = {
+      // Project StudioCore's WorldLineage into the tool's own
+      // FullLineageEntry shape exactly once. The tool itself then
+      // filters, paginates, and projects fields — we return the full
+      // shape here and let the tool decide what reaches the model.
+      // Newest-first: core stores the chain head-last, so we reverse.
+      getLineage: () => {
+        const lineage = core.getLineage();
+        const worlds = lineage.worlds ?? [];
+        return [...worlds].reverse().map<FullLineageEntry>((w) => {
+          const origin = w.origin as {
+            readonly kind: "build" | "dispatch";
+            readonly intentType?: string;
+            readonly buildId?: string;
+          };
+          const projected: WorldOriginLike =
+            origin.kind === "dispatch"
+              ? { kind: "dispatch", intentType: origin.intentType ?? "(unknown)" }
+              : { kind: "build", buildId: origin.buildId };
+          return {
+            worldId: String(w.id ?? ""),
+            parentWorldId:
+              w.parentId === undefined || w.parentId === null
+                ? null
+                : String(w.parentId),
+            schemaHash: String(w.schemaHash ?? ""),
+            origin: projected,
+            changedPaths: Array.isArray(w.changedPaths) ? w.changedPaths : [],
+            // Core stores `recordedAt` as epoch ms; normalize to ISO
+            // for the agent's consumption (matches the rest of the
+            // tool-output conventions — ISO timestamps everywhere).
+            createdAt:
+              typeof w.recordedAt === "number"
+                ? new Date(w.recordedAt).toISOString()
+                : new Date().toISOString(),
+          };
+        });
+      },
+    };
     // seedMock reuses the user-domain write seam: same createIntent
     // and dispatchAsync the `dispatch` tool is bound to. The tool
     // internally runs a sequential generate → dispatch loop and
@@ -254,6 +364,8 @@ export function AgentLens(): JSX.Element {
       bindTool(createInspectSnapshotTool(), inspectSnapshotCtx),
       bindTool(createInspectNeighborsTool(), inspectNeighborsCtx),
       bindTool(createInspectAvailabilityTool(), inspectAvailabilityCtx),
+      bindTool(createInspectLineageTool(), inspectLineageCtx),
+      bindTool(createInspectConversationTool(), inspectConversationCtx),
       bindTool(createGenerateMockTool(), generateMockCtx),
       bindTool(createSeedMockTool(), seedMockCtx),
     ];
@@ -295,7 +407,17 @@ export function AgentLens(): JSX.Element {
       // System prompt only needs identity + tool catalog + MEL. All
       // dynamic values (focus, snapshot, availability, edges) are
       // pulled via inspect* tools at turn time.
-      const ctx = readStudioAgentContext(core, readMelSource());
+      // Pull the last few turns out of the transcript and inject them
+      // into the system prompt for short-horizon continuity. Deeper
+      // history is left to `inspectConversation` on demand.
+      const recentTurns = buildRecentTurnsForPrompt(
+        groupByTurn(transcript.getSnapshot()),
+      );
+      const ctx = readStudioAgentContext(
+        core,
+        readMelSource(),
+        recentTurns,
+      );
       const system = buildAgentSystemPrompt(ctx);
       const result = await runOrchestrator({
         userPrompt: prompt,
@@ -329,6 +451,14 @@ export function AgentLens(): JSX.Element {
         stoppedAtCap: result.stoppedAtCap,
         toolUses: result.toolUses,
       });
+      // Commit the turn into studio.mel as a single-entry memory +
+      // a lineage advance. The agent's next inspectFocus call will
+      // see the new lastUserPrompt/lastAgentAnswer, and
+      // inspectLineage can walk through past turns via the studio
+      // runtime's world chain.
+      const finalText =
+        result.finalMessage.content ?? summarizeToolOnlyTurn(result);
+      ui.recordAgentTurn(prompt, finalText);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "agent call failed";
@@ -348,11 +478,14 @@ export function AgentLens(): JSX.Element {
     }
   }, [core, draft, readMelSource, registry, sending, transcript, ui]);
 
+  // Manifesto-flavored prompts: each one targets a Studio construct
+  // (guard, snapshot, action, node) using its native vocabulary.
   const examplePrompts = useMemo<readonly string[]>(
     () => [
-      "지금 왜 이게 막혀있어?",
-      "available한 액션들 알려줘",
-      "이것에 대해 설명해줘",
+      "What guards this action?",
+      "Describe the current snapshot.",
+      "List actions I can dispatch.",
+      "Seed 5 rows for this action.",
     ],
     [],
   );
@@ -361,18 +494,17 @@ export function AgentLens(): JSX.Element {
   }, []);
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 p-3 gap-3">
-      <ProbeBanner probe={probe} />
+    <div className="flex flex-col flex-1 min-h-0">
+      <ProbeStatus probe={probe} onClear={() => transcript.clear()}
+        canClear={entries.length > 0 && !sending} />
       <Messages turns={turns} sending={sending} />
       <Composer
         draft={draft}
         setDraft={setDraft}
         onSend={onSend}
         onStop={onStop}
-        onClear={() => transcript.clear()}
         sending={sending}
         disabled={probe.kind !== "ready"}
-        hasEntries={entries.length > 0}
         examples={turns.length === 0 ? examplePrompts : undefined}
         onPickExample={pickExample}
       />
@@ -380,65 +512,90 @@ export function AgentLens(): JSX.Element {
   );
 }
 
-function ProbeBanner({ probe }: { readonly probe: ProbeState }): JSX.Element {
-  if (probe.kind === "loading") {
-    return (
-      <Banner tone="info">
-        Probing Ollama endpoint…
-      </Banner>
-    );
-  }
-  if (probe.kind === "error") {
-    return (
-      <Banner tone="warn">
-        Agent offline — {probe.message}.{" "}
-        {probe.config !== undefined ? (
-          <>
-            Endpoint: <code>{probe.config.baseUrl}</code>.
-          </>
-        ) : null}
-      </Banner>
-    );
-  }
-  const { config, models } = probe;
-  const known = models.includes(config.model);
-  if (!known) {
-    return (
-      <Banner tone="warn">
-        Model <code>{config.model}</code> not listed by{" "}
-        <code>{config.baseUrl}</code>. Known: {models.slice(0, 4).join(", ")}
-        {models.length > 4 ? "…" : ""}
-      </Banner>
-    );
-  }
+/**
+ * Hairline status strip — mirrors the Studio TopBar's dot-plus-text
+ * idiom so the agent's connection state reads as part of the same
+ * system, not a third-party chat widget. A red dot means offline, a
+ * state-green one means connected. Model tag + an optional "clear"
+ * ghost link sit on the right.
+ */
+function ProbeStatus({
+  probe,
+  onClear,
+  canClear,
+}: {
+  readonly probe: ProbeState;
+  readonly onClear: () => void;
+  readonly canClear: boolean;
+}): JSX.Element {
+  const { tone, label, detail } = resolveProbe(probe);
+  const dotColor =
+    tone === "ok"
+      ? "var(--color-sig-state)"
+      : tone === "warn"
+        ? "var(--color-sig-effect)"
+        : "var(--color-ink-mute)";
   return (
-    <Banner tone="ok">
-      Connected to <code>{config.baseUrl}</code> — model{" "}
-      <code>{config.model}</code>.
-    </Banner>
+    <div
+      className="
+        flex items-center gap-2
+        px-3 py-1.5
+        border-b border-[var(--color-rule)]
+        text-[10.5px] font-mono
+      "
+      aria-label="Agent connection status"
+    >
+      <span
+        aria-hidden
+        className="h-[6px] w-[6px] rounded-full shrink-0"
+        style={{ background: dotColor, boxShadow: `0 0 8px ${dotColor}` }}
+      />
+      <span className="text-[var(--color-ink-dim)] truncate">{label}</span>
+      {detail !== undefined ? (
+        <span className="text-[var(--color-ink-mute)] truncate">
+          · {detail}
+        </span>
+      ) : null}
+      <button
+        type="button"
+        onClick={onClear}
+        disabled={!canClear}
+        className="
+          ml-auto shrink-0 text-[var(--color-ink-mute)]
+          hover:text-[var(--color-ink-dim)]
+          disabled:opacity-30 disabled:hover:text-[var(--color-ink-mute)]
+          disabled:cursor-not-allowed
+        "
+        title="Clear conversation"
+      >
+        clear
+      </button>
+    </div>
   );
 }
 
-function Banner({
-  tone,
-  children,
-}: {
-  readonly tone: "info" | "ok" | "warn";
-  readonly children: ReactNode;
-}): JSX.Element {
-  const bg =
-    tone === "ok"
-      ? "bg-[color-mix(in_oklch,var(--color-sig-state)_20%,transparent)]"
-      : tone === "warn"
-      ? "bg-[color-mix(in_oklch,var(--color-sig-effect)_20%,transparent)]"
-      : "bg-[var(--color-glass)]";
-  return (
-    <div
-      className={`rounded-md border border-[var(--color-rule)] px-2 py-1 text-[11px] font-mono ${bg}`}
-    >
-      {children}
-    </div>
-  );
+function resolveProbe(
+  probe: ProbeState,
+): { tone: "info" | "ok" | "warn"; label: string; detail?: string } {
+  if (probe.kind === "loading") {
+    return { tone: "info", label: "probing runtime…" };
+  }
+  if (probe.kind === "error") {
+    return {
+      tone: "warn",
+      label: "offline",
+      detail: probe.message,
+    };
+  }
+  const { config, models } = probe;
+  if (!models.includes(config.model)) {
+    return {
+      tone: "warn",
+      label: config.model,
+      detail: "model not listed by endpoint",
+    };
+  }
+  return { tone: "ok", label: config.model };
 }
 
 /**
@@ -490,17 +647,15 @@ function Messages({
     <div
       ref={scrollerRef}
       onScroll={onScroll}
-      className="
-        flex-1 min-h-0 overflow-y-auto
-        rounded-md border border-[var(--color-rule)]
-        bg-[color-mix(in_oklch,var(--color-void)_50%,transparent)]
-        px-3 py-4
-      "
+      // No border / box — messages flow directly in the panel so the
+      // agent reads as "continuation of the Studio," not a nested
+      // widget. Padding keeps content off the chrome but stays airy.
+      className="flex-1 min-h-0 overflow-y-auto px-4 py-5"
     >
       {turns.length === 0 ? (
         <EmptyState sending={sending} />
       ) : (
-        <ol className="flex flex-col gap-4">
+        <ol className="flex flex-col gap-5">
           {turns.map((turn) => (
             <TurnBlock key={turn.turnId} turn={turn} />
           ))}
@@ -512,17 +667,22 @@ function Messages({
 
 function EmptyState({ sending }: { readonly sending: boolean }): JSX.Element {
   return (
-    <div className="flex flex-col items-center justify-center h-full min-h-[240px] gap-3 text-center select-none">
-      <div className="w-9 h-9 rounded-full border border-[var(--color-rule)] bg-[var(--color-glass)] flex items-center justify-center">
-        <span className="text-[var(--color-violet-hot)] text-[16px]">✦</span>
+    <div className="flex flex-col items-start justify-center h-full min-h-[240px] gap-2 select-none">
+      {/* Two hairlines + a violet accent — echoes the schema-graph
+       * edge idiom elsewhere in Studio. No logo, no emoji. */}
+      <div className="flex items-center gap-2">
+        <span
+          aria-hidden
+          className="h-px w-5 bg-[var(--color-violet-hot)]"
+        />
+        <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--color-ink-mute)]">
+          manifesto · agent
+        </span>
       </div>
-      <div className="text-[13px] font-sans text-[var(--color-ink)]">
-        Manifesto Agent
-      </div>
-      <div className="text-[11px] font-sans text-[var(--color-ink-mute)] max-w-[320px]">
+      <div className="text-[14px] font-sans leading-snug text-[var(--color-ink)] max-w-[420px]">
         {sending
-          ? "Preparing your session…"
-          : "Ask about the focused node, why an action is blocked, or what to dispatch next."}
+          ? "Preparing the runtime session…"
+          : "Ask the runtime about itself — why an action is blocked, what the snapshot looks like, what to dispatch next."}
       </div>
     </div>
   );
@@ -552,16 +712,15 @@ function UserBubble({ text }: { readonly text: string }): JSX.Element {
     <div className="flex justify-end">
       <div
         className="
-          max-w-[85%] rounded-2xl rounded-br-sm
-          px-3 py-2 text-[12.5px] font-sans leading-relaxed
-          bg-[var(--color-violet-hot)] text-[var(--color-void)]
+          max-w-[78%] rounded-[10px]
+          px-3 py-[7px] text-[13px] font-sans leading-relaxed
+          bg-[color-mix(in_oklch,var(--color-violet-hot)_92%,transparent)]
+          text-[var(--color-void)]
           break-words
-          shadow-[0_1px_2px_rgba(0,0,0,0.25)]
         "
       >
         {/* User input is plaintext intent — we don't render markdown
-         * here. Preserve newlines via pre-wrap but otherwise render as
-         * literal text so a user who types '*hello*' sees asterisks. */}
+         * here so a user who types '*hello*' sees asterisks. */}
         <div className="whitespace-pre-wrap">{text}</div>
       </div>
     </div>
@@ -592,48 +751,44 @@ function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
     props.step.message.toolCalls !== undefined &&
     props.step.message.toolCalls.length > 0;
   return (
-    <div className="flex flex-col items-start gap-1 max-w-[92%]">
-      <div className="flex items-center gap-1.5 text-[10px] font-sans text-[var(--color-ink-mute)] px-1">
-        <span
-          aria-hidden
-          className="w-1.5 h-1.5 rounded-full bg-[var(--color-violet-hot)]"
-        />
-        <span>agent</span>
-        {isPending ? <span className="opacity-70">· streaming…</span> : null}
+    // Left-side 2px accent bar (violet-hot), no bubble background.
+    // This mirrors SnapshotTree's highlight motif and the Studio's
+    // schema-graph "edge into node" visual — the agent's voice
+    // literally enters from the runtime's side.
+    <div className="flex gap-3">
+      <div
+        aria-hidden
+        className="
+          w-[2px] self-stretch rounded-full
+          bg-[color-mix(in_oklch,var(--color-violet-hot)_75%,transparent)]
+        "
+      />
+      <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+        {reasoning !== "" ? <ReasoningPane text={reasoning} /> : null}
+        {content !== "" || isPending ? (
+          <div className="text-[13px] font-sans leading-relaxed text-[var(--color-ink)] break-words">
+            {/* react-markdown handles partial fragments gracefully
+             * during streaming (unclosed fence, lone `**`, etc.). */}
+            <MarkdownBody>{content}</MarkdownBody>
+            {isPending ? (
+              <span
+                className="
+                  inline-block w-[6px] h-[14px] ml-[2px] align-[-2px]
+                  bg-[var(--color-violet-hot)]
+                  animate-[mf-cursor_1s_steps(2)_infinite]
+                "
+                aria-hidden
+              />
+            ) : null}
+          </div>
+        ) : toolCallsOnly ? (
+          <div className="text-[11px] font-mono text-[var(--color-ink-mute)] italic">
+            {/* Assistant turn emitted tool call(s) only — the result
+             * rows above already speak for the turn. */}
+            observed the runtime.
+          </div>
+        ) : null}
       </div>
-      {reasoning !== "" ? <ReasoningPane text={reasoning} /> : null}
-      {content !== "" || isPending ? (
-        <div
-          className="
-            rounded-2xl rounded-tl-sm
-            px-3 py-2 text-[12.5px] font-sans leading-relaxed
-            bg-[color-mix(in_oklch,var(--color-glass)_85%,transparent)]
-            border border-[var(--color-rule)]
-            text-[var(--color-ink)]
-            break-words
-          "
-        >
-          {/* During streaming the content may be a partial markdown
-           * fragment (unclosed code fence, lone `**`, etc.). react-
-           * markdown tolerates this — it renders what it can and leaves
-           * the rest as text until the next delta completes the token. */}
-          <MarkdownBody>{content}</MarkdownBody>
-          {isPending ? (
-            <span
-              className="
-                inline-block w-[6px] h-[14px] ml-[2px] align-[-2px]
-                bg-[var(--color-violet-hot)]
-                animate-[mf-cursor_1s_steps(2)_infinite]
-              "
-              aria-hidden
-            />
-          ) : null}
-        </div>
-      ) : toolCallsOnly ? (
-        <div className="text-[10.5px] font-sans text-[var(--color-ink-mute)] px-1 italic">
-          (tool call only — see above)
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -644,17 +799,22 @@ function ReasoningPane({ text }: { readonly text: string }): JSX.Element {
     <details
       open={open}
       onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
-      className="
-        w-full rounded-md border border-[var(--color-rule)]
-        bg-[color-mix(in_oklch,var(--color-void)_55%,transparent)]
-        px-2 py-1
-      "
+      // No border, no fill — reasoning reads as a muted pre-script,
+      // visibly subordinate to the answer below it.
+      className="-ml-[2px]"
     >
-      <summary className="cursor-pointer text-[10px] font-sans text-[var(--color-ink-mute)] list-none">
-        <span className="opacity-70">💭 thinking</span>
-        <span className="ml-1 opacity-50">({text.length} chars)</span>
+      <summary
+        className="
+          cursor-pointer list-none
+          text-[10.5px] font-mono uppercase tracking-wider
+          text-[var(--color-ink-mute)]
+          hover:text-[var(--color-ink-dim)]
+          select-none
+        "
+      >
+        reasoning · {text.length}c {open ? "▾" : "▸"}
       </summary>
-      <pre className="mt-1.5 text-[10.5px] font-mono whitespace-pre-wrap text-[var(--color-ink-dim)] leading-snug">
+      <pre className="mt-1.5 text-[11px] font-mono whitespace-pre-wrap text-[var(--color-ink-dim)] leading-relaxed italic">
         {text}
       </pre>
     </details>
@@ -669,41 +829,50 @@ function ToolCard({
   const [open, setOpen] = useState(false);
   const result = parseToolResult(step.resultJson);
   const ok = result.ok;
+  const channel = resolveToolChannel(step.toolCall.name);
   return (
+    // One-line, graph-edge-esque row: `▸ toolName(args) → verdict`.
+    // Channel color on the tool name nods to state/action/computed/
+    // effect channel tokens used elsewhere in Studio.
     <details
       open={open}
       onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
-      className="
-        self-start max-w-[92%] w-fit
-        rounded-md border border-[var(--color-rule)]
-        bg-[color-mix(in_oklch,var(--color-glass)_70%,transparent)]
-        px-2 py-1
-      "
+      className="pl-5 -ml-5"
     >
-      <summary className="cursor-pointer text-[11px] font-mono flex items-center gap-1.5 list-none">
+      <summary
+        className="
+          cursor-pointer list-none
+          flex items-baseline gap-2
+          text-[11.5px] font-mono leading-relaxed
+          select-none
+        "
+      >
+        <span className="text-[var(--color-ink-mute)] shrink-0">
+          {open ? "▾" : "▸"}
+        </span>
+        <span style={{ color: channel }}>{step.toolCall.name}</span>
+        <span className="text-[var(--color-ink-mute)] truncate">
+          {formatArgsInline(step.toolCall.argumentsJson)}
+        </span>
+        <span className="text-[var(--color-ink-mute)] shrink-0">→</span>
         <span
-          aria-hidden
-          className={`w-1.5 h-1.5 rounded-full ${
+          className={
             ok
-              ? "bg-[var(--color-sig-state)]"
-              : "bg-[var(--color-sig-effect)]"
-          }`}
-        />
-        <span className="text-[var(--color-sig-action)]">
-          {step.toolCall.name}
-        </span>
-        <span className="text-[var(--color-ink-mute)]">
-          ({truncate(step.toolCall.argumentsJson, 48)})
-        </span>
-        <span
-          className={`ml-auto text-[10px] ${
-            ok ? "text-[var(--color-ink-mute)]" : "text-[var(--color-sig-effect)]"
-          }`}
+              ? "text-[var(--color-ink-dim)] shrink-0"
+              : "text-[var(--color-sig-effect)] shrink-0"
+          }
         >
-          {ok ? "✓" : "✗"}
+          {ok ? "ok" : "error"}
         </span>
       </summary>
-      <pre className="mt-1 text-[10.5px] font-mono whitespace-pre-wrap text-[var(--color-ink-dim)]">
+      <pre
+        className="
+          mt-1.5 ml-5 px-2.5 py-2
+          text-[10.5px] font-mono whitespace-pre-wrap
+          text-[var(--color-ink-dim)] leading-relaxed
+          border-l border-[var(--color-rule)]
+        "
+      >
         {formatResult(step.resultJson)}
       </pre>
     </details>
@@ -716,11 +885,70 @@ function TurnFooter({
   readonly end: Extract<TranscriptEntry, { kind: "turn-end" }>;
 }): JSX.Element {
   return (
-    <div className="text-[10px] font-mono text-[var(--color-ink-mute)] pl-1">
-      {end.toolUses} tool call{end.toolUses === 1 ? "" : "s"}
-      {end.stoppedAtCap ? " · stopped at cap" : ""}
+    <div className="text-[10px] font-mono uppercase tracking-wider text-[var(--color-ink-mute)] pl-5">
+      {end.toolUses === 0
+        ? "no tool calls"
+        : `${end.toolUses} tool call${end.toolUses === 1 ? "" : "s"}`}
+      {end.stoppedAtCap ? " · capped" : ""}
     </div>
   );
+}
+
+/**
+ * Map tool names to Studio's signal-channel palette so the transcript
+ * reads as a runtime op log, not a generic function call trace. Writes
+ * (dispatch / seed) = action. Reads (inspect*) = computed. Explainers
+ * = effect (warn-ish orange). Generators = computed.
+ */
+function resolveToolChannel(name: string): string {
+  if (name === "dispatch" || name === "studioDispatch" || name === "seedMock") {
+    return "var(--color-sig-action)";
+  }
+  if (name.startsWith("inspect") || name === "generateMock") {
+    // inspectLineage, inspectSnapshot, inspectFocus, etc. are all reads.
+    return "var(--color-sig-computed)";
+  }
+  if (name === "explainLegality") {
+    return "var(--color-sig-effect)";
+  }
+  return "var(--color-ink)";
+}
+
+/**
+ * Inline-safe pretty-print of a tool-call arguments JSON. Drops
+ * redundant quotes around short JSON so the transcript line reads
+ * more like an edge label than a stringified blob. Long args get
+ * truncated — the expand view has the full payload.
+ */
+function formatArgsInline(raw: string): string {
+  if (raw === "" || raw === "{}") return "{}";
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+    ) {
+      const entries = Object.entries(parsed as Record<string, unknown>);
+      if (entries.length === 0) return "{}";
+      const rendered = entries
+        .map(([k, v]) => `${k}: ${formatInlineValue(v)}`)
+        .join(", ");
+      return `{ ${truncate(rendered, 56)} }`;
+    }
+    return truncate(JSON.stringify(parsed), 56);
+  } catch {
+    return truncate(raw, 56);
+  }
+}
+
+function formatInlineValue(v: unknown): string {
+  if (typeof v === "string") return `"${truncate(v, 20)}"`;
+  if (v === null) return "null";
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) return `[${v.length}]`;
+  if (typeof v === "object") return "{…}";
+  return String(v);
 }
 
 function Composer({
@@ -728,10 +956,8 @@ function Composer({
   setDraft,
   onSend,
   onStop,
-  onClear,
   sending,
   disabled,
-  hasEntries,
   examples,
   onPickExample,
 }: {
@@ -739,10 +965,8 @@ function Composer({
   readonly setDraft: (s: string) => void;
   readonly onSend: () => void;
   readonly onStop: () => void;
-  readonly onClear: () => void;
   readonly sending: boolean;
   readonly disabled: boolean;
-  readonly hasEntries: boolean;
   readonly examples?: readonly string[];
   readonly onPickExample: (text: string) => void;
 }): JSX.Element {
@@ -759,21 +983,22 @@ function Composer({
   }, [draft]);
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2 px-4 pt-2 pb-3 border-t border-[var(--color-rule)]">
       {examples !== undefined && examples.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5 pb-1">
+        <div className="flex flex-wrap gap-1.5">
           {examples.map((ex) => (
             <button
               key={ex}
               type="button"
               onClick={() => onPickExample(ex)}
               className="
-                px-2 py-1 rounded-full text-[11px] font-sans
+                px-2.5 py-[5px] rounded-full
+                text-[11px] font-sans
                 border border-[var(--color-rule)]
-                bg-[var(--color-glass)]
-                text-[var(--color-ink-dim)]
+                bg-transparent
+                text-[var(--color-ink-mute)]
                 hover:text-[var(--color-ink)]
-                hover:border-[var(--color-glass-edge-hot)]
+                hover:border-[color-mix(in_oklch,var(--color-violet-hot)_60%,var(--color-rule))]
                 transition-colors
               "
             >
@@ -785,10 +1010,11 @@ function Composer({
       <div
         className="
           flex items-end gap-2
-          rounded-xl border border-[var(--color-rule)]
-          bg-[color-mix(in_oklch,var(--color-void)_60%,transparent)]
-          px-2 py-2
-          focus-within:border-[var(--color-glass-edge-hot)]
+          rounded-[10px]
+          border border-[var(--color-rule)]
+          bg-[color-mix(in_oklch,var(--color-void)_70%,transparent)]
+          pl-3 pr-1.5 py-1.5
+          focus-within:border-[color-mix(in_oklch,var(--color-violet-hot)_80%,var(--color-rule))]
           transition-colors
         "
       >
@@ -799,18 +1025,19 @@ function Composer({
           disabled={disabled}
           placeholder={
             disabled
-              ? "Agent offline — waiting for Ollama"
-              : "Message the agent — Shift+Enter for newline"
+              ? "Runtime offline — waiting for Ollama"
+              : "Speak with the runtime…"
           }
           rows={1}
           className="
             flex-1 resize-none bg-transparent
-            text-[12.5px] font-sans leading-[1.4]
+            text-[13px] font-sans leading-[1.45]
             text-[var(--color-ink)]
             placeholder:text-[var(--color-ink-mute)]
             focus:outline-none
             disabled:opacity-50
             min-h-[22px] max-h-[160px]
+            py-[3px]
           "
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -820,20 +1047,20 @@ function Composer({
             }
           }}
         />
-        <div className="flex items-center gap-1 self-end">
+        <div className="flex items-center self-end">
           {sending ? (
             <button
               type="button"
               onClick={onStop}
               className="
-                w-7 h-7 rounded-md flex items-center justify-center
+                w-7 h-7 rounded-full flex items-center justify-center
                 bg-[var(--color-sig-effect)] text-[var(--color-void)]
                 hover:brightness-110
               "
               aria-label="Stop"
-              title="Stop (Enter)"
+              title="Stop generating"
             >
-              <span className="block w-2.5 h-2.5 rounded-[1px] bg-[var(--color-void)]" />
+              <span className="block w-[9px] h-[9px] rounded-[1px] bg-[var(--color-void)]" />
             </button>
           ) : (
             <button
@@ -841,37 +1068,97 @@ function Composer({
               onClick={onSend}
               disabled={draft.trim() === "" || disabled}
               className="
-                w-7 h-7 rounded-md flex items-center justify-center
+                w-7 h-7 rounded-full flex items-center justify-center
                 bg-[var(--color-violet-hot)] text-[var(--color-void)]
-                disabled:bg-[var(--color-glass)]
+                disabled:bg-transparent
                 disabled:text-[var(--color-ink-mute)]
                 disabled:cursor-not-allowed
                 hover:brightness-110
               "
               aria-label="Send"
-              title="Send (Enter)"
+              title="Send · ⏎"
             >
-              <span className="text-[14px] leading-none">↑</span>
+              <span className="text-[14px] leading-none font-bold">↑</span>
             </button>
           )}
         </div>
       </div>
-      <div className="flex items-center justify-between text-[10px] font-sans text-[var(--color-ink-mute)] px-1">
-        <span>Enter to send · Shift+Enter for newline</span>
-        <button
-          type="button"
-          onClick={onClear}
-          disabled={!hasEntries || sending}
-          className="
-            hover:text-[var(--color-ink-dim)]
-            disabled:opacity-40 disabled:hover:text-[var(--color-ink-mute)]
-          "
-        >
-          Clear conversation
-        </button>
-      </div>
     </div>
   );
+}
+
+/**
+ * Summarize a tool-call-only turn (one with no assistant text but
+ * N tool invocations) so the lineage entry we commit has something
+ * human-legible. The agent itself can introspect the full trace via
+ * the React transcript; this is just the "headline" persisted into
+ * studio.mel.
+ */
+const RECENT_TURN_LIMIT = 5;
+const RECENT_TURN_EXCERPT_CAP = 280;
+
+/**
+ * Project the transcript's most-recent completed turns into the
+ * compact `RecentTurn` shape the system prompt expects. Newest-
+ * first (matches the "Recent conversation" header's ordering).
+ *
+ * Only finalized turns are included — we skip in-flight `llm-
+ * pending` entries because their content is mid-stream and the
+ * excerpt would be a jagged fragment. The current user prompt
+ * (this very turn) isn't in the transcript yet when this runs, so
+ * we don't have to filter it out explicitly.
+ *
+ * Assistant excerpts are trimmed + capped so a single long answer
+ * can't swell the tail; the agent can always pull the full text
+ * via `inspectConversation({fields:["assistantText"]})`.
+ */
+function buildRecentTurnsForPrompt(
+  turns: readonly TranscriptTurn[],
+): readonly RecentTurn[] {
+  if (turns.length === 0) return [];
+  const reversed = [...turns].reverse();
+  const recent = reversed.slice(0, RECENT_TURN_LIMIT);
+  return recent.map<RecentTurn>((t) => {
+    let assistantText = "";
+    let toolCount = 0;
+    for (const step of t.steps) {
+      if (step.kind === "tool") {
+        toolCount += 1;
+        continue;
+      }
+      if (step.kind === "llm") {
+        const c = step.message.content;
+        if (typeof c === "string" && c.length > 0) assistantText = c;
+      }
+      // llm-pending intentionally ignored — content is partial.
+    }
+    return {
+      turnId: t.turnId,
+      userPrompt: t.userPrompt,
+      assistantExcerpt: capRecentExcerpt(assistantText),
+      toolCount,
+    };
+  });
+}
+
+function capRecentExcerpt(s: string): string {
+  const collapsed = s.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= RECENT_TURN_EXCERPT_CAP) return collapsed;
+  return collapsed.slice(0, RECENT_TURN_EXCERPT_CAP - 1) + "…";
+}
+
+function summarizeToolOnlyTurn(result: {
+  readonly trace: readonly { readonly kind: string }[];
+  readonly toolUses: number;
+}): string {
+  return `(tool-only turn · ${result.toolUses} call${
+    result.toolUses === 1 ? "" : "s"
+  })`;
+}
+
+/** Narrower form for places that only care about success/failure. */
+function parseToolOk(raw: string): boolean {
+  return parseToolResult(raw).ok;
 }
 
 function parseToolResult(raw: string): { readonly ok: boolean } {

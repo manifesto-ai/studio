@@ -29,6 +29,10 @@ export type InspectFocusOutput = {
   readonly simulationActionName: string | null;
   readonly scrubEnvelopeId: string | null;
   readonly activeProjectName: string | null;
+  /** Single-entry chat memory — what the user/agent last said. */
+  readonly lastUserPrompt: string | null;
+  readonly lastAgentAnswer: string | null;
+  readonly agentTurnCount: number;
 };
 
 export function createInspectFocusTool(): AgentTool<

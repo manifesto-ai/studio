@@ -174,6 +174,30 @@ describe("studio.mel — view-mode legality gates", () => {
   });
 });
 
+describe("studio.mel — recordAgentTurn is single-entry + advances lineage", () => {
+  it("stores latest prompt/answer, increments turn counter", async () => {
+    const core = await bootStudioRuntime();
+    const a = await core.dispatchAsync(
+      core.createIntent("recordAgentTurn", "why is X blocked?", "X needs Y > 0"),
+    );
+    expect(a.kind).toBe("completed");
+    expect(readState(core)).toMatchObject({
+      lastUserPrompt: "why is X blocked?",
+      lastAgentAnswer: "X needs Y > 0",
+      agentTurnCount: 1,
+    });
+    const b = await core.dispatchAsync(
+      core.createIntent("recordAgentTurn", "seed 5 rows", "(tool-only · 5)"),
+    );
+    expect(b.kind).toBe("completed");
+    expect(readState(core)).toMatchObject({
+      lastUserPrompt: "seed 5 rows",
+      lastAgentAnswer: "(tool-only · 5)",
+      agentTurnCount: 2,
+    });
+  });
+});
+
 describe("studio.mel — switchProject resets dependent state", () => {
   it("clears focus and view mode on project switch", async () => {
     const core = await bootStudioRuntime();

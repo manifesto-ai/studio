@@ -53,6 +53,19 @@ domain Studio {
     // Which bundled project the user is editing. Project source
     // itself is owned by the Monaco editor — NOT mirrored here.
     activeProjectName: string | null = null
+
+    // ── Agent interaction memory (single-entry) ────────────────────
+    // We deliberately store only the LATEST turn — the full transcript
+    // lives in React state (ephemeral, cheap to lose, replayable).
+    // The value here exists so the agent can call `inspectFocus` and
+    // see what the user/it last said without needing access to a
+    // separate transcript store, AND so every interaction advances
+    // studio.mel's lineage — making the agent's timeline a first-
+    // class part of runtime history (scrubbable alongside UI state
+    // changes).
+    lastUserPrompt: string | null = null
+    lastAgentAnswer: string | null = null
+    agentTurnCount: number = 0
   }
 
   computed hasFocus = focusedNodeId != null
@@ -148,6 +161,26 @@ domain Studio {
       patch viewMode = "live"
       patch simulationActionName = null
       patch scrubEnvelopeId = null
+    }
+  }
+
+  // ── Agent turn record ───────────────────────────────────────────
+  // Called by the React shell when an agent turn finalizes. Each
+  // call advances studio.mel's lineage by one world — meaning
+  // "which turn are we on" is queryable via the lineage tracker
+  // without a separate chat-history store.
+  //
+  // `answer` is the finalized assistant text (tool-call-only turns
+  // pass a short human-readable summary). We intentionally keep
+  // only the latest turn as state — the full transcript lives in
+  // React and can be long; what the runtime cares about is *the
+  // lineage of the conversation existing*, not its full content.
+
+  action recordAgentTurn(prompt: string, answer: string) {
+    onceIntent {
+      patch lastUserPrompt = prompt
+      patch lastAgentAnswer = answer
+      patch agentTurnCount = agentTurnCount + 1
     }
   }
 }
