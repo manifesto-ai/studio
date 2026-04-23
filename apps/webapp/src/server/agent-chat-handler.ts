@@ -125,11 +125,13 @@ export async function handleAgentChat(req: Request): Promise<Response> {
 
   const { messages, system, tools, temperature, maxSteps } = parsed.data;
   const modelId = readEnv("AI_GATEWAY_MODEL") ?? DEFAULT_MODEL;
-
-  // Gateway reads the key from env implicitly. We verified presence
-  // above so a missing key surfaces here as a 500 rather than the
-  // provider's less-helpful error.
-  process.env.AI_GATEWAY_API_KEY = apiKey;
+  // Gateway picks up `AI_GATEWAY_API_KEY` from process.env at call
+  // time — no mutation needed here. Vercel sets it in production
+  // from project env vars; the Vite dev plugin mirrors it in from
+  // .env.local at config load. The readEnv() check above fails loud
+  // if it's missing so we surface a 500 with a clear message
+  // instead of the provider's less-helpful auth error.
+  void apiKey;
 
   // Translate the client's tool schemas into AI SDK `tool` shape
   // with NO `execute`. AI SDK's data-stream protocol will forward

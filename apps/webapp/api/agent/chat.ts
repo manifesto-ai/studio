@@ -1,21 +1,27 @@
 /**
- * Vercel serverless function entry — thin wrapper over the shared
- * handler so both the Vite dev middleware (see `vite.config.ts`)
- * and the deployed `/api/agent/chat` endpoint run the exact same
- * code path.
+ * Vercel Function entry for `/api/agent/chat`. Thin wrapper over the
+ * shared `handleAgentChat(Request)` so both Vite dev middleware and
+ * this serverless entry hit the same code path.
  *
- * Deployed URL: https://<domain>/api/agent/chat
- * Local dev URL: http://localhost:5173/api/agent/chat
+ * Runtime: **edge**. The handler uses web-standard `Request` /
+ * `Response` / `ReadableStream` — all first-class on Edge. The
+ * Node runtime's default handler signature is
+ * `(req: IncomingMessage, res: ServerResponse)`, which is NOT what
+ * we export here, and trying to invoke our Fetch-style handler on
+ * Node produces `FUNCTION_INVOCATION_FAILED` in production.
  *
- * Runtime: Edge would work, but we use Node runtime so the AI SDK's
- * default streaming behaviour (without `experimental_*` flags)
- * matches exactly what the dev middleware serves.
+ * Edge also has tangible wins for this workload:
+ *   - Streaming responses are the happy path, not an opt-in.
+ *   - Cold starts measured in milliseconds — relevant when a
+ *     visitor's first question is the one that lands.
+ *   - `@upstash/ratelimit`, `@upstash/redis`, `ai`, and
+ *     `@ai-sdk/gateway` are all Fetch-based and run on Edge
+ *     without tweaks.
  */
 import { handleAgentChat } from "../../src/server/agent-chat-handler.js";
 
 export const config = {
-  // Vercel autodetects runtime; keep explicit for clarity.
-  runtime: "nodejs",
+  runtime: "edge",
 };
 
 export default async function handler(req: Request): Promise<Response> {
