@@ -2,6 +2,7 @@ import {
   Activity,
   Boxes,
   History,
+  Sparkles,
   Stethoscope,
   Zap,
   type LucideIcon,
@@ -10,17 +11,21 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   DiagnosticsPanel,
   DispatchTimeline,
+  HarnessBadge,
   InteractionEditor,
   PlanPanel,
   SnapshotTree,
   type GraphNode,
   type SnapshotFocus,
 } from "@manifesto-ai/studio-react";
+import { AgentLens } from "@/agent/ui/AgentLens";
+import { MockDataPalette } from "@/mock/MockDataPalette";
 // Marker is defined in studio-core (adapter-interface) and not
 // re-exported by studio-react; pull it from the authoritative source.
 import type { Marker } from "@manifesto-ai/studio-core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFocus } from "@/hooks/useFocus";
+import { useStudioUi } from "@/domain/StudioUiRuntime";
 import { cn } from "@/lib/cn";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/Panel";
 import {
@@ -30,7 +35,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/Tooltip";
 
-export type LensId = "interact" | "snapshot" | "plan" | "history" | "diagnostics";
+export type LensId =
+  | "interact"
+  | "snapshot"
+  | "plan"
+  | "history"
+  | "diagnostics"
+  | "agent";
 
 type LensMeta = {
   readonly id: LensId;
@@ -76,6 +87,13 @@ const LENSES: readonly LensMeta[] = [
     Icon: Stethoscope,
     channel: "effect",
   },
+  {
+    id: "agent",
+    label: "Agent",
+    hint: "Ask the agent — deterministic tools + local LLM",
+    Icon: Sparkles,
+    channel: "computed",
+  },
 ];
 
 /**
@@ -85,13 +103,9 @@ const LENSES: readonly LensMeta[] = [
  * observation channel, then look through it."
  */
 export function LensPane({
-  value,
-  onChange,
   onRevealMarker,
   onRevealSourceSpan,
 }: {
-  readonly value: LensId;
-  readonly onChange: (next: LensId) => void;
   readonly onRevealMarker: (marker: Marker) => void;
   /**
    * Forwarded to InteractionEditor so the legality ladder's "↗
@@ -99,6 +113,11 @@ export function LensPane({
    */
   readonly onRevealSourceSpan?: (line: number, column: number) => void;
 }): JSX.Element {
+  // Active lens now lives in the Studio UI runtime — App no longer
+  // owns this state. `openLens` dispatches against studio.mel.
+  const ui = useStudioUi();
+  const value = ui.snapshot.activeLens;
+  const onChange = ui.openLens;
   const active = LENSES.find((l) => l.id === value) ?? LENSES[0];
 
   // Map Focus → SnapshotFocus for the Inspect lens. GraphNode ids are
@@ -152,6 +171,12 @@ export function LensPane({
       ? snapshotFocus.name
       : undefined;
 
+  // InteractionEditor fires `onAvailabilityChange` on mount + when
+  // the selected action's `available when` guard flips. We hold the
+  // latest value here so the PanelHeader can render the READY /
+  // BLOCKED badge (which used to live inside the editor's action row).
+  const [focusedActionAvailable, setFocusedActionAvailable] = useState(false);
+
   return (
     <Panel className="overflow-hidden !flex-row">
       {/* Vertical icon rail */}
@@ -177,9 +202,21 @@ export function LensPane({
         </nav>
       </TooltipProvider>
 
+      {/* Availability of the focused action, tracked via
+       * InteractionEditor's `onAvailabilityChange`. We surface the
+       * READY / BLOCKED badge in the panel header right slot so Mock
+       * can sit right next to the action select without the two
+       * chips fighting for width. */}
       {/* Active lens body */}
       <div className="flex flex-col flex-1 min-w-0">
-        <PanelHeader channel={active.channel}>
+        <PanelHeader
+          channel={active.channel}
+          right={
+            value === "interact" && focusedActionName !== undefined ? (
+              <HarnessBadge available={focusedActionAvailable} />
+            ) : undefined
+          }
+        >
           <span>{active.label}</span>
         </PanelHeader>
         <PanelBody className="flex flex-col">
@@ -212,6 +249,14 @@ export function LensPane({
                     })
                   }
                   onRevealSourceSpan={onRevealSourceSpan}
+                  // Mock button lives inside the action row, right
+                  // next to the action select. The READY/BLOCKED
+                  // badge moves up to the PanelHeader (see above)
+                  // so both chips have breathing room.
+                  actionRowTrailing={
+                    <MockDataPalette action={focusedActionName ?? null} />
+                  }
+                  onAvailabilityChange={setFocusedActionAvailable}
                 />
               </div>
               {value === "snapshot" ? <SnapshotTree focus={snapshotFocus} /> : null}
@@ -220,6 +265,7 @@ export function LensPane({
               {value === "diagnostics" ? (
                 <DiagnosticsPanel onSelect={onRevealMarker} />
               ) : null}
+              {value === "agent" ? <AgentLens /> : null}
             </motion.div>
           </AnimatePresence>
         </PanelBody>

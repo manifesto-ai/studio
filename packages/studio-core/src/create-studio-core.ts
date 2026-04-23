@@ -43,6 +43,34 @@ export function createStudioCore(options?: StudioCoreOptions): StudioCore {
   let adapterUnsubscribe: (() => void) | null = null;
   let dispatchSeq = 0;
 
+  // Post-dispatch subscribers. Notified synchronously at the tail of
+  // every `dispatchAsync`, regardless of outcome (completed / rejected
+  // / failed). A bad listener must not bring down the notifier, so we
+  // catch + warn per-listener rather than letting a throw short-circuit
+  // the rest of the chain.
+  const afterDispatchListeners = new Set<
+    (result: StudioDispatchResult, intent: Intent) => void
+  >();
+  function notifyAfterDispatch(
+    result: StudioDispatchResult,
+    intent: Intent,
+  ): void {
+    for (const listener of afterDispatchListeners) {
+      try {
+        listener(result, intent);
+      } catch (err) {
+        // Don't let a single misbehaving subscriber take out the rest
+        // of the chain. Log so the bug is discoverable without a
+        // debugger attached.
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[studio-core] subscribeAfterDispatch listener threw:",
+          err,
+        );
+      }
+    }
+  }
+
   function syncAdapterMarkers(): void {
     if (attachedAdapter !== null) {
       attachedAdapter.setMarkers(state.currentMarkers);
@@ -229,7 +257,22 @@ export function createStudioCore(options?: StudioCoreOptions): StudioCore {
       });
     }
 
-    return { ...report, traceIds } as StudioDispatchResult;
+    const finalResult = { ...report, traceIds } as StudioDispatchResult;
+    // Notify post-dispatch subscribers. Fired for every outcome —
+    // consumers filter by `result.kind` if they only care about
+    // `completed`. Synchronous fan-out so React providers bump their
+    // version within the same microtask the caller is awaiting.
+    notifyAfterDispatch(finalResult, intent);
+    return finalResult;
+  }
+
+  function subscribeAfterDispatch(
+    listener: (result: StudioDispatchResult, intent: Intent) => void,
+  ): Detach {
+    afterDispatchListeners.add(listener);
+    return () => {
+      afterDispatchListeners.delete(listener);
+    };
   }
 
   function simulate(intent: Intent): StudioSimulateResult {
@@ -288,5 +331,6 @@ export function createStudioCore(options?: StudioCoreOptions): StudioCore {
     getLineage: lineage.getLineage,
     getLatestHead: lineage.getLatestHead,
     getWorld: (id: WorldId): World | null => lineage.getWorld(id),
+    subscribeAfterDispatch,
   };
 }
