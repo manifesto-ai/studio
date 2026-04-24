@@ -1,11 +1,3 @@
-/**
- * Server-side MEL Author Agent runner.
- *
- * The UI agent delegates source-change requests here through the
- * `authorMelProposal` client tool. This handler owns the model call,
- * while the reusable authoring workspace/tools live in
- * `@manifesto-ai/studio-mel-author-agent`.
- */
 import {
   buildMelAuthorSystemPrompt,
   buildMelAuthorUserPrompt,
@@ -14,10 +6,10 @@ import {
   createMelAuthorLifecycle,
   createMelAuthorTools,
   createMelAuthorWorkspace,
+  MEL_AUTHOR_AGENT_MEL,
   type MelAuthorFailureKind,
   type MelAuthorFailureReport,
   type MelAuthorFinalDraft,
-  type MelAuthorLifecycle,
   type MelAuthorLineageOutput,
   type MelAuthorTool,
   type MelAuthorToolTraceEntry,
@@ -31,99 +23,111 @@ import {
   tool,
   type ToolSet,
 } from "ai";
-import { z } from "zod";
-import { enforceChatRateLimit, identifyRequest } from "./rate-limit.js";
-import { resolveAgentModel } from "./agent-chat-handler.js";
+import {
+  readAuthorModelConfig,
+  resolveAuthorModel,
+  type AuthorModelConfig,
+} from "./model.js";
+
+export type MelAuthorCliStrategy = "lens" | "full-source";
+
+export type GenerateAuthorText = (
+  options: Parameters<typeof generateText>[0],
+) => Promise<unknown>;
+
+export type MelAuthorCliRunInput = {
+  readonly source: string;
+  readonly request: string;
+  readonly sourcePath?: string;
+  readonly title?: string;
+  readonly maxSteps?: number;
+  readonly temperature?: number;
+  readonly strategy?: MelAuthorCliStrategy;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly generate?: GenerateAuthorText;
+};
+
+export type MelAuthorCliRunReport = {
+  readonly ok: boolean;
+  readonly kind?: "invalid_input" | "runtime_error";
+  readonly message?: string;
+  readonly output?: MelAuthorFinalDraft;
+  readonly failureReport?: MelAuthorFailureReport;
+  readonly text?: string;
+  readonly finishReason?: string;
+  readonly toolCallCount: number;
+  readonly toolTrace: readonly MelAuthorToolTraceEntry[];
+  readonly authorLineage?: MelAuthorLineageOutput;
+  readonly strategy: MelAuthorCliStrategy;
+  readonly model: AuthorModelConfig;
+  readonly sourcePath?: string;
+  readonly request: string;
+};
+
+const DEFAULT_MAX_STEPS = 8;
+const DEFAULT_TEMPERATURE = 0.2;
+const LENS_TOOL_NAMES = new Set([
+  "inspectSourceOutline",
+  "readSourceRange",
+  "readDeclaration",
+  "findSource",
+  "patchDeclaration",
+]);
 
 const authorGuideIndex = createMelAuthorGuideIndex();
 
-const authorBodyShape = z
-  .object({
-    source: z.string().min(1),
-    request: z.string().min(1),
-    title: z.string().optional(),
-    maxSteps: z.number().int().min(1).max(12).optional(),
-    temperature: z.number().min(0).max(2).optional(),
-  })
-  .strict();
+export async function runMelAuthorAgent(
+  input: MelAuthorCliRunInput,
+): Promise<MelAuthorCliRunReport> {
+  const strategy = input.strategy ?? "lens";
+  const maxSteps = input.maxSteps ?? DEFAULT_MAX_STEPS;
+  const env = input.env ?? process.env;
+  const model = resolveAuthorModel(env);
+  const modelConfig =
+    model.kind === "ok" ? model.config : readAuthorModelConfig(env);
 
-export async function handleAgentAuthor(req: Request): Promise<Response> {
-  if (req.method !== "POST") {
-    return jsonError(405, "method not allowed; use POST");
-  }
-
-  const resolvedModel = resolveAgentModel();
-  if (resolvedModel.kind === "error") {
-    return jsonError(500, resolvedModel.message);
-  }
-
-  const identifier = identifyRequest(req);
-  const rl = await enforceChatRateLimit(identifier);
-  if (rl.kind === "limited") {
+  if (model.kind === "error") {
     const failureReport = createMelAuthorFailureReport({
       failureKind: "provider_error",
-      summary: "MEL Author Agent request was rate limited.",
-      retryAdvice: `Retry after ${rl.retryAfterSeconds} second${rl.retryAfterSeconds === 1 ? "" : "s"}.`,
+      summary: model.message,
+      retryAdvice: "Fix the model provider environment and rerun the CLI.",
     });
-    return new Response(
-      JSON.stringify({
-        ok: false,
-        kind: "runtime_error",
-        message: "rate limit exceeded",
-        detail: { failureReport },
-        retryAfterSeconds: rl.retryAfterSeconds,
+    return {
+      ok: false,
+      kind: "runtime_error",
+      message: failureReport.summary,
+      failureReport,
+      toolCallCount: 0,
+      toolTrace: [],
+      strategy,
+      model: modelConfig,
+      sourcePath: input.sourcePath,
+      request: input.request,
+    };
+  }
+
+  const workspace = createMelAuthorWorkspace({ source: input.source });
+  const lifecycle = await createMelAuthorLifecycle({ request: input.request });
+
+  try {
+    const authorTools = selectToolsForStrategy(
+      createMelAuthorTools(workspace, {
+        guideIndex: authorGuideIndex,
+        lifecycle,
       }),
-      {
-        status: 429,
-        headers: {
-          "Content-Type": "application/json",
-          "Retry-After": String(rl.retryAfterSeconds),
-          "X-RateLimit-Limit": String(rl.limit),
-          "X-RateLimit-Remaining": String(rl.remaining),
-          "X-RateLimit-Reset": String(rl.reset),
-        },
-      },
+      strategy,
     );
-  }
-
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return jsonError(400, "request body must be JSON");
-  }
-
-  const parsed = authorBodyShape.safeParse(body);
-  if (!parsed.success) {
-    return jsonError(400, `invalid request body: ${parsed.error.message}`);
-  }
-
-  const maxSteps = parsed.data.maxSteps ?? 8;
-  const workspace = createMelAuthorWorkspace({ source: parsed.data.source });
-  let lifecycle: MelAuthorLifecycle | null = null;
-
-  try {
-    lifecycle = await createMelAuthorLifecycle({
-      request: parsed.data.request,
-    });
-    const authorTools = createMelAuthorTools(workspace, {
-      guideIndex: authorGuideIndex,
-      lifecycle,
-    });
-    const sdkTools = toSdkTools(authorTools);
-    const result = await generateText({
-      model: resolvedModel.model,
-      system: buildMelAuthorSystemPrompt({
-        request: parsed.data.request,
-      }),
-      prompt: buildMelAuthorUserPrompt(parsed.data.request),
-      tools: sdkTools,
+    const result = await (input.generate ?? generateText)({
+      model: model.model,
+      system: buildStrategySystemPrompt(strategy, input.request),
+      prompt: buildMelAuthorUserPrompt(input.request),
+      tools: toSdkTools(authorTools),
       stopWhen: [
         stepCountIs(maxSteps),
-        ({ steps }) => hasFinalizeToolResult(steps),
+        ({ steps }: { readonly steps: readonly unknown[] }) =>
+          hasFinalizeToolResult(steps),
       ],
-      temperature: parsed.data.temperature ?? 0.2,
-      abortSignal: req.signal,
+      temperature: input.temperature ?? DEFAULT_TEMPERATURE,
     });
 
     const toolTrace = buildToolTrace(result);
@@ -132,63 +136,137 @@ export async function handleAgentAuthor(req: Request): Promise<Response> {
     if (finalized !== null) {
       const failureReport = classifyMelAuthorDraftFailure({
         draft: finalized,
-        originalSource: parsed.data.source,
+        originalSource: input.source,
         toolTrace,
-        finishReason: result.finishReason,
+        finishReason: readFinishReason(result),
         toolCallCount,
       });
       if (failureReport !== null) {
-        return jsonOk(authorFailureResult(failureReport, lifecycle.getLineage()));
+        return failureReportResult({
+          failureReport,
+          lifecycle: lifecycle.getLineage(),
+          strategy,
+          model: modelConfig,
+          sourcePath: input.sourcePath,
+          request: input.request,
+          text: readText(result),
+          toolTrace,
+          toolCallCount,
+        });
       }
-      return jsonOk({
+      return {
         ok: true,
         output: finalized,
-        text: result.text,
-        finishReason: result.finishReason,
+        text: readText(result),
+        finishReason: readFinishReason(result),
         toolCallCount,
+        toolTrace,
         authorLineage: lifecycle.getLineage(),
-      });
+        strategy,
+        model: modelConfig,
+        sourcePath: input.sourcePath,
+        request: input.request,
+      };
     }
 
-    const failureKind = classifyIncompleteAuthorRun(result, maxSteps, toolTrace);
+    const failureKind = classifyIncompleteAuthorRun(
+      result,
+      maxSteps,
+      toolTrace,
+    );
     if (failureKind === "stalled") {
       await lifecycle.markStalled("read_source_only_stop");
     }
     const fallback = await workspace.finalize({
-      title: parsed.data.title,
+      title: input.title,
       rationale:
-        result.text.trim() === ""
+        readText(result).trim() === ""
           ? "MEL Author Agent stopped before calling finalize."
-          : result.text,
+          : readText(result),
     });
     const failureReport = createMelAuthorFailureReport({
       failureKind,
       summary: summarizeIncompleteAuthorRun(failureKind),
       diagnostics: fallback.ok ? fallback.output.diagnostics : [],
       toolTrace,
-      source: workspace.getSource(),
+      source: workspace.readSource().source,
       retryAdvice: retryAdviceForFailureKind(failureKind),
-      finishReason: result.finishReason,
+      finishReason: readFinishReason(result),
       toolCallCount,
     });
-    return jsonOk(authorFailureResult(failureReport, lifecycle.getLineage()));
+    return failureReportResult({
+      failureReport,
+      lifecycle: lifecycle.getLineage(),
+      strategy,
+      model: modelConfig,
+      sourcePath: input.sourcePath,
+      request: input.request,
+      text: readText(result),
+      toolTrace,
+      toolCallCount,
+    });
   } catch (err) {
     const failureReport = createMelAuthorFailureReport({
       failureKind: "provider_error",
-      summary: `MEL Author Agent failed before producing a draft: ${err instanceof Error ? err.message : String(err)}`,
+      summary: `MEL Author Agent failed before producing a draft: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
       retryAdvice:
-        "Retry after checking the model provider status. Do not apply any source changes from this failed attempt.",
+        "Retry after checking the model provider status and CLI input.",
     });
-    return jsonOk({
+    return {
       ok: false,
       kind: "runtime_error",
       message: failureReport.summary,
-      detail: {
-        failureReport,
-        authorLineage: lifecycle?.getLineage(),
-      },
-    });
+      failureReport,
+      toolCallCount: 0,
+      toolTrace: [],
+      authorLineage: lifecycle.getLineage(),
+      strategy,
+      model: modelConfig,
+      sourcePath: input.sourcePath,
+      request: input.request,
+    };
   }
+}
+
+function buildStrategySystemPrompt(
+  strategy: MelAuthorCliStrategy,
+  request: string,
+): string {
+  if (strategy === "lens") {
+    return buildMelAuthorSystemPrompt({ request });
+  }
+
+  return [
+    "You are the MEL Author Agent. Your job is to draft safe, focused edits to a user's Manifesto MEL source inside an ephemeral workspace.",
+    "",
+    "The workspace is disposable. Never claim the user's real source was changed. Your final output must be produced by calling finalize after the current workspace source builds cleanly, unless the request cannot be satisfied.",
+    "Your tool calls are recorded into your lifecycle lineage. finalize is accepted only after at least one source mutation and a clean build.",
+    "",
+    "# CLI Strategy Override: full-source",
+    "- Start by calling build, then readSource.",
+    "- Use replaceSource when a complete-source rewrite is clearer; use patchSource for a tight line/column edit.",
+    "- Do not stop after explaining the edit. Mutate the workspace source, build, then finalize.",
+    "- After every source mutation, call build before reasoning about graph, why, whyNot, or simulate.",
+    "- If MEL syntax, builtins, patch operations, guards, effects, annotations, or system values are uncertain, call searchAuthorGuide before editing.",
+    "- If build returns diagnostics, searchAuthorGuide with source:\"error\" using the diagnostic code/message before retrying the edit.",
+    "- Return errors as workspace diagnostics; do not pretend invalid MEL is verified.",
+    "",
+    "# Your Own MEL",
+    "This describes your authoring lifecycle. It is your identity, not the user's domain.",
+    "```mel",
+    MEL_AUTHOR_AGENT_MEL,
+    "```",
+  ].join("\n");
+}
+
+function selectToolsForStrategy(
+  tools: readonly MelAuthorTool<unknown, unknown>[],
+  strategy: MelAuthorCliStrategy,
+): readonly MelAuthorTool<unknown, unknown>[] {
+  if (strategy === "lens") return tools;
+  return tools.filter((candidate) => !LENS_TOOL_NAMES.has(candidate.name));
 }
 
 function toSdkTools(
@@ -200,10 +278,42 @@ function toSdkTools(
       tool({
         description: authorTool.description,
         inputSchema: jsonSchema(authorTool.jsonSchema as never),
-        execute: async (input: unknown) => authorTool.run(input),
+        execute: async (toolInput: unknown) => authorTool.run(toolInput),
       }),
     ]),
   ) as ToolSet;
+}
+
+function failureReportResult(input: {
+  readonly failureReport: MelAuthorFailureReport;
+  readonly lifecycle: MelAuthorLineageOutput;
+  readonly strategy: MelAuthorCliStrategy;
+  readonly model: AuthorModelConfig;
+  readonly sourcePath?: string;
+  readonly request: string;
+  readonly text: string;
+  readonly toolTrace: readonly MelAuthorToolTraceEntry[];
+  readonly toolCallCount: number;
+}): MelAuthorCliRunReport {
+  return {
+    ok: false,
+    kind:
+      input.failureReport.failureKind === "unchanged_source" ||
+      input.failureReport.failureKind === "ambiguous_request"
+        ? "invalid_input"
+        : "runtime_error",
+    message: input.failureReport.summary,
+    failureReport: input.failureReport,
+    text: input.text,
+    finishReason: input.failureReport.finishReason,
+    toolCallCount: input.toolCallCount,
+    toolTrace: input.toolTrace,
+    authorLineage: input.lifecycle,
+    strategy: input.strategy,
+    model: input.model,
+    sourcePath: input.sourcePath,
+    request: input.request,
+  };
 }
 
 function findFinalDraft(result: unknown): MelAuthorFinalDraft | null {
@@ -300,7 +410,7 @@ function summarizeIncompleteAuthorRun(kind: MelAuthorFailureKind): string {
 
 function retryAdviceForFailureKind(kind: MelAuthorFailureKind): string {
   if (kind === "stalled") {
-    return "Retry with an explicit instruction that the next response must call replaceSource or patchSource instead of explaining the edit in text.";
+    return "Retry with the lens strategy or explicitly require a source mutation before explanation.";
   }
   if (kind === "tool_error") {
     return "Inspect the tool error, narrow the edit, and retry with an explicit instruction to rebuild before finalizing.";
@@ -311,32 +421,13 @@ function retryAdviceForFailureKind(kind: MelAuthorFailureKind): string {
   return "Retry by asking the author to call finalize after the next clean build.";
 }
 
-function authorFailureResult(
-  failureReport: MelAuthorFailureReport,
-  authorLineage?: MelAuthorLineageOutput,
-) {
-  return {
-    ok: false,
-    kind:
-      failureReport.failureKind === "unchanged_source" ||
-      failureReport.failureKind === "ambiguous_request"
-        ? "invalid_input"
-        : "runtime_error",
-    message: failureReport.summary,
-    detail: { failureReport, authorLineage },
-  } as const;
-}
-
 function allToolResults(resultOrStep: unknown): readonly unknown[] {
   const record = asRecord(resultOrStep);
   if (record === null) return [];
   const direct = Array.isArray(record.toolResults) ? record.toolResults : [];
   const steps = Array.isArray(record.steps) ? record.steps : [];
   if (steps.length === 0) return direct;
-  return [
-    ...direct,
-    ...steps.flatMap((step) => allToolResults(step)),
-  ];
+  return [...direct, ...steps.flatMap((step) => allToolResults(step))];
 }
 
 function toolResultName(value: unknown): string | null {
@@ -378,6 +469,16 @@ function isFinalDraft(value: unknown): value is MelAuthorFinalDraft {
   );
 }
 
+function readFinishReason(result: unknown): string | undefined {
+  const value = asRecord(result)?.finishReason;
+  return typeof value === "string" ? value : undefined;
+}
+
+function readText(result: unknown): string {
+  const value = asRecord(result)?.text;
+  return typeof value === "string" ? value : "";
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object"
     ? (value as Record<string, unknown>)
@@ -417,7 +518,9 @@ function summarizeToolOutput(toolName: string, output: unknown): string {
   if (toolName === "inspectSourceOutline" && record !== null) {
     const entryCount = record.entryCount;
     return typeof entryCount === "number"
-      ? `inspected ${entryCount} source declaration${entryCount === 1 ? "" : "s"}`
+      ? `inspected ${entryCount} source declaration${
+          entryCount === 1 ? "" : "s"
+        }`
       : "inspected source outline";
   }
   if (
@@ -427,7 +530,7 @@ function summarizeToolOutput(toolName: string, output: unknown): string {
     const lineCount = record.lineCount;
     return typeof lineCount === "number"
       ? `read ${lineCount} scoped source line${lineCount === 1 ? "" : "s"}`
-      : `read scoped source`;
+      : "read scoped source";
   }
   if (toolName === "findSource" && record !== null) {
     const hitCount = record.hitCount;
@@ -442,7 +545,9 @@ function summarizeToolOutput(toolName: string, output: unknown): string {
   }
   if (toolName === "finalize" && record !== null) {
     const status = record.status;
-    return typeof status === "string" ? `finalized ${status} draft` : "finalized draft";
+    return typeof status === "string"
+      ? `finalized ${status} draft`
+      : "finalized draft";
   }
   if (toolName === "searchAuthorGuide" && record !== null) {
     const hitCount = record.hitCount;
@@ -463,21 +568,4 @@ function previewJson(value: unknown): string | undefined {
     const text = String(value);
     return text.length <= 360 ? text : text.slice(0, 357) + "...";
   }
-}
-
-function jsonOk(value: unknown): Response {
-  return new Response(JSON.stringify(value), {
-    status: 200,
-    headers: {
-      "Content-Type": "application/json",
-      "Cache-Control": "no-store",
-    },
-  });
-}
-
-function jsonError(status: number, message: string): Response {
-  return new Response(JSON.stringify({ ok: false, error: message }), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
 }

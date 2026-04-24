@@ -61,6 +61,11 @@ gets a package-local `searchAuthorGuide` tool backed by bundled MEL reference,
 syntax, and error-guide Markdown; it uses this for uncertain constructs and
 compiler diagnostics instead of relying only on model memory.
 
+The Author Agent is outline-first. It should build, inspect the compact
+source outline, find/read only the relevant declaration or range, then patch
+that declaration. Full `readSource` / `replaceSource` remain available as
+fallbacks, but they are not the preferred path for normal edits.
+
 Author tool calls are also recorded into the Author Agent's own lifecycle
 lineage and returned as `authorLineage` on `/api/agent/author` responses.
 This makes silent failures observable without server log scraping; a

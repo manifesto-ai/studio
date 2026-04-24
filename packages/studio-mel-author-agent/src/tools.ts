@@ -1,6 +1,7 @@
 import type {
   MelAuthorBuildOutput,
   MelAuthorExplanationOutput,
+  MelAuthorFindSourceOutput,
   MelAuthorFinalDraft,
   MelAuthorFinalizeInput,
   MelAuthorGuideIndex,
@@ -13,7 +14,11 @@ import type {
   MelAuthorLifecycle,
   MelAuthorLocateOutput,
   MelAuthorMutationOutput,
+  MelAuthorPatchDeclarationOutput,
   MelAuthorPatchInput,
+  MelAuthorReadDeclarationOutput,
+  MelAuthorSourceOutlineOutput,
+  MelAuthorSourceRangeOutput,
   MelAuthorSourceOutput,
   MelAuthorTool,
   MelAuthorToolRunResult,
@@ -58,6 +63,67 @@ const PATCH_SOURCE_SCHEMA: Record<string, unknown> = {
     endLine: { type: "integer", minimum: 1 },
     endColumn: { type: "integer", minimum: 1 },
     replacement: { type: "string" },
+  },
+};
+
+const SOURCE_RANGE_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["startLine", "endLine"],
+  properties: {
+    startLine: { type: "integer", minimum: 1 },
+    endLine: { type: "integer", minimum: 1 },
+    contextLines: { type: "integer", minimum: 0, maximum: 20 },
+  },
+};
+
+const READ_DECLARATION_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["target"],
+  properties: {
+    target: {
+      type: "string",
+      description:
+        "Declaration target from inspectSourceOutline/findSource, e.g. action:addTodo, computed:doneCount, state:tasks, or type:Task.",
+    },
+    contextLines: { type: "integer", minimum: 0, maximum: 20 },
+  },
+};
+
+const FIND_SOURCE_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["query"],
+  properties: {
+    query: {
+      type: "string",
+      description: "Name, target, phrase, or MEL text to search for.",
+    },
+    kind: {
+      type: "string",
+      enum: ["domain", "type", "state", "computed", "action"],
+      description: "Optional declaration kind filter.",
+    },
+    limit: { type: "integer", minimum: 1, maximum: 20 },
+  },
+};
+
+const PATCH_DECLARATION_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["target", "replacement"],
+  properties: {
+    target: {
+      type: "string",
+      description:
+        "Declaration target from inspectSourceOutline/findSource/readDeclaration.",
+    },
+    replacement: {
+      type: "string",
+      description:
+        "Complete replacement text for that declaration only, without line numbers.",
+    },
   },
 };
 
@@ -152,7 +218,7 @@ export function createMelAuthorTools(
     {
       name: "readSource",
       description:
-        "Read the current ephemeral workspace MEL source. Call this before editing.",
+        "Fallback: read the complete ephemeral workspace MEL source. Prefer inspectSourceOutline, findSource, readDeclaration, or readSourceRange first.",
       jsonSchema: READ_SOURCE_SCHEMA,
       run: async () => {
         const output = workspace.readSource();
@@ -216,6 +282,72 @@ export function createMelAuthorTools(
         return { ok: true, output };
       },
     } satisfies MelAuthorTool<unknown, MelAuthorBuildOutput>,
+    {
+      name: "inspectSourceOutline",
+      description:
+        "Inspect a compact source-map outline of domain, type, state, computed, and action declarations. Requires a clean build. Prefer this before reading source.",
+      jsonSchema: EMPTY_OBJECT_SCHEMA,
+      run: async () => {
+        const result = workspace.inspectSourceOutline();
+        await recordObservation(
+          options.lifecycle,
+          "inspectSourceOutline",
+          result.ok,
+        );
+        return result;
+      },
+    } satisfies MelAuthorTool<unknown, MelAuthorSourceOutlineOutput>,
+    {
+      name: "readSourceRange",
+      description:
+        "Read a bounded line range from the workspace source. Prefer this over readSource when a declaration span is known.",
+      jsonSchema: SOURCE_RANGE_SCHEMA,
+      run: async (input) => {
+        const result = workspace.readSourceRange(input as never);
+        await recordObservation(options.lifecycle, "readSourceRange", result.ok);
+        return result;
+      },
+    } satisfies MelAuthorTool<unknown, MelAuthorSourceRangeOutput>,
+    {
+      name: "readDeclaration",
+      description:
+        "Read only one declaration by target, using the current source map. Requires a clean build.",
+      jsonSchema: READ_DECLARATION_SCHEMA,
+      run: async (input) => {
+        const result = workspace.readDeclaration(input as never);
+        await recordObservation(options.lifecycle, "readDeclaration", result.ok);
+        return result;
+      },
+    } satisfies MelAuthorTool<unknown, MelAuthorReadDeclarationOutput>,
+    {
+      name: "findSource",
+      description:
+        "Find source declarations by name, target, kind, or nearby text. Requires a clean build.",
+      jsonSchema: FIND_SOURCE_SCHEMA,
+      run: async (input) => {
+        const result = workspace.findSource(input as never);
+        await recordObservation(options.lifecycle, "findSource", result.ok);
+        return result;
+      },
+    } satisfies MelAuthorTool<unknown, MelAuthorFindSourceOutput>,
+    {
+      name: "patchDeclaration",
+      description:
+        "Replace a single source-map declaration target. Prefer this over full replaceSource for scoped MEL edits. Requires a clean build before patching.",
+      jsonSchema: PATCH_DECLARATION_SCHEMA,
+      run: async (input) => {
+        const result = workspace.patchDeclaration(input as never);
+        if (result.ok) {
+          await options.lifecycle?.recordMutationAttempt(
+            "patchDeclaration",
+            result.output.changed,
+          );
+        } else {
+          await options.lifecycle?.recordToolError("patchDeclaration");
+        }
+        return result;
+      },
+    } satisfies MelAuthorTool<unknown, MelAuthorPatchDeclarationOutput>,
     ...(options.guideIndex === undefined
       ? []
       : [

@@ -103,6 +103,9 @@ describe("MEL Author Agent package", () => {
     expect(byName.has("readSource")).toBe(true);
     expect(byName.has("replaceSource")).toBe(true);
     expect(byName.has("build")).toBe(true);
+    expect(byName.has("inspectSourceOutline")).toBe(true);
+    expect(byName.has("readDeclaration")).toBe(true);
+    expect(byName.has("patchDeclaration")).toBe(true);
     expect(byName.has("finalize")).toBe(true);
 
     const source = await byName.get("readSource")?.run({});
@@ -110,6 +113,70 @@ describe("MEL Author Agent package", () => {
     if (source?.ok) {
       expect(source.output).toMatchObject({ source: TASKFLOW_SOURCE });
     }
+  });
+
+  it("exposes source lens outline, scoped reads, search, and declaration patching", async () => {
+    const workspace = createMelAuthorWorkspace({ source: TASKFLOW_SOURCE });
+    await workspace.build();
+
+    const outline = workspace.inspectSourceOutline();
+    const declaration = workspace.readDeclaration({
+      target: "action:addTask",
+    });
+    const found = workspace.findSource({
+      query: "done tasks",
+      kind: "computed",
+    });
+    const patched = workspace.patchDeclaration({
+      target: "computed:doneCount",
+      replacement: "  computed completedCount = len(doneTasks)",
+    });
+    const rebuilt = await workspace.build();
+
+    expect(outline.ok).toBe(true);
+    if (outline.ok) {
+      expect(outline.output.actions.map((entry) => entry.target)).toContain(
+        "action:addTask",
+      );
+      expect(outline.output.stateFields.map((entry) => entry.target)).toContain(
+        "state:tasks",
+      );
+      expect(outline.output.types.map((entry) => entry.target)).toContain(
+        "type:Task",
+      );
+    }
+    expect(declaration.ok).toBe(true);
+    if (declaration.ok) {
+      expect(declaration.output.source).toContain("action addTask");
+      expect(declaration.output.lineCount).toBeLessThan(
+        TASKFLOW_SOURCE.split(/\r?\n/).length,
+      );
+    }
+    expect(found.ok).toBe(true);
+    if (found.ok) {
+      expect(found.output.hits[0]?.target).toBe("computed:doneTasks");
+    }
+    expect(patched.ok).toBe(true);
+    expect(rebuilt.status).toBe("ok");
+    expect(rebuilt.computedNames).toContain("completedCount");
+  });
+
+  it("caps source range reads and rejects out-of-range source reads", () => {
+    const source = Array.from(
+      { length: 120 },
+      (_, index) => `line ${index + 1}`,
+    ).join("\n");
+    const workspace = createMelAuthorWorkspace({ source });
+
+    const capped = workspace.readSourceRange({ startLine: 1, endLine: 120 });
+    const invalid = workspace.readSourceRange({ startLine: 999, endLine: 1000 });
+
+    expect(capped.ok).toBe(true);
+    if (capped.ok) {
+      expect(capped.output.lineCount).toBe(80);
+      expect(capped.output.truncated).toBe(true);
+    }
+    expect(invalid.ok).toBe(false);
   });
 
   it("searches bundled guide chunks by error code and source", () => {

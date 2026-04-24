@@ -1,0 +1,24 @@
+{
+  "name": "@manifesto-ai/mel-author-cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Standalone MEL Author Agent CLI for headless and interactive testing",
+  "type": "module",
+  "bin": {
+    "mel-author-cli": "./bin/mel-author-cli.mjs"
+  },
+  "scripts": {
+    "author": "pnpm run -s build >/dev/null && node ./bin/mel-author-cli.mjs author",
+    "build": "rm -rf dist && tsup",
+    "clean": "rm -rf dist",
+    "interactive": "pnpm run -s build >/dev/null && node ./bin/mel-author-cli.mjs interactive",
+    "lint": "echo 'lint not configured'",
+    "test": "node ../../node_modules/vitest/vitest.mjs run",
+    "test:integration": "node ../../node_modules/vitest/vitest.mjs run src/__tests__/integration.test.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^2.0.41",
+    "@manifesto-ai/studio-mel-author-agent": "workspace:*",
+    "ai": "^6.0.168"
+  }
+}

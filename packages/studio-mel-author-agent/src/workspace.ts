@@ -5,6 +5,7 @@ import {
   type Intent,
   type Listener,
   type Marker,
+  type SourceSpan,
   type StudioCore,
   type Unsubscribe,
 } from "@manifesto-ai/studio-core";
@@ -13,6 +14,8 @@ import type {
   MelAuthorBuildOutput,
   MelAuthorDiagnostic,
   MelAuthorExplanationOutput,
+  MelAuthorFindSourceInput,
+  MelAuthorFindSourceOutput,
   MelAuthorFinalDraft,
   MelAuthorFinalizeInput,
   MelAuthorGraphOutput,
@@ -20,8 +23,17 @@ import type {
   MelAuthorIntentOutput,
   MelAuthorLocateOutput,
   MelAuthorMutationOutput,
+  MelAuthorPatchDeclarationInput,
+  MelAuthorPatchDeclarationOutput,
   MelAuthorPatchInput,
+  MelAuthorReadDeclarationInput,
+  MelAuthorReadDeclarationOutput,
+  MelAuthorSourceLensKind,
+  MelAuthorSourceOutlineEntry,
+  MelAuthorSourceOutlineOutput,
   MelAuthorRequirementSummary,
+  MelAuthorSourceRangeInput,
+  MelAuthorSourceRangeOutput,
   MelAuthorSourceOutput,
   MelAuthorToolRunResult,
   MelAuthorWhyNotOutput,
@@ -32,6 +44,8 @@ import type {
 const DEFAULT_NODE_LIMIT = 80;
 const DEFAULT_EDGE_LIMIT = 120;
 const REQUIREMENT_CAP = 8;
+const SOURCE_RANGE_LINE_CAP = 80;
+const SOURCE_CONTEXT_LINE_CAP = 20;
 
 export function createMelAuthorWorkspace(
   options: MelAuthorWorkspaceOptions,
@@ -126,6 +140,161 @@ export function createMelAuthorWorkspace(
     return output;
   }
 
+  function inspectSourceOutline(): MelAuthorToolRunResult<MelAuthorSourceOutlineOutput> {
+    const runtime = requireCurrentRuntime("inspectSourceOutline");
+    if (!runtime.ok) return runtime;
+    const module = core.getModule();
+    if (module === null) {
+      return {
+        ok: false,
+        kind: "runtime_error",
+        message: "No compiled MEL module is available.",
+      };
+    }
+    const entries = buildSourceOutlineEntries(module, currentSource());
+    const domain = entries.find((entry) => entry.kind === "domain") ?? null;
+    return {
+      ok: true,
+      output: {
+        schemaHash: module.schema.hash,
+        version,
+        entryCount: entries.length,
+        entries,
+        domain,
+        types: entries.filter((entry) => entry.kind === "type"),
+        stateFields: entries.filter((entry) => entry.kind === "state"),
+        computed: entries.filter((entry) => entry.kind === "computed"),
+        actions: entries.filter((entry) => entry.kind === "action"),
+      },
+    };
+  }
+
+  function readSourceRange(
+    input: MelAuthorSourceRangeInput,
+  ): MelAuthorToolRunResult<MelAuthorSourceRangeOutput> {
+    const range = normalizeRangeInput(input, currentSource());
+    if (!range.ok) return range;
+    return {
+      ok: true,
+      output: sourceRangeOutput(currentSource(), range.output, version),
+    };
+  }
+
+  function readDeclaration(
+    input: MelAuthorReadDeclarationInput,
+  ): MelAuthorToolRunResult<MelAuthorReadDeclarationOutput> {
+    const located = locateDeclarationTarget(input?.target);
+    if (!located.ok) return located;
+    const range = rangeFromSpan(located.output.span, input.contextLines);
+    return {
+      ok: true,
+      output: {
+        ...sourceRangeOutput(currentSource(), range, version),
+        target: located.output.target,
+        localKey: located.output.localKey,
+        schemaHash: located.output.schemaHash,
+        span: located.output.span,
+      },
+    };
+  }
+
+  function findSource(
+    input: MelAuthorFindSourceInput,
+  ): MelAuthorToolRunResult<MelAuthorFindSourceOutput> {
+    const runtime = requireCurrentRuntime("findSource");
+    if (!runtime.ok) return runtime;
+    if (
+      typeof input !== "object" ||
+      input === null ||
+      typeof input.query !== "string" ||
+      input.query.trim() === ""
+    ) {
+      return {
+        ok: false,
+        kind: "invalid_input",
+        message: "findSource requires { query: string }.",
+      };
+    }
+    const kind = input.kind;
+    if (
+      kind !== undefined &&
+      kind !== "domain" &&
+      kind !== "type" &&
+      kind !== "state" &&
+      kind !== "computed" &&
+      kind !== "action"
+    ) {
+      return {
+        ok: false,
+        kind: "invalid_input",
+        message:
+          'findSource kind must be one of "domain", "type", "state", "computed", or "action".',
+      };
+    }
+    const outline = inspectSourceOutline();
+    if (!outline.ok) return outline;
+    const query = input.query.trim();
+    const queryTokens = tokenizeSearch(query);
+    const limit = clampLimit(input.limit, 5);
+    const hits = outline.output.entries
+      .filter((entry) => kind === undefined || entry.kind === kind)
+      .map((entry) => ({
+        ...entry,
+        score: scoreSourceEntry(entry, query, queryTokens),
+      }))
+      .filter((entry) => entry.score > 0)
+      .sort((left, right) => {
+        if (right.score !== left.score) return right.score - left.score;
+        return left.target.localeCompare(right.target);
+      })
+      .slice(0, limit);
+    return {
+      ok: true,
+      output: {
+        query,
+        hitCount: hits.length,
+        hits,
+      },
+    };
+  }
+
+  function patchDeclaration(
+    input: MelAuthorPatchDeclarationInput,
+  ): MelAuthorToolRunResult<MelAuthorPatchDeclarationOutput> {
+    if (
+      typeof input !== "object" ||
+      input === null ||
+      typeof input.replacement !== "string" ||
+      input.replacement.trim() === ""
+    ) {
+      return {
+        ok: false,
+        kind: "invalid_input",
+        message:
+          "patchDeclaration requires { target: string, replacement: non-empty string }.",
+      };
+    }
+    const located = locateDeclarationTarget(input.target);
+    if (!located.ok) return located;
+    const mutation = patchSource({
+      startLine: located.output.span.start.line,
+      startColumn: located.output.span.start.column,
+      endLine: located.output.span.end.line,
+      endColumn: located.output.span.end.column,
+      replacement: input.replacement,
+    });
+    if (!mutation.ok) return mutation;
+    return {
+      ok: true,
+      output: {
+        ...mutation.output,
+        target: located.output.target,
+        localKey: located.output.localKey,
+        span: located.output.span,
+      },
+    };
+  }
+
   function requireCurrentRuntime(
     operation: string,
   ): MelAuthorToolRunResult<{ readonly core: StudioCore }> {
@@ -175,6 +344,12 @@ export function createMelAuthorWorkspace(
   }
 
   function locateDeclaration(
+    target: string,
+  ): MelAuthorToolRunResult<MelAuthorLocateOutput> {
+    return locateDeclarationTarget(target);
+  }
+
+  function locateDeclarationTarget(
     target: string,
   ): MelAuthorToolRunResult<MelAuthorLocateOutput> {
     const runtime = requireCurrentRuntime("locateDeclaration");
@@ -406,6 +581,11 @@ export function createMelAuthorWorkspace(
     replaceSource,
     patchSource,
     build,
+    inspectSourceOutline,
+    readSourceRange,
+    readDeclaration,
+    findSource,
+    patchDeclaration,
     inspectGraph,
     locateDeclaration,
     simulate,
@@ -443,6 +623,218 @@ type SimulateResultLike = {
   readonly requirements?: readonly unknown[];
   readonly meta?: { readonly schemaHash?: string };
 };
+
+type BuiltModule = NonNullable<ReturnType<StudioCore["getModule"]>>;
+
+type SourceMapEntryLike = {
+  readonly span: SourceSpan;
+};
+
+type NormalizedSourceRange = {
+  readonly requestedStartLine: number;
+  readonly requestedEndLine: number;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly truncated: boolean;
+};
+
+function buildSourceOutlineEntries(
+  module: BuiltModule,
+  source: string,
+): readonly MelAuthorSourceOutlineEntry[] {
+  const rawEntries = module.sourceMap.entries as Record<
+    string,
+    SourceMapEntryLike | undefined
+  >;
+  const entries: MelAuthorSourceOutlineEntry[] = [];
+
+  const domainKey = Object.keys(rawEntries).find((key) =>
+    key.startsWith("domain:"),
+  );
+  if (domainKey !== undefined) {
+    entries.push(createOutlineEntry("domain", domainKey, domainKey, source, rawEntries));
+  }
+
+  for (const name of Object.keys(module.schema.types ?? {})) {
+    const key = `type:${name}`;
+    entries.push(createOutlineEntry("type", key, key, source, rawEntries));
+  }
+  for (const name of Object.keys(module.schema.state.fields ?? {})) {
+    const key = `state_field:${name}`;
+    entries.push(createOutlineEntry("state", `state:${name}`, key, source, rawEntries));
+  }
+  for (const name of Object.keys(module.schema.computed?.fields ?? {})) {
+    const key = `computed:${name}`;
+    entries.push(createOutlineEntry("computed", key, key, source, rawEntries));
+  }
+  for (const name of Object.keys(module.schema.actions ?? {})) {
+    const key = `action:${name}`;
+    entries.push(createOutlineEntry("action", key, key, source, rawEntries));
+  }
+
+  return entries;
+}
+
+function createOutlineEntry(
+  kind: MelAuthorSourceLensKind,
+  target: string,
+  localKey: string,
+  source: string,
+  entries: Record<string, SourceMapEntryLike | undefined>,
+): MelAuthorSourceOutlineEntry {
+  const span = entries[localKey]?.span ?? null;
+  return {
+    target,
+    localKey,
+    kind,
+    name: nameFromTarget(target),
+    span,
+    preview: span === null ? "" : previewSpan(source, span),
+  };
+}
+
+function nameFromTarget(target: string): string {
+  const colon = target.indexOf(":");
+  return colon >= 0 ? target.slice(colon + 1) : target;
+}
+
+function normalizeRangeInput(
+  input: MelAuthorSourceRangeInput,
+  source: string,
+): MelAuthorToolRunResult<NormalizedSourceRange> {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    !Number.isInteger(input.startLine) ||
+    !Number.isInteger(input.endLine) ||
+    input.startLine < 1 ||
+    input.endLine < 1
+  ) {
+    return {
+      ok: false,
+      kind: "invalid_input",
+      message:
+        "readSourceRange requires positive integer startLine and endLine.",
+    };
+  }
+  if (input.endLine < input.startLine) {
+    return {
+      ok: false,
+      kind: "invalid_input",
+      message: "readSourceRange endLine must be greater than or equal to startLine.",
+    };
+  }
+  const totalLineCount = sourceLineCount(source);
+  if (input.startLine > totalLineCount) {
+    return {
+      ok: false,
+      kind: "invalid_input",
+      message: `readSourceRange startLine is outside the source (${totalLineCount} lines).`,
+    };
+  }
+  const context = clampContextLines(input.contextLines);
+  const requestedStartLine = input.startLine;
+  const requestedEndLine = Math.min(input.endLine, totalLineCount);
+  const expandedStart = Math.max(1, requestedStartLine - context);
+  const expandedEnd = Math.min(totalLineCount, requestedEndLine + context);
+  const cappedEnd = Math.min(expandedEnd, expandedStart + SOURCE_RANGE_LINE_CAP - 1);
+  return {
+    ok: true,
+    output: {
+      requestedStartLine,
+      requestedEndLine,
+      startLine: expandedStart,
+      endLine: cappedEnd,
+      truncated: cappedEnd < expandedEnd || input.endLine > totalLineCount,
+    },
+  };
+}
+
+function rangeFromSpan(
+  span: SourceSpan,
+  contextLines: number | undefined,
+): NormalizedSourceRange {
+  const context = clampContextLines(contextLines);
+  const requestedStartLine = span.start.line;
+  const requestedEndLine = span.end.line;
+  const expandedStart = Math.max(1, requestedStartLine - context);
+  const expandedEnd = requestedEndLine + context;
+  const cappedEnd = Math.min(expandedEnd, expandedStart + SOURCE_RANGE_LINE_CAP - 1);
+  return {
+    requestedStartLine,
+    requestedEndLine,
+    startLine: expandedStart,
+    endLine: cappedEnd,
+    truncated: cappedEnd < expandedEnd,
+  };
+}
+
+function sourceRangeOutput(
+  source: string,
+  range: NormalizedSourceRange,
+  currentVersion: number,
+): MelAuthorSourceRangeOutput {
+  const lines = source.split(/\r?\n/);
+  const totalLineCount = sourceLineCount(source);
+  const startLine = Math.max(1, Math.min(range.startLine, totalLineCount));
+  const endLine = Math.max(startLine, Math.min(range.endLine, totalLineCount));
+  const selected = lines.slice(startLine - 1, endLine);
+  const numbered = selected.map((line, index) => `${startLine + index}: ${line}`);
+  return {
+    source: selected.join("\n"),
+    numberedPreview: numbered.join("\n"),
+    startLine,
+    endLine,
+    requestedStartLine: range.requestedStartLine,
+    requestedEndLine: range.requestedEndLine,
+    lineCount: selected.length,
+    totalLineCount,
+    truncated: range.truncated,
+    version: currentVersion,
+  };
+}
+
+function sourceLineCount(source: string): number {
+  return source === "" ? 0 : source.split(/\r?\n/).length;
+}
+
+function clampContextLines(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(SOURCE_CONTEXT_LINE_CAP, Math.floor(value)));
+}
+
+function tokenizeSearch(query: string): readonly string[] {
+  const matches = query.toLowerCase().match(/[a-z0-9_$.-]+/g) ?? [];
+  return [...new Set(matches.filter((token) => token.length > 0))];
+}
+
+function scoreSourceEntry(
+  entry: MelAuthorSourceOutlineEntry,
+  query: string,
+  queryTokens: readonly string[],
+): number {
+  const haystack = [
+    entry.target,
+    entry.localKey,
+    entry.kind,
+    entry.name,
+    entry.preview,
+  ]
+    .join("\n")
+    .toLowerCase();
+  const normalizedQuery = query.toLowerCase();
+  let score = 0;
+  if (entry.target.toLowerCase() === normalizedQuery) score += 40;
+  if (entry.name.toLowerCase() === normalizedQuery) score += 30;
+  if (haystack.includes(normalizedQuery)) score += 12;
+  for (const token of queryTokens) {
+    if (token.length <= 1) continue;
+    if (entry.name.toLowerCase().includes(token)) score += 8;
+    if (entry.target.toLowerCase().includes(token)) score += 6;
+    if (entry.preview.toLowerCase().includes(token)) score += 2;
+  }
+  return score;
+}
 
 function buildOutputFromResult(result: BuildResult): MelAuthorBuildOutput {
   if (result.kind === "ok") {

@@ -193,6 +193,92 @@ export type MelAuthorPatchInput = {
   readonly replacement: string;
 };
 
+export type MelAuthorSourceLensKind =
+  | "domain"
+  | "type"
+  | "state"
+  | "computed"
+  | "action";
+
+export type MelAuthorSourceOutlineEntry = {
+  readonly target: string;
+  readonly localKey: string;
+  readonly kind: MelAuthorSourceLensKind;
+  readonly name: string;
+  readonly span: SourceSpan | null;
+  readonly preview: string;
+};
+
+export type MelAuthorSourceOutlineOutput = {
+  readonly schemaHash: string;
+  readonly version: number;
+  readonly entryCount: number;
+  readonly entries: readonly MelAuthorSourceOutlineEntry[];
+  readonly domain: MelAuthorSourceOutlineEntry | null;
+  readonly types: readonly MelAuthorSourceOutlineEntry[];
+  readonly stateFields: readonly MelAuthorSourceOutlineEntry[];
+  readonly computed: readonly MelAuthorSourceOutlineEntry[];
+  readonly actions: readonly MelAuthorSourceOutlineEntry[];
+};
+
+export type MelAuthorSourceRangeInput = {
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly contextLines?: number;
+};
+
+export type MelAuthorSourceRangeOutput = {
+  readonly source: string;
+  readonly numberedPreview: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly requestedStartLine: number;
+  readonly requestedEndLine: number;
+  readonly lineCount: number;
+  readonly totalLineCount: number;
+  readonly truncated: boolean;
+  readonly version: number;
+};
+
+export type MelAuthorReadDeclarationInput = {
+  readonly target: string;
+  readonly contextLines?: number;
+};
+
+export type MelAuthorReadDeclarationOutput = MelAuthorSourceRangeOutput & {
+  readonly target: string;
+  readonly localKey: string;
+  readonly schemaHash: string;
+  readonly span: SourceSpan;
+};
+
+export type MelAuthorFindSourceInput = {
+  readonly query: string;
+  readonly kind?: MelAuthorSourceLensKind;
+  readonly limit?: number;
+};
+
+export type MelAuthorFindSourceHit = MelAuthorSourceOutlineEntry & {
+  readonly score: number;
+};
+
+export type MelAuthorFindSourceOutput = {
+  readonly query: string;
+  readonly hitCount: number;
+  readonly hits: readonly MelAuthorFindSourceHit[];
+};
+
+export type MelAuthorPatchDeclarationInput = {
+  readonly target: string;
+  readonly replacement: string;
+};
+
+export type MelAuthorPatchDeclarationOutput = MelAuthorMutationOutput & {
+  readonly target: string;
+  readonly localKey: string;
+  readonly span: SourceSpan;
+};
+
 export type MelAuthorGraphOutput = {
   readonly schemaHash: string;
   readonly nodeCount: number;
@@ -275,6 +361,19 @@ export type MelAuthorWorkspace = {
     patch: MelAuthorPatchInput,
   ) => MelAuthorToolRunResult<MelAuthorMutationOutput>;
   readonly build: () => Promise<MelAuthorBuildOutput>;
+  readonly inspectSourceOutline: () => MelAuthorToolRunResult<MelAuthorSourceOutlineOutput>;
+  readonly readSourceRange: (
+    input: MelAuthorSourceRangeInput,
+  ) => MelAuthorToolRunResult<MelAuthorSourceRangeOutput>;
+  readonly readDeclaration: (
+    input: MelAuthorReadDeclarationInput,
+  ) => MelAuthorToolRunResult<MelAuthorReadDeclarationOutput>;
+  readonly findSource: (
+    input: MelAuthorFindSourceInput,
+  ) => MelAuthorToolRunResult<MelAuthorFindSourceOutput>;
+  readonly patchDeclaration: (
+    input: MelAuthorPatchDeclarationInput,
+  ) => MelAuthorToolRunResult<MelAuthorPatchDeclarationOutput>;
   readonly inspectGraph: (options?: {
     readonly nodeLimit?: number;
     readonly edgeLimit?: number;

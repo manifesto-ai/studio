@@ -266,6 +266,7 @@ AG-β14 persistence ❌. **β 는 약 60% 완료**.
 > 설명/질문/재시도할 수 있다. Author 는 bundled MEL guide 를 검색해
 > syntax/reference/error 지식을 필요 시 조회한다. Author tool 호출은
 > Author Agent lifecycle lineage 로 기록되어 `authorLineage` 로 추출된다.
+> source lens 로 outline-first / declaration-scoped read+patch 를 지원한다.
 > Critic / persistence / rich before-after ladder 는 후속.
 
 **Goal**: 에이전트가 MEL 편집을 제안하고, 사용자는 diff + simulate
@@ -300,6 +301,9 @@ preview를 보고 승인/거부. 첫 "쓰기" 에이전트.
   기록하고 `/api/agent/author` 응답에서 추출 가능하게 노출. no-action
   stop 은 `stalled` 로 기록하며 retry cap 은 표현하되 host auto-retry 는
   아직 하지 않음.
+- [x] **AG-γ5e**: Author source lens. 전체 source read 를 fallback 으로
+  낮추고, outline / findSource / readDeclaration / readSourceRange /
+  patchDeclaration 으로 declaration-scoped MEL 수정을 지원.
 
 ### 3.3 Contract Verifier (deterministic gate)
 
