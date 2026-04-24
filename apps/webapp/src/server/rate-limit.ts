@@ -1,8 +1,8 @@
 /**
  * Agent-chat rate limiter — Upstash Redis + sliding window.
  *
- * Why rate-limit at all: the `/api/agent/chat` endpoint hits Vercel
- * AI Gateway with a paid token. Without a throttle a single visitor
+ * Why rate-limit at all: the `/api/agent/chat` endpoint hits a model
+ * provider with a real cost. Without a throttle a single visitor
  * (or a crawler hitting `/api/agent/chat` directly) can burn through
  * the budget in minutes. A sliding window keyed by client IP is the
  * standard first line.

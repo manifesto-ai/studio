@@ -13,9 +13,11 @@
     "test": "node ../../node_modules/vitest/vitest.mjs run"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^2.0.41",
     "@ai-sdk/react": "^3.0.170",
     "@manifesto-ai/studio-adapter-monaco": "workspace:*",
     "@manifesto-ai/studio-core": "workspace:*",
+    "@manifesto-ai/studio-mel-author-agent": "workspace:*",
     "@manifesto-ai/studio-react": "workspace:*",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",

@@ -1,0 +1,27 @@
+{
+  "name": "@manifesto-ai/studio-mel-author-agent",
+  "version": "0.0.0",
+  "description": "Headless MEL authoring agent workspace and tools for Manifesto Studio",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsup",
+    "clean": "rm -rf dist",
+    "lint": "echo 'lint not configured'",
+    "test": "node ../../node_modules/vitest/vitest.mjs run",
+    "test:watch": "node ../../node_modules/vitest/vitest.mjs"
+  },
+  "dependencies": {
+    "@manifesto-ai/studio-core": "workspace:*"
+  },
+  "files": [
+    "dist"
+  ]
+}

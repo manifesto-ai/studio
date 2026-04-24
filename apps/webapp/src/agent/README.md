@@ -9,10 +9,10 @@ were a package so extraction to `@manifesto-ai/studio-agent-core` /
 
 | Dir | Role | Future home | React allowed? |
 |---|---|---|---|
-| `tools/` | Deterministic wrappers around Studio SDK / core verbs — `legality`, `simulate`, `sourceMap`, `graph`, `schema`, `snapshot`. Return LLM-facing JSON. | `studio-agent-core` | ❌ |
-| `agents/` | LLM-reasoning orchestrator + sub-agents (Author, Refactor, Critic, UI Intent). | `studio-agent-core` | ❌ |
-| `session/` | Transcript / proposal buffer / per-project storage. | `studio-agent-core` | ❌ |
-| `provider/` | LLM vendor adapter (Ollama for now). | `apps/webapp` (stays) | ✅ |
+| `tools/` | Deterministic wrappers around Studio SDK / core verbs — legality, simulate, source-map, graph, snapshot, dispatch, proposal creation. Return LLM-facing JSON. | `studio-agent-core` | ❌ |
+| `agents/` | Future sub-agents (Repair, Critic, UI Intent). Not used in the AI SDK MVP loop yet. | `studio-agent-core` | ❌ |
+| `session/` | Prompt context, recent-turn projection, single proposal buffer, proposal verifier. | `studio-agent-core` | ❌ |
+| `adapters/` | Bridges local `AgentTool` registry to AI SDK schema/tool-result shapes. | `studio-agent-core` | ❌ |
 | `ui/` | React components for Agent lens, chat, proposal preview. | `studio-agent-react` | ✅ |
 
 The "React allowed?" column is enforced by `src/agent/__tests__/import-boundaries.test.ts`
@@ -21,18 +21,55 @@ webapp-local modules. See that test for the exact rules.
 
 ## LLM provider
 
-Self-hosted Ollama, endpoint + model configured via Vite env:
+Transport is Vercel AI SDK through the server proxy
+`/api/agent/chat`. The browser sends the current system prompt and
+tool schemas; the server forwards to the configured provider and
+streams AI SDK UI messages back.
+
+Gateway:
 
 ```
-VITE_OLLAMA_URL=http://100.84.214.42:11434
-VITE_OLLAMA_MODEL=gemma4:e4b
+AGENT_MODEL_PROVIDER=gateway
+AI_GATEWAY_API_KEY=...
+AI_GATEWAY_MODEL=google/gemma-4-26b-a4b-it
 ```
 
-The provider (`provider/ollama.ts`) tries the OpenAI-compatible endpoint
-(`/v1/chat/completions`) first — standard function-calling spec — and
-falls back to the native `/api/chat` shape if needed. No vendor
-abstraction layer: swapping providers later is a file replacement, not
-an interface expansion.
+Ollama:
+
+```
+AGENT_MODEL_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_MODEL=gemma4:e4b
+# OLLAMA_API_KEY=... # optional, only for protected proxies
+```
+
+`OLLAMA_HOST` is also accepted and normalized to `/v1`, so either
+`http://localhost:11434` or `http://localhost:11434/v1` works. If
+`AGENT_MODEL_PROVIDER` is omitted, the handler picks Ollama when any
+`OLLAMA_*` env is present, otherwise Gateway when `AI_GATEWAY_*` env is
+present, otherwise local Ollama defaults.
+
+Most tools execute client-side in `AgentLens` because they read/mutate the
+live Manifesto runtime in the browser. The server receives schemas only,
+never those live-runtime tool implementations.
+
+Exception: `authorMelProposal` calls `/api/agent/author`, where the server
+runs the headless MEL Author Agent against a source string in an ephemeral
+workspace. That route has no access to the live browser runtime and returns
+only a draft source for the normal proposal verifier.
+
+## MEL Author + Verified Patch
+
+Source-change requests now prefer `authorMelProposal`, which delegates to
+`@manifesto-ai/studio-mel-author-agent`. That package runs a headless,
+ephemeral MEL workspace and returns a full-source draft. The webapp then
+passes the draft through the same verified proposal buffer.
+
+`createProposal` remains as a low-level fallback when a complete proposed
+source is already available. Neither path edits source directly. The
+proposal is shadow-built by the verifier in `session/`, rendered by
+`ui/ProposalPreview`, and applied only when the user clicks Accept
+(`adapter.setSource` + `adapter.requestBuild`).
 
 ## Why no React in `tools/agents/session/`
 

@@ -1,7 +1,7 @@
 /**
- * AgentLens — post-Vercel-AI-SDK-migration.
+ * AgentLens — AI SDK chat surface.
  *
- * Transport: browser ⇄ `/api/agent/chat` ⇄ Vercel AI Gateway. The
+ * Transport: browser ⇄ `/api/agent/chat` ⇄ configured AI SDK provider. The
  * server handler streams `toUIMessageStreamResponse()` back; `useChat`
  * consumes it and manages the message list.
  *
@@ -78,6 +78,14 @@ import {
   type InspectAvailabilityContext,
 } from "../tools/inspect-availability.js";
 import {
+  createSimulateIntentTool,
+  type SimulateIntentContext,
+} from "../tools/simulate-intent.js";
+import {
+  createSourceMapTool,
+  type SourceMapContext,
+} from "../tools/source-map.js";
+import {
   createGenerateMockTool,
   type GenerateMockContext,
 } from "../tools/generate-mock.js";
@@ -97,29 +105,56 @@ import {
   type InspectConversationContext,
 } from "../tools/inspect-conversation.js";
 import {
+  createCreateProposalTool,
+  type CreateProposalContext,
+} from "../tools/create-proposal.js";
+import {
+  createAuthorMelProposalTool,
+  type AuthorMelDraftRequest,
+  type AuthorMelDraftResult,
+  type AuthorMelProposalContext,
+} from "../tools/author-mel-proposal.js";
+import {
   buildAgentSystemPrompt,
   readStudioAgentContext,
-  type RecentTurn,
 } from "../session/agent-context.js";
+import { buildRecentTurnsFromMessages } from "../session/recent-turns.js";
+import {
+  verifyMelProposal,
+} from "../session/proposal-verifier.js";
+import type { AgentProposal } from "../session/proposal-buffer.js";
 import {
   buildToolSchemaMap,
   executeToolLocally,
 } from "../adapters/ai-sdk-tools.js";
 import { MarkdownBody } from "./MarkdownBody.js";
+import { ProposalPreview } from "./ProposalPreview.js";
 
-const MODEL_LABEL_FALLBACK = "google/gemma-4-26b-a4b-it";
-const RECENT_TURN_LIMIT = 5;
-const RECENT_TURN_EXCERPT_CAP = 280;
+const MODEL_LABEL_FALLBACK = "server-selected model";
+
+type AgentModelConfigResponse = {
+  readonly label?: unknown;
+  readonly status?: unknown;
+};
 
 export function AgentLens(): JSX.Element {
   const { core, adapter } = useStudio();
   const ui = useStudioUi();
+  const [proposal, setProposal] = useState<AgentProposal | null>(null);
 
   // Tool contexts — same pattern as before. Each tool sees only the
   // narrow slice it declares. Refs let closures read live values
   // without busting the useMemo cache every render.
   const uiSnapshotRef = useRef(ui.snapshot);
   uiSnapshotRef.current = ui.snapshot;
+
+  // Reading MEL source can't go through useMemo — adapter.getSource()
+  // reads live editor content, which isn't a value React tracks. We
+  // call it at send/tool time so source reflects what's on screen.
+  const readMelSource = useCallback(
+    (): string => (adapter !== null ? safeGetSource(adapter) : ""),
+    [adapter],
+  );
 
   const registry = useMemo<ToolRegistry>(() => {
     const userCtx = buildUserToolContext(core);
@@ -179,6 +214,24 @@ export function AgentLens(): JSX.Element {
         };
       },
     };
+    const simulateIntentCtx: SimulateIntentContext = {
+      createIntent: (action, ...args) => core.createIntent(action, ...args),
+      explainIntent: (intent) =>
+        core.explainIntent(
+          intent as Parameters<typeof core.explainIntent>[0],
+        ) as never,
+      simulate: (intent) =>
+        core.simulate(intent as Parameters<typeof core.simulate>[0]) as never,
+      listActionNames: () => {
+        const mod = core.getModule();
+        const actions = mod?.schema.actions;
+        return actions !== undefined ? Object.keys(actions) : [];
+      },
+    };
+    const sourceMapCtx: SourceMapContext = {
+      getModule: () => core.getModule(),
+      getSource: readMelSource,
+    };
     const generateMockCtx: GenerateMockContext = {
       getModule: () => core.getModule(),
     };
@@ -227,6 +280,17 @@ export function AgentLens(): JSX.Element {
         });
       },
     };
+    const createProposalCtx: CreateProposalContext = {
+      getOriginalSource: readMelSource,
+      verify: verifyMelProposal,
+      setProposal,
+    };
+    const authorMelProposalCtx: AuthorMelProposalContext = {
+      getOriginalSource: readMelSource,
+      draft: requestMelAuthorDraft,
+      verify: verifyMelProposal,
+      setProposal,
+    };
     const tools = [
       bindTool(createDispatchTool(), userCtx),
       bindTool(createLegalityTool(), userCtx),
@@ -234,10 +298,14 @@ export function AgentLens(): JSX.Element {
       bindTool(createInspectSnapshotTool(), inspectSnapshotCtx),
       bindTool(createInspectNeighborsTool(), inspectNeighborsCtx),
       bindTool(createInspectAvailabilityTool(), inspectAvailabilityCtx),
+      bindTool(createSimulateIntentTool(), simulateIntentCtx),
+      bindTool(createSourceMapTool(), sourceMapCtx),
       bindTool(createInspectLineageTool(), inspectLineageCtx),
       bindTool(createInspectConversationTool(), inspectConversationCtx),
       bindTool(createGenerateMockTool(), generateMockCtx),
       bindTool(createSeedMockTool(), seedMockCtx),
+      bindTool(createAuthorMelProposalTool(), authorMelProposalCtx),
+      bindTool(createCreateProposalTool(), createProposalCtx),
     ];
     if (ui.core !== null) {
       tools.push(
@@ -245,15 +313,7 @@ export function AgentLens(): JSX.Element {
       );
     }
     return createToolRegistry(tools);
-  }, [core, ui.core]);
-
-  // Reading MEL source can't go through useMemo — adapter.getSource()
-  // reads live editor content, which isn't a value React tracks. We
-  // call it at send time (see prepareSendMessagesRequest below).
-  const readMelSource = useCallback(
-    (): string => (adapter !== null ? safeGetSource(adapter) : ""),
-    [adapter],
-  );
+  }, [core, readMelSource, ui.core]);
 
   // useChat transport + handlers. prepareSendMessagesRequest injects
   // the system prompt + tool schemas fresh per turn so the server
@@ -261,6 +321,7 @@ export function AgentLens(): JSX.Element {
   // re-create the Chat instance.
   const conversationTurnsRef = useRef<readonly FullConversationTurn[]>([]);
   const toolSchemas = useMemo(() => buildToolSchemaMap(registry), [registry]);
+  const [agentNotice, setAgentNotice] = useState<string | null>(null);
 
   const chat: UseChatHelpers<UIMessage> = useChat({
     id: "manifesto-agent",
@@ -270,18 +331,35 @@ export function AgentLens(): JSX.Element {
       // latest studio state every time so focus / source / recent
       // turns reflect what's on screen at send-time, not at mount.
       prepareSendMessagesRequest: ({ messages, id }) => {
+        const melSource = readMelSource();
         const ctx = readStudioAgentContext(
           core,
-          readMelSource(),
+          melSource,
           buildRecentTurnsFromMessages(messages as UIMessage[]),
         );
         const system = buildAgentSystemPrompt(ctx);
+        const latestUserText = readLastMessageUserText(
+          messages as UIMessage[],
+        );
+        const forceProposal =
+          latestUserText !== null &&
+          melSource.trim() !== "" &&
+          (toolSchemas.authorMelProposal !== undefined ||
+            toolSchemas.createProposal !== undefined) &&
+          looksLikeSourceChangeRequest(latestUserText);
+        const proposalToolName =
+          toolSchemas.authorMelProposal !== undefined
+            ? "authorMelProposal"
+            : "createProposal";
         return {
           body: {
             id,
             messages,
             system,
             tools: toolSchemas,
+            toolChoice: forceProposal
+              ? { type: "tool", toolName: proposalToolName }
+              : undefined,
             // Server caps the loop; 10 steps is plenty for
             // inspect → explain → dispatch chains.
             maxSteps: 10,
@@ -293,6 +371,7 @@ export function AgentLens(): JSX.Element {
     // Client-side tool execution — dispatches against our local
     // Manifesto runtime and resolves with a JSON result.
     onToolCall: async ({ toolCall }) => {
+      setAgentNotice(null);
       const result = await executeToolLocally(
         registry,
         toolCall.toolName,
@@ -309,6 +388,11 @@ export function AgentLens(): JSX.Element {
     // a manual re-send from the client.
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     onFinish: ({ message }) => {
+      setAgentNotice(
+        isReasoningOnlyAssistantTurn(message)
+          ? "The model returned reasoning only and did not call a tool or produce an answer. Try again, or switch provider if this repeats."
+          : null,
+      );
       // Commit this turn into studio.mel so it joins the runtime's
       // lineage (see studio.mel recordAgentTurn). We only do this on
       // assistant turns that finished naturally; aborts / errors are
@@ -327,10 +411,41 @@ export function AgentLens(): JSX.Element {
   }, [chat.messages]);
 
   const [draft, setDraft] = useState("");
+  const [serverModelLabel, setServerModelLabel] = useState<string | null>(
+    null,
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/agent/config", {
+      method: "GET",
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
+    })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return (await response.json()) as AgentModelConfigResponse;
+      })
+      .then((config) => {
+        if (config === null) return;
+        if (typeof config.label !== "string" || config.label.trim() === "") {
+          return;
+        }
+        const suffix =
+          config.status === "misconfigured" ? " (misconfigured)" : "";
+        setServerModelLabel(`${config.label.trim()}${suffix}`);
+      })
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+      });
+
+    return () => controller.abort();
+  }, []);
 
   const onSend = useCallback(() => {
     const prompt = draft.trim();
     if (prompt === "") return;
+    setAgentNotice(null);
     setDraft("");
     void chat.sendMessage({ text: prompt });
   }, [chat, draft]);
@@ -343,10 +458,27 @@ export function AgentLens(): JSX.Element {
     chat.setMessages([]);
   }, [chat]);
 
+  const onAcceptProposal = useCallback(() => {
+    if (proposal === null || proposal.status !== "verified") return;
+    if (adapter === null) return;
+    adapter.setSource(proposal.proposedSource);
+    adapter.requestBuild();
+    setProposal(null);
+  }, [adapter, proposal]);
+
+  const onRejectProposal = useCallback(() => {
+    setProposal(null);
+  }, []);
+
   const sending = chat.status === "streaming" || chat.status === "submitted";
+  const configuredModelLabel = (
+    import.meta.env?.VITE_AGENT_MODEL as string | undefined
+  )?.trim();
   const modelLabel =
-    (import.meta.env?.VITE_AGENT_MODEL as string | undefined)?.trim() ??
-    MODEL_LABEL_FALLBACK;
+    serverModelLabel ??
+    (configuredModelLabel !== undefined && configuredModelLabel !== ""
+      ? configuredModelLabel
+      : MODEL_LABEL_FALLBACK);
 
   const examplePrompts = useMemo<readonly string[]>(
     () => [
@@ -367,6 +499,14 @@ export function AgentLens(): JSX.Element {
         onClear={onClear}
         canClear={chat.messages.length > 0 && !sending}
       />
+      {agentNotice !== null ? <AgentNotice message={agentNotice} /> : null}
+      {proposal !== null ? (
+        <ProposalPreview
+          proposal={proposal}
+          onAccept={onAcceptProposal}
+          onReject={onRejectProposal}
+        />
+      ) : null}
       <Messages messages={chat.messages} />
       <Composer
         draft={draft}
@@ -457,6 +597,24 @@ function StatusStrip({
       >
         clear
       </button>
+    </div>
+  );
+}
+
+function AgentNotice({ message }: { readonly message: string }): JSX.Element {
+  return (
+    <div
+      className="
+        mx-4 mt-3 px-3 py-2
+        rounded-[10px]
+        border border-[color-mix(in_oklch,var(--color-sig-effect)_45%,var(--color-rule))]
+        bg-[color-mix(in_oklch,var(--color-sig-effect)_9%,transparent)]
+        text-[11.5px] font-sans leading-relaxed
+        text-[var(--color-ink-dim)]
+      "
+      role="status"
+    >
+      {message}
     </div>
   );
 }
@@ -837,7 +995,12 @@ function Composer({
  * reads as a runtime op log, not a generic function call trace.
  */
 function resolveToolChannel(name: string): string {
-  if (name === "dispatch" || name === "studioDispatch" || name === "seedMock") {
+  if (
+    name === "dispatch" ||
+    name === "studioDispatch" ||
+    name === "seedMock" ||
+    name === "authorMelProposal"
+  ) {
     return "var(--color-sig-action)";
   }
   if (name.startsWith("inspect") || name === "generateMock") {
@@ -929,28 +1092,63 @@ function findMostRecentUserText(
   return null;
 }
 
-function buildRecentTurnsFromMessages(
+function readLastMessageUserText(
   messages: readonly UIMessage[],
-): readonly RecentTurn[] {
-  // Pair user → next assistant into turns, newest-first, capped at 5.
-  const turns: RecentTurn[] = [];
-  for (let i = 0; i < messages.length && turns.length < RECENT_TURN_LIMIT; i++) {
-    const m = messages[i]!;
-    if (m.role !== "user") continue;
-    const userText = extractUserText(m);
-    const next = messages[i + 1];
-    if (next === undefined || next.role !== "assistant") continue;
-    const answer = extractAssistantText(next);
-    const toolCount = next.parts.filter(isToolPart).length;
-    turns.push({
-      turnId: m.id,
-      userPrompt: userText,
-      assistantExcerpt: capExcerpt(answer),
-      toolCount,
-    });
-  }
-  // Reverse to newest-first for the system-prompt tail.
-  return turns.reverse();
+): string | null {
+  const last = messages[messages.length - 1];
+  if (last === undefined || last.role !== "user") return null;
+  const text = extractUserText(last);
+  return text === "" ? null : text;
+}
+
+function looksLikeSourceChangeRequest(text: string): boolean {
+  const normalized = text.toLowerCase();
+  const sourceCues = [
+    "mel",
+    "source",
+    "schema",
+    "domain",
+    "action",
+    "computed",
+    "guard",
+    "feature",
+    "기능",
+    "액션",
+    "도메인",
+    "스키마",
+    "소스",
+    "가드",
+  ];
+  const changeCues = [
+    "add",
+    "create",
+    "implement",
+    "change",
+    "modify",
+    "update",
+    "remove",
+    "delete",
+    "clear",
+    "만들",
+    "추가",
+    "구현",
+    "수정",
+    "변경",
+    "삭제",
+    "제거",
+    "일괄",
+  ];
+  return (
+    sourceCues.some((cue) => normalized.includes(cue)) &&
+    changeCues.some((cue) => normalized.includes(cue))
+  );
+}
+
+function isReasoningOnlyAssistantTurn(message: UIMessage): boolean {
+  const hasText = extractAssistantText(message) !== "";
+  const hasTool = message.parts.some(isToolPart);
+  const hasReasoning = message.parts.some((part) => part.type === "reasoning");
+  return hasReasoning && !hasText && !hasTool;
 }
 
 function messagesToConversationTurns(
@@ -999,12 +1197,6 @@ function messagesToConversationTurns(
     });
   }
   return turns;
-}
-
-function capExcerpt(s: string): string {
-  const collapsed = s.replace(/\s+/g, " ").trim();
-  if (collapsed.length <= RECENT_TURN_EXCERPT_CAP) return collapsed;
-  return collapsed.slice(0, RECENT_TURN_EXCERPT_CAP - 1) + "…";
 }
 
 // --------------------------------------------------------------------
@@ -1060,3 +1252,47 @@ function safeGetSource(adapter: EditorAdapter): string {
   }
 }
 
+async function requestMelAuthorDraft(
+  input: AuthorMelDraftRequest,
+): Promise<AuthorMelDraftResult> {
+  const response = await fetch("/api/agent/author", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      source: input.source,
+      request: input.request,
+      title: input.title,
+    }),
+  });
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    return {
+      ok: false,
+      kind: "runtime_error",
+      message: `MEL Author Agent returned non-JSON response (${response.status}).`,
+    };
+  }
+  if (!response.ok) {
+    const record =
+      payload !== null && typeof payload === "object"
+        ? (payload as Record<string, unknown>)
+        : {};
+    return {
+      ok: false,
+      kind: "runtime_error",
+      message:
+        typeof record.message === "string"
+          ? record.message
+          : typeof record.error === "string"
+            ? record.error
+            : `MEL Author Agent request failed (${response.status}).`,
+      detail: payload,
+    };
+  }
+  return payload as AuthorMelDraftResult;
+}

@@ -321,15 +321,17 @@ snapshot + legality. You don't need a separate "help" system.
 
 ### Server-proxy architecture (required for production)
 
-Server-side: `/api/agent/chat` forwards to Vercel AI Gateway.
+Server-side: `/api/agent/chat` forwards to the configured AI SDK provider
+(Vercel AI Gateway or Ollama OpenAI-compatible).
 
 ```ts
 // apps/webapp/src/server/agent-chat-handler.ts
 export async function handleAgentChat(req: Request): Promise<Response> {
-  // 1. Rate-limit BEFORE any gateway call.
-  // 2. Parse request body (Zod schema).
-  // 3. streamText({ model: gateway(MODEL_ID), messages, tools, ... }).
-  // 4. return result.toUIMessageStreamResponse();
+  // 1. Resolve AGENT_MODEL_PROVIDER + model.
+  // 2. Rate-limit BEFORE any model call.
+  // 3. Parse request body (Zod schema).
+  // 4. streamText({ model, messages, tools, ... }).
+  // 5. return result.toUIMessageStreamResponse();
 }
 ```
 
@@ -367,8 +369,13 @@ See `apps/webapp/src/server/rate-limit.ts`.
 ### Environment variables (server-only — no `VITE_` prefix)
 
 ```
-AI_GATEWAY_API_KEY        # required
-AI_GATEWAY_MODEL          # optional; default google/gemma-4-26b-a4b-it
+AGENT_MODEL_PROVIDER      # optional; "gateway" or "ollama"
+AI_GATEWAY_API_KEY        # gateway; required when provider=gateway
+AI_GATEWAY_MODEL          # gateway; default google/gemma-4-26b-a4b-it
+OLLAMA_BASE_URL           # ollama; default http://localhost:11434/v1
+OLLAMA_HOST               # ollama; alias, normalized to /v1
+OLLAMA_MODEL              # ollama; default gemma4:e4b
+OLLAMA_API_KEY            # ollama; optional, only for protected proxies
 UPSTASH_REDIS_REST_URL    # required in prod, optional in dev
 UPSTASH_REDIS_REST_TOKEN  # required in prod, optional in dev
 AGENT_RATELIMIT_MAX       # optional; default 20

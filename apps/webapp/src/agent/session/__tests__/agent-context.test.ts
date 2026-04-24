@@ -81,6 +81,8 @@ describe("buildAgentSystemPrompt — identity + tool catalog", () => {
     expect(prompt).toContain("inspectSnapshot()");
     expect(prompt).toContain("inspectAvailability()");
     expect(prompt).toContain("inspectNeighbors(nodeId)");
+    expect(prompt).toContain("simulateIntent");
+    expect(prompt).toContain("locateSource");
     expect(prompt).toContain("explainLegality");
     expect(prompt).toContain("dispatch(action, args)");
     expect(prompt).toContain("studioDispatch(action, args)");
@@ -88,6 +90,11 @@ describe("buildAgentSystemPrompt — identity + tool catalog", () => {
     // agent doesn't stop at the generate-only step.
     expect(prompt).toContain("seedMock");
     expect(prompt).toContain("generateMock");
+    expect(prompt).toContain("authorMelProposal");
+    expect(prompt).toContain("createProposal");
+    expect(prompt).toContain("Adding a focused action is allowed");
+    expect(prompt).toContain("Do not answer with a plain-text proposal summary");
+    expect(prompt).toContain("Do not write the full MEL source yourself");
   });
 
   it("gives a grounding recipe so the model knows to inspect first", () => {

@@ -14,9 +14,8 @@
  *   - Streaming responses are the happy path, not an opt-in.
  *   - Cold starts measured in milliseconds — relevant when a
  *     visitor's first question is the one that lands.
- *   - `@upstash/ratelimit`, `@upstash/redis`, `ai`, and
- *     `@ai-sdk/gateway` are all Fetch-based and run on Edge
- *     without tweaks.
+ *   - `@upstash/ratelimit`, `@upstash/redis`, `ai`, and the configured
+ *     AI SDK providers are Fetch-based and run on Edge without tweaks.
  */
 import { handleAgentChat } from "../../src/server/agent-chat-handler.js";
 

@@ -34,6 +34,9 @@ importers:
 
   apps/webapp:
     dependencies:
+      '@ai-sdk/openai-compatible':
+        specifier: ^2.0.41
+        version: 2.0.41(zod@4.3.6)
       '@ai-sdk/react':
         specifier: ^3.0.170
         version: 3.0.170(react@18.3.1)(zod@4.3.6)
@@ -43,6 +46,9 @@ importers:
       '@manifesto-ai/studio-core':
         specifier: workspace:*
         version: link:../../packages/studio-core
+      '@manifesto-ai/studio-mel-author-agent':
+        specifier: workspace:*
+        version: link:../../packages/studio-mel-author-agent
       '@manifesto-ai/studio-react':
         specifier: workspace:*
         version: link:../../packages/studio-react
@@ -186,6 +192,12 @@ importers:
         specifier: ^7.6.13
         version: 7.6.13
 
+  packages/studio-mel-author-agent:
+    dependencies:
+      '@manifesto-ai/studio-core':
+        specifier: workspace:*
+        version: link:../studio-core
+
   packages/studio-react:
     dependencies:
       '@manifesto-ai/studio-adapter-monaco':
@@ -242,6 +254,12 @@ packages:
 
   '@ai-sdk/gateway@3.0.104':
     resolution: {integrity: sha512-ZKX5n74io8VIRlhIMSLWVlvT3sXC8Z7cZ9GHuWBWZDVi96+62AIsWuLGvMfcBA1STYuSoDrp6rIziZmvrTq0TA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/openai-compatible@2.0.41':
+    resolution: {integrity: sha512-kNAGINk71AlOXx10Dq/PXw4t/9XjdK8uxfpVElRwtSFMdeSiLVt58p9TPx4/FJD+hxZuVhvxYj9r42osxWq79g==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -3056,6 +3074,12 @@ snapshots:
       '@ai-sdk/provider': 3.0.8
       '@ai-sdk/provider-utils': 4.0.23(zod@4.3.6)
       '@vercel/oidc': 3.2.0
+      zod: 4.3.6
+
+  '@ai-sdk/openai-compatible@2.0.41(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      '@ai-sdk/provider-utils': 4.0.23(zod@4.3.6)
       zod: 4.3.6
 
   '@ai-sdk/provider-utils@4.0.23(zod@4.3.6)':
