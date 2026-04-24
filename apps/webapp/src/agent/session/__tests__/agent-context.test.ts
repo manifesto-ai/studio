@@ -92,6 +92,7 @@ describe("buildAgentSystemPrompt — identity + tool catalog", () => {
     expect(prompt).toContain("generateMock");
     expect(prompt).toContain("authorMelProposal");
     expect(prompt).toContain("createProposal");
+    expect(prompt).toContain("detail.failureReport");
     expect(prompt).toContain("Adding a focused action is allowed");
     expect(prompt).toContain("Do not answer with a plain-text proposal summary");
     expect(prompt).toContain("Do not write the full MEL source yourself");

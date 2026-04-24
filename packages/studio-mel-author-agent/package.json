@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./guide": {
+      "types": "./dist/guide.d.ts",
+      "import": "./dist/guide.js"
     }
   },
   "scripts": {
@@ -22,6 +26,7 @@
     "@manifesto-ai/studio-core": "workspace:*"
   },
   "files": [
-    "dist"
+    "dist",
+    "knowledge"
   ]
 }

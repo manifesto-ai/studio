@@ -230,6 +230,101 @@ describe("authorMelProposal", () => {
     );
 
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.kind).toBe("invalid_input");
+    if (!result.ok) {
+      expect(result.kind).toBe("invalid_input");
+      expect(result.detail).toMatchObject({
+        failureReport: { failureKind: "unchanged_source" },
+      });
+    }
+  });
+
+  it("returns failure reports for invalid author drafts", async () => {
+    const result = await createAuthorMelProposalTool().run(
+      { request: "add action" },
+      {
+        getOriginalSource: () => "domain Todo { state { count: number = 0 } }",
+        draft: async () => ({
+          ok: true,
+          output: {
+            title: "Broken",
+            rationale: "",
+            proposedSource: "domain Broken {",
+            status: "invalid",
+            diagnostics: [
+              {
+                severity: "error",
+                message: "Expected closing brace",
+                line: 1,
+                column: 15,
+              },
+            ],
+            schemaHash: null,
+            summary: "workspace source failed to build with 1 error",
+          },
+        }),
+        verify: async () => {
+          throw new Error("should not verify invalid author draft");
+        },
+        setProposal: () => {},
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.kind).toBe("runtime_error");
+      expect(result.detail).toMatchObject({
+        failureReport: {
+          failureKind: "compile_error",
+          diagnostics: [{ message: "Expected closing brace" }],
+        },
+      });
+    }
+  });
+
+  it("returns failure reports for verifier-invalid author drafts", async () => {
+    const result = await createAuthorMelProposalTool().run(
+      { request: "add reserved action" },
+      {
+        getOriginalSource: () => "domain Todo { state { count: number = 0 } }",
+        draft: async () => ({
+          ok: true,
+          output: {
+            title: "Reserved",
+            rationale: "",
+            proposedSource: "domain Todo { action $host() { onceIntent { } } }",
+            status: "verified",
+            diagnostics: [],
+            schemaHash: "h1",
+            summary: "workspace source builds cleanly",
+          },
+        }),
+        verify: async () => ({
+          status: "invalid",
+          diagnostics: [
+            {
+              severity: "error",
+              message: "reserved namespace",
+              line: 1,
+              column: 22,
+            },
+          ],
+          schemaHash: null,
+          summary: "proposal uses reserved Manifesto namespace identifiers",
+        }),
+        setProposal: () => {
+          throw new Error("should not store verifier-invalid proposal");
+        },
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.detail).toMatchObject({
+        failureReport: {
+          failureKind: "compile_error",
+          summary: "proposal uses reserved Manifesto namespace identifiers",
+        },
+      });
+    }
   });
 });

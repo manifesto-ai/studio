@@ -9,12 +9,21 @@
 import {
   buildMelAuthorSystemPrompt,
   buildMelAuthorUserPrompt,
+  classifyMelAuthorDraftFailure,
+  createMelAuthorFailureReport,
+  createMelAuthorLifecycle,
   createMelAuthorTools,
   createMelAuthorWorkspace,
+  type MelAuthorFailureKind,
+  type MelAuthorFailureReport,
   type MelAuthorFinalDraft,
+  type MelAuthorLifecycle,
+  type MelAuthorLineageOutput,
   type MelAuthorTool,
+  type MelAuthorToolTraceEntry,
   type MelAuthorToolRunResult,
 } from "@manifesto-ai/studio-mel-author-agent";
+import { createMelAuthorGuideIndex } from "@manifesto-ai/studio-mel-author-agent/guide";
 import {
   generateText,
   jsonSchema,
@@ -25,6 +34,8 @@ import {
 import { z } from "zod";
 import { enforceChatRateLimit, identifyRequest } from "./rate-limit.js";
 import { resolveAgentModel } from "./agent-chat-handler.js";
+
+const authorGuideIndex = createMelAuthorGuideIndex();
 
 const authorBodyShape = z
   .object({
@@ -49,11 +60,17 @@ export async function handleAgentAuthor(req: Request): Promise<Response> {
   const identifier = identifyRequest(req);
   const rl = await enforceChatRateLimit(identifier);
   if (rl.kind === "limited") {
+    const failureReport = createMelAuthorFailureReport({
+      failureKind: "provider_error",
+      summary: "MEL Author Agent request was rate limited.",
+      retryAdvice: `Retry after ${rl.retryAfterSeconds} second${rl.retryAfterSeconds === 1 ? "" : "s"}.`,
+    });
     return new Response(
       JSON.stringify({
         ok: false,
         kind: "runtime_error",
         message: "rate limit exceeded",
+        detail: { failureReport },
         retryAfterSeconds: rl.retryAfterSeconds,
       }),
       {
@@ -81,12 +98,19 @@ export async function handleAgentAuthor(req: Request): Promise<Response> {
     return jsonError(400, `invalid request body: ${parsed.error.message}`);
   }
 
-  const workspace = createMelAuthorWorkspace({ source: parsed.data.source });
-  const authorTools = createMelAuthorTools(workspace);
-  const sdkTools = toSdkTools(authorTools);
   const maxSteps = parsed.data.maxSteps ?? 8;
+  const workspace = createMelAuthorWorkspace({ source: parsed.data.source });
+  let lifecycle: MelAuthorLifecycle | null = null;
 
   try {
+    lifecycle = await createMelAuthorLifecycle({
+      request: parsed.data.request,
+    });
+    const authorTools = createMelAuthorTools(workspace, {
+      guideIndex: authorGuideIndex,
+      lifecycle,
+    });
+    const sdkTools = toSdkTools(authorTools);
     const result = await generateText({
       model: resolvedModel.model,
       system: buildMelAuthorSystemPrompt({
@@ -102,21 +126,34 @@ export async function handleAgentAuthor(req: Request): Promise<Response> {
       abortSignal: req.signal,
     });
 
+    const toolTrace = buildToolTrace(result);
+    const toolCallCount = countToolCalls(result);
     const finalized = findFinalDraft(result);
     if (finalized !== null) {
+      const failureReport = classifyMelAuthorDraftFailure({
+        draft: finalized,
+        originalSource: parsed.data.source,
+        toolTrace,
+        finishReason: result.finishReason,
+        toolCallCount,
+      });
+      if (failureReport !== null) {
+        return jsonOk(authorFailureResult(failureReport, lifecycle.getLineage()));
+      }
       return jsonOk({
         ok: true,
         output: finalized,
         text: result.text,
         finishReason: result.finishReason,
-        toolCallCount: countToolCalls(result),
+        toolCallCount,
+        authorLineage: lifecycle.getLineage(),
       });
     }
 
-    // If the model edited the workspace but forgot to call finalize,
-    // still return a deterministic build-backed draft. This keeps the
-    // outer proposal UI from failing just because the final tool call
-    // was omitted.
+    const failureKind = classifyIncompleteAuthorRun(result, maxSteps, toolTrace);
+    if (failureKind === "stalled") {
+      await lifecycle.markStalled("read_source_only_stop");
+    }
     const fallback = await workspace.finalize({
       title: parsed.data.title,
       rationale:
@@ -124,21 +161,32 @@ export async function handleAgentAuthor(req: Request): Promise<Response> {
           ? "MEL Author Agent stopped before calling finalize."
           : result.text,
     });
-    if (!fallback.ok) {
-      return jsonOk(fallback);
-    }
-    return jsonOk({
-      ok: true,
-      output: fallback.output,
-      text: result.text,
+    const failureReport = createMelAuthorFailureReport({
+      failureKind,
+      summary: summarizeIncompleteAuthorRun(failureKind),
+      diagnostics: fallback.ok ? fallback.output.diagnostics : [],
+      toolTrace,
+      source: workspace.getSource(),
+      retryAdvice: retryAdviceForFailureKind(failureKind),
       finishReason: result.finishReason,
-      toolCallCount: countToolCalls(result),
+      toolCallCount,
     });
+    return jsonOk(authorFailureResult(failureReport, lifecycle.getLineage()));
   } catch (err) {
+    const failureReport = createMelAuthorFailureReport({
+      failureKind: "provider_error",
+      summary: `MEL Author Agent failed before producing a draft: ${err instanceof Error ? err.message : String(err)}`,
+      retryAdvice:
+        "Retry after checking the model provider status. Do not apply any source changes from this failed attempt.",
+    });
     return jsonOk({
       ok: false,
       kind: "runtime_error",
-      message: err instanceof Error ? err.message : String(err),
+      message: failureReport.summary,
+      detail: {
+        failureReport,
+        authorLineage: lifecycle?.getLineage(),
+      },
     });
   }
 }
@@ -189,6 +237,96 @@ function countToolCalls(result: unknown): number {
   return count;
 }
 
+function buildToolTrace(result: unknown): readonly MelAuthorToolTraceEntry[] {
+  return allToolResults(result).map((toolResult) => {
+    const toolName = toolResultName(toolResult) ?? "(unknown)";
+    const output = toolResultOutput(toolResult);
+    const toolRun = isToolRunResult(output) ? output : null;
+    if (toolRun !== null) {
+      if (toolRun.ok) {
+        return {
+          toolName,
+          ok: true,
+          summary: summarizeToolOutput(toolName, toolRun.output),
+          inputPreview: previewJson(toolResultInput(toolResult)),
+          outputPreview: previewJson(toolRun.output),
+        };
+      }
+      return {
+        toolName,
+        ok: false,
+        summary: toolRun.message,
+        inputPreview: previewJson(toolResultInput(toolResult)),
+        outputPreview: previewJson(toolRun.detail ?? toolRun.message),
+        errorKind: toolRun.kind,
+      };
+    }
+    return {
+      toolName,
+      ok: output !== undefined,
+      summary:
+        output === undefined
+          ? "tool result had no output"
+          : `tool returned ${previewJson(output)}`,
+      inputPreview: previewJson(toolResultInput(toolResult)),
+      outputPreview: previewJson(output),
+    };
+  });
+}
+
+function classifyIncompleteAuthorRun(
+  result: unknown,
+  maxSteps: number,
+  toolTrace: readonly MelAuthorToolTraceEntry[],
+): MelAuthorFailureKind {
+  if (toolTrace.some((entry) => !entry.ok)) return "tool_error";
+  if (isReadSourceOnlyStop(result, toolTrace)) return "stalled";
+  if (countSteps(result) >= maxSteps) return "max_steps";
+  return "missing_finalize";
+}
+
+function summarizeIncompleteAuthorRun(kind: MelAuthorFailureKind): string {
+  if (kind === "stalled") {
+    return "MEL Author Agent read the workspace source and stopped without attempting a source mutation.";
+  }
+  if (kind === "tool_error") {
+    return "MEL Author Agent stopped after a tool error before producing a finalized draft.";
+  }
+  if (kind === "max_steps") {
+    return "MEL Author Agent reached its step limit before producing a finalized draft.";
+  }
+  return "MEL Author Agent stopped before calling finalize.";
+}
+
+function retryAdviceForFailureKind(kind: MelAuthorFailureKind): string {
+  if (kind === "stalled") {
+    return "Retry with an explicit instruction that the next response must call replaceSource or patchSource instead of explaining the edit in text.";
+  }
+  if (kind === "tool_error") {
+    return "Inspect the tool error, narrow the edit, and retry with an explicit instruction to rebuild before finalizing.";
+  }
+  if (kind === "max_steps") {
+    return "Retry with a smaller scoped request or a stricter instruction to make one minimal edit and finalize.";
+  }
+  return "Retry by asking the author to call finalize after the next clean build.";
+}
+
+function authorFailureResult(
+  failureReport: MelAuthorFailureReport,
+  authorLineage?: MelAuthorLineageOutput,
+) {
+  return {
+    ok: false,
+    kind:
+      failureReport.failureKind === "unchanged_source" ||
+      failureReport.failureKind === "ambiguous_request"
+        ? "invalid_input"
+        : "runtime_error",
+    message: failureReport.summary,
+    detail: { failureReport, authorLineage },
+  } as const;
+}
+
 function allToolResults(resultOrStep: unknown): readonly unknown[] {
   const record = asRecord(resultOrStep);
   if (record === null) return [];
@@ -215,6 +353,13 @@ function toolResultOutput(value: unknown): unknown {
   return undefined;
 }
 
+function toolResultInput(value: unknown): unknown {
+  const record = asRecord(value);
+  if (record === null) return undefined;
+  if ("input" in record) return record.input;
+  return undefined;
+}
+
 function isToolRunResult(
   value: unknown,
 ): value is MelAuthorToolRunResult<unknown> {
@@ -237,6 +382,61 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object"
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function countSteps(result: unknown): number {
+  const record = asRecord(result);
+  const steps = Array.isArray(record?.steps) ? record.steps : [];
+  return steps.length;
+}
+
+function isReadSourceOnlyStop(
+  result: unknown,
+  toolTrace: readonly MelAuthorToolTraceEntry[],
+): boolean {
+  const record = asRecord(result);
+  return (
+    record?.finishReason === "stop" &&
+    toolTrace.length === 1 &&
+    toolTrace[0]?.ok === true &&
+    toolTrace[0]?.toolName === "readSource"
+  );
+}
+
+function summarizeToolOutput(toolName: string, output: unknown): string {
+  const record = asRecord(output);
+  if (record !== null && typeof record.summary === "string") {
+    return record.summary;
+  }
+  if (toolName === "readSource" && record !== null) {
+    const lineCount = record.lineCount;
+    return typeof lineCount === "number"
+      ? `read ${lineCount} source line${lineCount === 1 ? "" : "s"}`
+      : "read source";
+  }
+  if (toolName === "finalize" && record !== null) {
+    const status = record.status;
+    return typeof status === "string" ? `finalized ${status} draft` : "finalized draft";
+  }
+  if (toolName === "searchAuthorGuide" && record !== null) {
+    const hitCount = record.hitCount;
+    return typeof hitCount === "number"
+      ? `found ${hitCount} guide hit${hitCount === 1 ? "" : "s"}`
+      : "searched author guide";
+  }
+  return `${toolName} completed`;
+}
+
+function previewJson(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const text =
+      typeof value === "string" ? value : JSON.stringify(value, null, 0);
+    return text.length <= 360 ? text : text.slice(0, 357) + "...";
+  } catch {
+    const text = String(value);
+    return text.length <= 360 ? text : text.slice(0, 357) + "...";
+  }
 }
 
 function jsonOk(value: unknown): Response {

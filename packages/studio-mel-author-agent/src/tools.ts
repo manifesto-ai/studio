@@ -3,17 +3,24 @@ import type {
   MelAuthorExplanationOutput,
   MelAuthorFinalDraft,
   MelAuthorFinalizeInput,
+  MelAuthorGuideIndex,
+  MelAuthorGuideSearchInput,
+  MelAuthorGuideSearchOutput,
+  MelAuthorGuideSource,
   MelAuthorGraphOutput,
   MelAuthorIntentInput,
   MelAuthorIntentOutput,
+  MelAuthorLifecycle,
   MelAuthorLocateOutput,
   MelAuthorMutationOutput,
   MelAuthorPatchInput,
   MelAuthorSourceOutput,
   MelAuthorTool,
+  MelAuthorToolRunResult,
   MelAuthorWhyNotOutput,
   MelAuthorWorkspace,
 } from "./types.js";
+import { searchMelAuthorGuide } from "./guide-search.js";
 
 const EMPTY_OBJECT_SCHEMA: Record<string, unknown> = {
   type: "object",
@@ -108,8 +115,38 @@ const FINALIZE_SCHEMA: Record<string, unknown> = {
   },
 };
 
+const SEARCH_AUTHOR_GUIDE_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["query"],
+  properties: {
+    query: {
+      type: "string",
+      description:
+        "Search terms, compiler diagnostic text, MEL construct, or error code.",
+    },
+    source: {
+      type: "string",
+      enum: ["reference", "syntax", "error"],
+      description: "Optional guide source to search.",
+    },
+    limit: {
+      type: "integer",
+      minimum: 1,
+      maximum: 8,
+      description: "Maximum number of guide hits to return.",
+    },
+  },
+};
+
+export type CreateMelAuthorToolsOptions = {
+  readonly guideIndex?: MelAuthorGuideIndex;
+  readonly lifecycle?: MelAuthorLifecycle;
+};
+
 export function createMelAuthorTools(
   workspace: MelAuthorWorkspace,
+  options: CreateMelAuthorToolsOptions = {},
 ): readonly MelAuthorTool<unknown, unknown>[] {
   const tools: readonly MelAuthorTool<unknown, unknown>[] = [
     {
@@ -117,7 +154,11 @@ export function createMelAuthorTools(
       description:
         "Read the current ephemeral workspace MEL source. Call this before editing.",
       jsonSchema: READ_SOURCE_SCHEMA,
-      run: async () => ({ ok: true, output: workspace.readSource() }),
+      run: async () => {
+        const output = workspace.readSource();
+        await options.lifecycle?.recordReadSource();
+        return { ok: true, output };
+      },
     } satisfies MelAuthorTool<unknown, MelAuthorSourceOutput>,
     {
       name: "replaceSource",
@@ -127,13 +168,23 @@ export function createMelAuthorTools(
       run: async (input) => {
         const source = readStringProperty(input, "source");
         if (source === null) {
+          await options.lifecycle?.recordToolError("replaceSource");
           return {
             ok: false,
             kind: "invalid_input",
             message: "replaceSource requires { source: string }.",
           };
         }
-        return workspace.replaceSource(source);
+        const result = workspace.replaceSource(source);
+        if (result.ok) {
+          await options.lifecycle?.recordMutationAttempt(
+            "replaceSource",
+            result.output.changed,
+          );
+        } else {
+          await options.lifecycle?.recordToolError("replaceSource");
+        }
+        return result;
       },
     } satisfies MelAuthorTool<unknown, MelAuthorMutationOutput>,
     {
@@ -141,21 +192,56 @@ export function createMelAuthorTools(
       description:
         "Patch a 1-based line/column range inside the ephemeral workspace source.",
       jsonSchema: PATCH_SOURCE_SCHEMA,
-      run: async (input) => workspace.patchSource(input as MelAuthorPatchInput),
+      run: async (input) => {
+        const result = workspace.patchSource(input as MelAuthorPatchInput);
+        if (result.ok) {
+          await options.lifecycle?.recordMutationAttempt(
+            "patchSource",
+            result.output.changed,
+          );
+        } else {
+          await options.lifecycle?.recordToolError("patchSource");
+        }
+        return result;
+      },
     } satisfies MelAuthorTool<unknown, MelAuthorMutationOutput>,
     {
       name: "build",
       description:
         "Build the current workspace source and return Manifesto diagnostics. Call after every source mutation.",
       jsonSchema: EMPTY_OBJECT_SCHEMA,
-      run: async () => ({ ok: true, output: await workspace.build() }),
+      run: async () => {
+        const output = await workspace.build();
+        await options.lifecycle?.recordBuild(output.status, output.errorCount);
+        return { ok: true, output };
+      },
     } satisfies MelAuthorTool<unknown, MelAuthorBuildOutput>,
+    ...(options.guideIndex === undefined
+      ? []
+      : [
+          {
+            name: "searchAuthorGuide",
+            description:
+              "Search the bundled MEL authoring guide for syntax, reference, and compiler-error guidance. Use compiler diagnostics as queries after a failed build.",
+            jsonSchema: SEARCH_AUTHOR_GUIDE_SCHEMA,
+            run: async (input) =>
+              searchAuthorGuide(
+                options.guideIndex as MelAuthorGuideIndex,
+                input,
+                options.lifecycle,
+              ),
+          } satisfies MelAuthorTool<unknown, MelAuthorGuideSearchOutput>,
+        ]),
     {
       name: "inspectGraph",
       description:
         "Inspect the built schema graph for actions, state, computed nodes, and relationships. Requires a clean build of the current source.",
       jsonSchema: INSPECT_GRAPH_SCHEMA,
-      run: async (input) => workspace.inspectGraph(readGraphOptions(input)),
+      run: async (input) => {
+        const result = workspace.inspectGraph(readGraphOptions(input));
+        await recordObservation(options.lifecycle, "inspectGraph", result.ok);
+        return result;
+      },
     } satisfies MelAuthorTool<unknown, MelAuthorGraphOutput>,
     {
       name: "locateDeclaration",
@@ -165,13 +251,16 @@ export function createMelAuthorTools(
       run: async (input) => {
         const target = readStringProperty(input, "target");
         if (target === null) {
+          await options.lifecycle?.recordToolError("locateDeclaration");
           return {
             ok: false,
             kind: "invalid_input",
             message: "locateDeclaration requires { target: string }.",
           };
         }
-        return workspace.locateDeclaration(target);
+        const result = workspace.locateDeclaration(target);
+        await recordObservation(options.lifecycle, "locateDeclaration", result.ok);
+        return result;
       },
     } satisfies MelAuthorTool<unknown, MelAuthorLocateOutput>,
     {
@@ -179,38 +268,155 @@ export function createMelAuthorTools(
       description:
         "Explain whether a bound action intent is admitted on the current workspace runtime. Requires a clean build.",
       jsonSchema: INTENT_SCHEMA,
-      run: async (input) => workspace.why(input as MelAuthorIntentInput),
+      run: async (input) => {
+        const result = workspace.why(input as MelAuthorIntentInput);
+        await recordObservation(options.lifecycle, "why", result.ok);
+        return result;
+      },
     } satisfies MelAuthorTool<unknown, MelAuthorExplanationOutput>,
     {
       name: "whyNot",
       description:
         "Return blockers for a bound action intent on the current workspace runtime. Requires a clean build.",
       jsonSchema: INTENT_SCHEMA,
-      run: async (input) => workspace.whyNot(input as MelAuthorIntentInput),
+      run: async (input) => {
+        const result = workspace.whyNot(input as MelAuthorIntentInput);
+        await recordObservation(options.lifecycle, "whyNot", result.ok);
+        return result;
+      },
     } satisfies MelAuthorTool<unknown, MelAuthorWhyNotOutput>,
     {
       name: "simulate",
       description:
         "Dry-run a bound action intent against the current workspace runtime without dispatching. Requires a clean build.",
       jsonSchema: INTENT_SCHEMA,
-      run: async (input) => workspace.simulate(input as MelAuthorIntentInput),
+      run: async (input) => {
+        const result = workspace.simulate(input as MelAuthorIntentInput);
+        if (result.ok) {
+          await options.lifecycle?.recordSimulation();
+        } else {
+          await options.lifecycle?.recordToolError("simulate");
+        }
+        return result;
+      },
     } satisfies MelAuthorTool<unknown, MelAuthorIntentOutput>,
     {
       name: "finalize",
       description:
         "Finalize the current workspace source as the proposed MEL draft. This builds once more and returns the full proposed source plus diagnostics.",
       jsonSchema: FINALIZE_SCHEMA,
-      run: async (input) =>
-        workspace.finalize(input as MelAuthorFinalizeInput | undefined),
+      run: async (input) => {
+        const result = await workspace.finalize(
+          input as MelAuthorFinalizeInput | undefined,
+        );
+        if (!result.ok) {
+          await options.lifecycle?.recordToolError("finalize");
+          return result;
+        }
+        await options.lifecycle?.recordBuild(
+          result.output.status === "verified" ? "ok" : "fail",
+          result.output.diagnostics.filter(
+            (diagnostic) => diagnostic.severity === "error",
+          ).length,
+        );
+        if (result.output.status === "verified") {
+          const lifecycleResult = await options.lifecycle?.recordFinalize(
+            result.output.schemaHash ?? result.output.title,
+          );
+          if (lifecycleResult !== undefined && !lifecycleResult.ok) {
+            return {
+              ok: false,
+              kind: "runtime_error",
+              message:
+                "finalize requires at least one source mutation and a clean build in the Author lifecycle.",
+              detail: {
+                lifecycleResult,
+                authorLineage: options.lifecycle?.getLineage(),
+              },
+            };
+          }
+        }
+        return result;
+      },
     } satisfies MelAuthorTool<unknown, MelAuthorFinalDraft>,
   ];
   return tools;
+}
+
+async function searchAuthorGuide(
+  guideIndex: MelAuthorGuideIndex,
+  input: unknown,
+  lifecycle: MelAuthorLifecycle | undefined,
+): Promise<MelAuthorToolRunResult<MelAuthorGuideSearchOutput>> {
+  const query = readStringProperty(input, "query");
+  if (query === null || query.trim() === "") {
+    await lifecycle?.recordToolError("searchAuthorGuide");
+    return {
+      ok: false,
+      kind: "invalid_input",
+      message: "searchAuthorGuide requires { query: string }.",
+    };
+  }
+
+  const source = readOptionalGuideSource(input);
+  if (source === "invalid") {
+    await lifecycle?.recordToolError("searchAuthorGuide");
+    return {
+      ok: false,
+      kind: "invalid_input",
+      message:
+        'searchAuthorGuide source must be one of "reference", "syntax", or "error".',
+    };
+  }
+
+  const output = searchMelAuthorGuide(guideIndex, {
+    query,
+    source,
+    limit: readOptionalNumberProperty(input, "limit"),
+  } satisfies MelAuthorGuideSearchInput);
+  await lifecycle?.recordGuideSearch();
+  return {
+    ok: true,
+    output,
+  };
+}
+
+async function recordObservation(
+  lifecycle: MelAuthorLifecycle | undefined,
+  toolName: string,
+  ok: boolean,
+): Promise<void> {
+  if (ok) {
+    await lifecycle?.recordInspection(toolName);
+  } else {
+    await lifecycle?.recordToolError(toolName);
+  }
 }
 
 function readStringProperty(input: unknown, key: string): string | null {
   if (input === null || typeof input !== "object") return null;
   const value = (input as Record<string, unknown>)[key];
   return typeof value === "string" ? value : null;
+}
+
+function readOptionalNumberProperty(
+  input: unknown,
+  key: string,
+): number | undefined {
+  if (input === null || typeof input !== "object") return undefined;
+  const value = (input as Record<string, unknown>)[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+function readOptionalGuideSource(
+  input: unknown,
+): MelAuthorGuideSource | "invalid" | undefined {
+  const value = readStringProperty(input, "source");
+  if (value === null) return undefined;
+  if (value === "reference" || value === "syntax" || value === "error") {
+    return value;
+  }
+  return "invalid";
 }
 
 function readGraphOptions(

@@ -56,7 +56,23 @@ never those live-runtime tool implementations.
 Exception: `authorMelProposal` calls `/api/agent/author`, where the server
 runs the headless MEL Author Agent against a source string in an ephemeral
 workspace. That route has no access to the live browser runtime and returns
-only a draft source for the normal proposal verifier.
+only a draft source for the normal proposal verifier. The Author Agent also
+gets a package-local `searchAuthorGuide` tool backed by bundled MEL reference,
+syntax, and error-guide Markdown; it uses this for uncertain constructs and
+compiler diagnostics instead of relying only on model memory.
+
+Author tool calls are also recorded into the Author Agent's own lifecycle
+lineage and returned as `authorLineage` on `/api/agent/author` responses.
+This makes silent failures observable without server log scraping; a
+`readSource`-only stop is classified as `stalled` and recorded through
+`markStalled("read_source_only_stop")`. The lifecycle also caps retry
+records with `maxRetries` / `canRetry`; the host does not automatically
+retry from this signal yet.
+
+If authoring fails, the route returns a structured `failureReport`
+(`failureKind`, diagnostics, compact tool trace, source excerpt, retry
+advice). The UI Agent uses that report to explain the failure, ask the
+user when the request is ambiguous, or retry once with a narrower request.
 
 ## MEL Author + Verified Patch
 

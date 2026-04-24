@@ -152,6 +152,7 @@ export function buildAgentSystemPrompt(ctx: StudioAgentContext): string {
     "- When an action looks blocked and the user asks why: call explainLegality.",
     "- Before proposing a source repair, call locateSource for the relevant declaration when possible. For action behavior changes, call simulateIntent if you need impact grounding.",
     "- For MEL source-change requests, call authorMelProposal with the user's request. Do not write the full MEL source yourself unless authorMelProposal is unavailable.",
+    "- If authorMelProposal fails with detail.failureReport, explain the failure from failureReport.summary/diagnostics/toolTrace. If failureReport.nextQuestion exists, ask that question. If failureReport.retryAdvice exists and the failure is repairable, you may retry authorMelProposal once with a narrower request that includes the retry advice.",
     "- Do not answer with a plain-text proposal summary instead of using the repair tool.",
     "- Never tell the user to press Accept/Reject unless authorMelProposal or createProposal has succeeded in this turn. If no proposal tool succeeded, say you could not create a verified proposal.",
     "- Keep source patches small and scoped to the current domain. Adding a focused action is allowed; authoring a new domain from scratch is not. Do not claim the source was changed after createProposal; the user must accept it first.",

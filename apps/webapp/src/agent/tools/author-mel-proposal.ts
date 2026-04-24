@@ -1,4 +1,10 @@
-import type { MelAuthorFinalDraft } from "@manifesto-ai/studio-mel-author-agent";
+import {
+  classifyMelAuthorDraftFailure,
+  createMelAuthorFailureReport,
+  type MelAuthorFailureReport,
+  type MelAuthorFinalDraft,
+  type MelAuthorLineageOutput,
+} from "@manifesto-ai/studio-mel-author-agent";
 import {
   createAgentProposal,
   type AgentProposal,
@@ -26,12 +32,18 @@ export type AuthorMelDraftResult =
       readonly text?: string;
       readonly finishReason?: string;
       readonly toolCallCount?: number;
+      readonly authorLineage?: MelAuthorLineageOutput;
     }
   | {
       readonly ok: false;
       readonly kind: "invalid_input" | "runtime_error";
       readonly message: string;
-      readonly detail?: unknown;
+      readonly detail?:
+        | {
+            readonly failureReport?: MelAuthorFailureReport;
+            readonly authorLineage?: MelAuthorLineageOutput;
+          }
+        | unknown;
     };
 
 export type AuthorMelProposalInput = {
@@ -50,6 +62,7 @@ export type AuthorMelProposalOutput = {
   readonly schemaHash: string | null;
   readonly authorStatus: MelAuthorFinalDraft["status"];
   readonly authorSummary: string;
+  readonly authorLineage?: MelAuthorLineageOutput;
 };
 
 const JSON_SCHEMA: Record<string, unknown> = {
@@ -128,19 +141,50 @@ export async function runAuthorMelProposal(
   }
 
   const draft = author.output;
-  if (draft.proposedSource === originalSource) {
+  const draftFailure = classifyMelAuthorDraftFailure({
+    draft,
+    originalSource,
+    finishReason: author.finishReason,
+    toolCallCount: author.toolCallCount,
+  });
+  if (draftFailure !== null) {
     return {
       ok: false,
-      kind: "invalid_input",
-      message: "MEL Author Agent returned unchanged source.",
+      kind:
+        draftFailure.failureKind === "unchanged_source"
+          ? "invalid_input"
+          : "runtime_error",
+      message: draftFailure.summary,
       detail: {
-        authorStatus: draft.status,
-        authorSummary: draft.summary,
+        failureReport: draftFailure,
+        authorLineage: author.authorLineage,
       },
     };
   }
 
   const verification = await ctx.verify(draft.proposedSource);
+  if (verification.status === "invalid") {
+    const failureReport = createMelAuthorFailureReport({
+      failureKind: "compile_error",
+      summary: verification.summary,
+      diagnostics: verification.diagnostics,
+      source: draft.proposedSource,
+      retryAdvice:
+        "Repair the verifier diagnostics before presenting the proposal again.",
+      finishReason: author.finishReason,
+      toolCallCount: author.toolCallCount,
+    });
+    return {
+      ok: false,
+      kind: "runtime_error",
+      message: failureReport.summary,
+      detail: {
+        failureReport,
+        authorLineage: author.authorLineage,
+      },
+    };
+  }
+
   const proposal = createAgentProposal({
     originalSource,
     proposedSource: draft.proposedSource,
@@ -161,6 +205,7 @@ export async function runAuthorMelProposal(
       schemaHash: proposal.schemaHash,
       authorStatus: draft.status,
       authorSummary: draft.summary,
+      authorLineage: author.authorLineage,
     },
   };
 }

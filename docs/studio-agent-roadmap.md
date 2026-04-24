@@ -262,7 +262,11 @@ AG-β14 persistence ❌. **β 는 약 60% 완료**.
 > package landed.** `authorMelProposal` 은 독립 패키지
 > `@manifesto-ai/studio-mel-author-agent` 를 호출해 임시 workspace 에서
 > MEL 초안을 만들고, webapp 은 결과를 기존 proposal verifier / Preview
-> 로 묶는다. Critic / persistence / rich before-after ladder 는 후속.
+> 로 묶는다. Author 실패는 `failureReport` 로 구조화되어 UI Agent 가
+> 설명/질문/재시도할 수 있다. Author 는 bundled MEL guide 를 검색해
+> syntax/reference/error 지식을 필요 시 조회한다. Author tool 호출은
+> Author Agent lifecycle lineage 로 기록되어 `authorLineage` 로 추출된다.
+> Critic / persistence / rich before-after ladder 는 후속.
 
 **Goal**: 에이전트가 MEL 편집을 제안하고, 사용자는 diff + simulate
 preview를 보고 승인/거부. 첫 "쓰기" 에이전트.
@@ -285,6 +289,17 @@ preview를 보고 승인/거부. 첫 "쓰기" 에이전트.
   출력: ephemeral workspace 에서 build 된 full-source draft + rationale.
 - [x] **AG-γ5**: Orchestrator가 source-change 요청을 `authorMelProposal`
   tool 로 위임. 결과는 기존 proposal buffer / verifier 로 묶음.
+- [x] **AG-γ5b**: Author 실패를 `failureReport` 로 구조화. compile
+  error / unchanged source / max steps / missing finalize / tool error /
+  provider error 를 UI Agent 가 설명 가능한 형태로 반환.
+- [x] **AG-γ5c**: Author knowledge retrieval. MEL reference / syntax /
+  error guide 를 package resource 로 포함하고, Author Agent 에
+  `searchAuthorGuide` tool 로 노출.
+- [x] **AG-γ5d**: Author lifecycle lineage. `readSource`, draft, build,
+  guide search, simulate, finalize 흐름을 Author Agent MEL action 으로
+  기록하고 `/api/agent/author` 응답에서 추출 가능하게 노출. no-action
+  stop 은 `stalled` 로 기록하며 retry cap 은 표현하되 host auto-retry 는
+  아직 하지 않음.
 
 ### 3.3 Contract Verifier (deterministic gate)
 

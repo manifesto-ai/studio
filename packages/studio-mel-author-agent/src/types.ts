@@ -2,6 +2,7 @@ import type {
   EffectHandler,
   Marker,
   SourceSpan,
+  WorldLineage,
 } from "@manifesto-ai/studio-core";
 
 export type MelAuthorToolRunOk<TOut> = {
@@ -33,6 +34,122 @@ export type MelAuthorDiagnostic = {
   readonly line: number;
   readonly column: number;
   readonly code?: string;
+};
+
+export type MelAuthorFailureKind =
+  | "compile_error"
+  | "unchanged_source"
+  | "max_steps"
+  | "missing_finalize"
+  | "stalled"
+  | "tool_error"
+  | "ambiguous_request"
+  | "provider_error";
+
+export type MelAuthorToolTraceEntry = {
+  readonly toolName: string;
+  readonly ok: boolean;
+  readonly summary: string;
+  readonly inputPreview?: string;
+  readonly outputPreview?: string;
+  readonly errorKind?: "invalid_input" | "runtime_error";
+};
+
+export type MelAuthorFailureReport = {
+  readonly failureKind: MelAuthorFailureKind;
+  readonly summary: string;
+  readonly diagnostics: readonly MelAuthorDiagnostic[];
+  readonly toolTrace: readonly MelAuthorToolTraceEntry[];
+  readonly lastSourceExcerpt: string;
+  readonly nextQuestion?: string;
+  readonly retryAdvice?: string;
+  readonly finishReason?: string;
+  readonly toolCallCount?: number;
+};
+
+export type MelAuthorGuideSource = "reference" | "syntax" | "error";
+
+export type MelAuthorGuideDocument = {
+  readonly source: MelAuthorGuideSource;
+  readonly text: string;
+};
+
+export type MelAuthorGuideChunk = {
+  readonly id: string;
+  readonly source: MelAuthorGuideSource;
+  readonly headingPath: readonly string[];
+  readonly text: string;
+  readonly lineStart: number;
+  readonly lineEnd: number;
+};
+
+export type MelAuthorGuideIndex = {
+  readonly chunks: readonly MelAuthorGuideChunk[];
+};
+
+export type MelAuthorGuideSearchInput = {
+  readonly query: string;
+  readonly source?: MelAuthorGuideSource;
+  readonly limit?: number;
+};
+
+export type MelAuthorGuideHit = {
+  readonly id: string;
+  readonly source: MelAuthorGuideSource;
+  readonly headingPath: readonly string[];
+  readonly excerpt: string;
+  readonly score: number;
+  readonly lineStart: number;
+  readonly lineEnd: number;
+};
+
+export type MelAuthorGuideSearchOutput = {
+  readonly query: string;
+  readonly hitCount: number;
+  readonly hits: readonly MelAuthorGuideHit[];
+};
+
+export type MelAuthorLineageOutput = {
+  readonly lineage: WorldLineage;
+  readonly snapshot: unknown | null;
+  readonly worldCount: number;
+  readonly headWorldId: string | null;
+};
+
+export type MelAuthorLifecycleResult = {
+  readonly ok: boolean;
+  readonly action: string;
+  readonly kind?: string;
+  readonly message?: string;
+};
+
+export type MelAuthorLifecycle = {
+  readonly recordReadSource: () => Promise<MelAuthorLifecycleResult>;
+  readonly recordMutationAttempt: (
+    toolName: string,
+    changed: boolean,
+  ) => Promise<MelAuthorLifecycleResult>;
+  readonly recordBuild: (
+    status: "ok" | "fail",
+    diagnosticCount: number,
+  ) => Promise<MelAuthorLifecycleResult>;
+  readonly recordGuideSearch: () => Promise<MelAuthorLifecycleResult>;
+  readonly recordInspection: (
+    toolName: string,
+  ) => Promise<MelAuthorLifecycleResult>;
+  readonly recordSimulation: () => Promise<MelAuthorLifecycleResult>;
+  readonly recordToolError: (
+    toolName: string,
+  ) => Promise<MelAuthorLifecycleResult>;
+  readonly markStalled: (
+    reason: string,
+  ) => Promise<MelAuthorLifecycleResult>;
+  readonly retry: () => Promise<MelAuthorLifecycleResult>;
+  readonly giveUp: (reason: string) => Promise<MelAuthorLifecycleResult>;
+  readonly recordFinalize: (
+    proposalId: string,
+  ) => Promise<MelAuthorLifecycleResult>;
+  readonly getLineage: () => MelAuthorLineageOutput;
 };
 
 export type MelAuthorWorkspaceOptions = {
