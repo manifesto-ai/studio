@@ -36,7 +36,6 @@ import {
 } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
-  lastAssistantMessageIsCompleteWithToolCalls,
   type UIMessage,
   type UIMessagePart,
   type UIDataTypes,
@@ -121,9 +120,19 @@ import {
   type FindInSourceContext,
 } from "../tools/find-in-source.js";
 import {
-  buildAgentSystemPrompt,
+  createAnswerAndTurnEndTool,
+  type AnswerAndTurnEndContext,
+} from "../tools/answer-and-turn-end.js";
+import {
   readStudioAgentContext,
 } from "../session/agent-context.js";
+import {
+  buildLiveAgentSystemPrompt,
+  LIVE_TURN_RESEND_HARD_CAP,
+  newAgentTurnId,
+  readLiveAgentTurnMode,
+  readLiveAgentTurnStatus,
+} from "../session/agent-turn-state.js";
 import { buildRecentTurnsFromMessages } from "../session/recent-turns.js";
 import {
   verifyMelProposal,
@@ -153,6 +162,9 @@ export function AgentLens(): JSX.Element {
   // without busting the useMemo cache every render.
   const uiSnapshotRef = useRef(ui.snapshot);
   uiSnapshotRef.current = ui.snapshot;
+
+  const uiRef = useRef(ui);
+  uiRef.current = ui;
 
   // Reading MEL source can't go through useMemo — adapter.getSource()
   // reads live editor content, which isn't a value React tracks. We
@@ -302,6 +314,16 @@ export function AgentLens(): JSX.Element {
     const findInSourceCtx: FindInSourceContext = {
       getSource: readMelSource,
     };
+    const answerAndTurnEndCtx: AnswerAndTurnEndContext = {
+      isTurnRunning: () =>
+        readLiveAgentTurnStatus(uiRef.current.core) === "running",
+      concludeAgentTurn: async (answer) => {
+        const ui = uiRef.current;
+        if (ui.core === null) return;
+        const intent = ui.createIntent("concludeAgentTurn", answer);
+        await ui.dispatchAsync(intent);
+      },
+    };
     const tools = [
       bindTool(createDispatchTool(), userCtx),
       bindTool(createLegalityTool(), userCtx),
@@ -319,6 +341,7 @@ export function AgentLens(): JSX.Element {
       bindTool(createReadDeclarationTool(), readDeclarationCtx),
       bindTool(createFindInSourceTool(), findInSourceCtx),
       bindTool(createCreateProposalTool(), createProposalCtx),
+      bindTool(createAnswerAndTurnEndTool(), answerAndTurnEndCtx),
     ];
     if (ui.core !== null) {
       tools.push(
@@ -335,6 +358,7 @@ export function AgentLens(): JSX.Element {
   const conversationTurnsRef = useRef<readonly FullConversationTurn[]>([]);
   const toolSchemas = useMemo(() => buildToolSchemaMap(registry), [registry]);
   const [agentNotice, setAgentNotice] = useState<string | null>(null);
+  const zeroToolStreakRef = useRef(0);
 
   const chat: UseChatHelpers<UIMessage> = useChat({
     id: "manifesto-agent",
@@ -350,7 +374,18 @@ export function AgentLens(): JSX.Element {
           melSource,
           buildRecentTurnsFromMessages(messages as UIMessage[]),
         );
-        const system = buildAgentSystemPrompt(ctx);
+        const snap = uiSnapshotRef.current;
+        const system = buildLiveAgentSystemPrompt({
+          agentContext: ctx,
+          turn: {
+            id: snap.agentTurnId,
+            mode: snap.agentTurnMode,
+            status: snap.agentTurnStatus,
+            prompt: snap.agentTurnPrompt,
+            conclusion: snap.agentTurnConclusion,
+            resendCount: snap.agentTurnResendCount,
+          },
+        });
         const latestUserText = readLastMessageUserText(
           messages as UIMessage[],
         );
@@ -359,15 +394,18 @@ export function AgentLens(): JSX.Element {
           melSource.trim() !== "" &&
           toolSchemas.createProposal !== undefined &&
           looksLikeSourceChangeRequest(latestUserText);
+        const stuck = zeroToolStreakRef.current >= 1;
         return {
           body: {
             id,
             messages,
             system,
             tools: toolSchemas,
-            toolChoice: forceProposal
-              ? { type: "tool", toolName: "createProposal" }
-              : undefined,
+            toolChoice: stuck
+              ? { type: "tool", toolName: "answerAndTurnEnd" }
+              : forceProposal
+                ? { type: "tool", toolName: "createProposal" }
+                : undefined,
             // Server caps the loop; 10 steps is plenty for
             // inspect → explain → dispatch chains.
             maxSteps: 10,
@@ -391,16 +429,45 @@ export function AgentLens(): JSX.Element {
         output: result as never,
       });
     },
-    // Auto-continue after a tool call lands a result — that's the
-    // multi-step agent loop. Without this, each tool would require
-    // a manual re-send from the client.
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    // Auto-continue while the Manifesto-owned turn is still running.
+    // Tool result loops and text-only provider misses use the same
+    // snapshot gate: the turn ends only through answerAndTurnEnd.
+    sendAutomaticallyWhen: () =>
+      readLiveAgentTurnStatus(uiRef.current.core) === "running" &&
+      readLiveAgentTurnMode(uiRef.current.core) === "live",
     onFinish: ({ message }) => {
-      setAgentNotice(
-        isReasoningOnlyAssistantTurn(message)
-          ? "The model returned reasoning only and did not call a tool or produce an answer. Try again, or switch provider if this repeats."
-          : null,
-      );
+      const hadToolCall = messageHasToolCall(message);
+      zeroToolStreakRef.current = hadToolCall
+        ? 0
+        : zeroToolStreakRef.current + 1;
+
+      const snap = uiSnapshotRef.current;
+      if (
+        snap.agentTurnStatus === "running" &&
+        snap.agentTurnMode === "live"
+      ) {
+        uiRef.current.incrementAgentTurnResend();
+        if (snap.agentTurnResendCount + 1 >= LIVE_TURN_RESEND_HARD_CAP) {
+          uiRef.current.cancelAgentTurn(
+            `Live agent turn cancelled at resend cap (${LIVE_TURN_RESEND_HARD_CAP}). The agent never called answerAndTurnEnd.`,
+          );
+          setAgentNotice(
+            `The agent did not call answerAndTurnEnd within ${LIVE_TURN_RESEND_HARD_CAP} turns; live turn cancelled.`,
+          );
+        } else {
+          setAgentNotice(
+            isReasoningOnlyAssistantTurn(message)
+              ? "The model returned reasoning only and did not call a tool or produce an answer. Retrying inside the active turn."
+              : null,
+          );
+        }
+      } else {
+        setAgentNotice(
+          isReasoningOnlyAssistantTurn(message)
+            ? "The model returned reasoning only and did not call a tool or produce an answer. Try again, or switch provider if this repeats."
+            : null,
+        );
+      }
       // Commit this turn into studio.mel so it joins the runtime's
       // lineage (see studio.mel recordAgentTurn). We only do this on
       // assistant turns that finished naturally; aborts / errors are
@@ -453,14 +520,33 @@ export function AgentLens(): JSX.Element {
   const onSend = useCallback(() => {
     const prompt = draft.trim();
     if (prompt === "") return;
+    if (ui.core === null) {
+      setAgentNotice("Studio runtime is still starting. Try again shortly.");
+      return;
+    }
+    if (uiSnapshotRef.current.agentTurnStatus === "running") {
+      setAgentNotice(
+        "An agent turn is already running. Wait for it to end before starting another.",
+      );
+      return;
+    }
     setAgentNotice(null);
     setDraft("");
+    const turnId = newAgentTurnId("live");
+    ui.beginAgentTurn(turnId, "live", prompt);
+    zeroToolStreakRef.current = 0;
     void chat.sendMessage({ text: prompt });
-  }, [chat, draft]);
+  }, [chat, draft, ui]);
 
   const onStop = useCallback(() => {
     void chat.stop();
-  }, [chat]);
+    if (
+      uiSnapshotRef.current.agentTurnStatus === "running" &&
+      uiSnapshotRef.current.agentTurnMode === "live"
+    ) {
+      ui.cancelAgentTurn("Live agent turn stopped by user.");
+    }
+  }, [chat, ui]);
 
   const onClear = useCallback(() => {
     chat.setMessages([]);
@@ -515,7 +601,7 @@ export function AgentLens(): JSX.Element {
           onReject={onRejectProposal}
         />
       ) : null}
-      <Messages messages={chat.messages} />
+      <Messages messages={demoteAnswerAndTurnEndText(chat.messages)} />
       <Composer
         draft={draft}
         setDraft={setDraft}
@@ -804,6 +890,34 @@ function isToolPart(
   return typeof p.type === "string" && p.type.startsWith("tool-");
 }
 
+export function messageHasToolCall(message: UIMessage): boolean {
+  return message.parts.some((part) => part.type.startsWith("tool-"));
+}
+
+export function demoteAnswerAndTurnEndText(
+  messages: readonly UIMessage[],
+): readonly UIMessage[] {
+  return messages.map((message) => {
+    if (message.role !== "assistant") return message;
+    const parts = message.parts.map((part) => {
+      if (part.type === "tool-answerAndTurnEnd") {
+        const answer = readStreamingAnswer(part);
+        return { type: "text", text: answer } as typeof part;
+      }
+      return part;
+    });
+    return { ...message, parts } as UIMessage;
+  });
+}
+
+function readStreamingAnswer(part: unknown): string {
+  if (part === null || typeof part !== "object") return "";
+  const input = (part as { readonly input?: unknown }).input;
+  if (input === null || typeof input !== "object") return "";
+  const answer = (input as { readonly answer?: unknown }).answer;
+  return typeof answer === "string" ? answer : "";
+}
+
 function ToolRow({ part }: { readonly part: ToolPart }): JSX.Element {
   const [open, setOpen] = useState(false);
   const toolName = part.type.slice("tool-".length);
@@ -1088,7 +1202,13 @@ export function extractUserText(m: UIMessage): string {
 
 export function extractAssistantText(m: UIMessage): string {
   return m.parts
-    .map((p) => (p.type === "text" ? p.text : ""))
+    .map((p) =>
+      p.type === "text"
+        ? p.text
+        : p.type === "tool-answerAndTurnEnd"
+          ? readStreamingAnswer(p)
+          : "",
+    )
     .join("")
     .trim();
 }
@@ -1198,6 +1318,9 @@ export function messagesToConversationTurns(
     let reasoning = "";
     for (const part of m.parts) {
       if (part.type === "text") assistantText += part.text;
+      if (part.type === "tool-answerAndTurnEnd") {
+        assistantText += readStreamingAnswer(part);
+      }
       if (part.type === "reasoning") reasoning += part.text;
     }
     turns.push({
@@ -1265,4 +1388,3 @@ export function safeGetSource(adapter: EditorAdapter): string {
     return "";
   }
 }
-

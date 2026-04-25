@@ -7,8 +7,8 @@ import {
 describe("answerAndTurnEnd", () => {
   it("rejects empty / missing answer as invalid_input", async () => {
     const ctx: AnswerAndTurnEndContext = {
-      isSagaRunning: () => true,
-      concludeAgentSaga: vi.fn(async () => {}),
+      isTurnRunning: () => true,
+      concludeAgentTurn: vi.fn(async () => {}),
     };
     const tool = createAnswerAndTurnEndTool();
 
@@ -20,13 +20,13 @@ describe("answerAndTurnEnd", () => {
     expect(whitespace.ok).toBe(false);
     if (!whitespace.ok) expect(whitespace.kind).toBe("invalid_input");
 
-    expect(ctx.concludeAgentSaga).not.toHaveBeenCalled();
+    expect(ctx.concludeAgentTurn).not.toHaveBeenCalled();
   });
 
-  it("rejects when no saga is running", async () => {
+  it("rejects when no agent turn is running", async () => {
     const ctx: AnswerAndTurnEndContext = {
-      isSagaRunning: () => false,
-      concludeAgentSaga: vi.fn(),
+      isTurnRunning: () => false,
+      concludeAgentTurn: vi.fn(),
     };
     const result = await createAnswerAndTurnEndTool().run(
       { answer: "done" },
@@ -34,15 +34,15 @@ describe("answerAndTurnEnd", () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.kind).toBe("runtime_error");
-    expect(ctx.concludeAgentSaga).not.toHaveBeenCalled();
+    expect(ctx.concludeAgentTurn).not.toHaveBeenCalled();
   });
 
-  it("delivers the answer + ends the saga (awaits the dispatch)", async () => {
+  it("delivers the answer + ends the turn (awaits the dispatch)", async () => {
     const dispatchCalls: string[] = [];
     let resolved = false;
     const ctx: AnswerAndTurnEndContext = {
-      isSagaRunning: () => true,
-      concludeAgentSaga: async (answer) => {
+      isTurnRunning: () => true,
+      concludeAgentTurn: async (answer) => {
         dispatchCalls.push(answer);
         // Simulate Manifesto's async dispatch settling one microtask later.
         await Promise.resolve();

@@ -1,32 +1,30 @@
 import type { AgentTool, ToolRunResult } from "./types.js";
 
 /**
- * `answerAndTurnEnd` — the ONE tool through which a SagaLens turn
+ * `answerAndTurnEnd` - the terminal tool through which an agent turn
  * speaks to the user.
  *
- * Design: SagaLens runs with `toolChoice: "required"`, so naked text
- * replies are not an option — every step must be a tool call. This
- * tool is the terminal tool: calling it (a) delivers the visible
- * answer to the user and (b) flips the saga to "ended" in the
- * StudioUi Manifesto runtime. "Speaking to the user" and "ending
- * the turn" are the same physical event; no prompt-side discipline
- * can break that coupling.
+ * Design: this tool is the terminal action: calling it (a) delivers
+ * the visible answer to the user and (b) flips the agent turn to
+ * "ended" in the StudioUi Manifesto runtime. "Speaking to the user"
+ * and "ending the turn" are the same physical event; no prompt-side
+ * discipline can break that coupling.
  *
- * Compare to the earlier `concludeSaga({ summary })`: that was a
- * prompt-side convention ("your last tool call MUST be…") that
- * weak models routinely ignored by rambling text without calling
- * it. `answerAndTurnEnd` makes the rule structural.
+ * SagaLens additionally runs with `toolChoice: "required"`, so naked
+ * text replies are not an option there. AgentLens uses the same tool
+ * as its Manifesto-native terminal path while keeping a smaller live
+ * retry budget.
  */
 export type AnswerAndTurnEndContext = {
-  readonly isSagaRunning: () => boolean;
+  readonly isTurnRunning: () => boolean;
   /**
-   * Awaitable — the tool awaits this so the saga's status is
+   * Awaitable - the tool awaits this so the turn's status is
    * definitively "ended" in the runtime by the time the tool
    * returns. Without the await, AI SDK's post-tool
    * `sendAutomaticallyWhen` check races against the pending
    * dispatch and sees stale "running" status.
    */
-  readonly concludeAgentSaga: (answer: string) => Promise<void>;
+  readonly concludeAgentTurn: (answer: string) => Promise<void>;
 };
 
 export type AnswerAndTurnEndInput = {
@@ -46,7 +44,7 @@ const JSON_SCHEMA: Record<string, unknown> = {
     answer: {
       type: "string",
       description:
-        "The full visible answer to the user, in natural language. This is the ONLY way to reply in a saga turn. Include everything the user should see — there is no other output channel.",
+        "The full visible answer to the user, in natural language. Include everything the user should see; there is no other final-answer channel for the active agent turn.",
     },
   },
 };
@@ -59,7 +57,7 @@ export function createAnswerAndTurnEndTool(): AgentTool<
   return {
     name: "answerAndTurnEnd",
     description:
-      "Reply to the user AND end the current saga turn. This is the ONLY way to send a user-visible answer in a SagaLens turn — naked text is not rendered. Use other tools (inspect/read/dispatch/propose) for work; when you are ready to speak to the user, call this tool with the full answer text. Calling it ends the turn.",
+      "Reply to the user AND end the current agent turn. Use other tools (inspect/read/dispatch/propose) for work; when you are ready to speak to the user, call this tool with the full answer text. Calling it ends the turn.",
     jsonSchema: JSON_SCHEMA,
     run: async (input, ctx) => runAnswerAndTurnEnd(input, ctx),
   };
@@ -82,16 +80,16 @@ export async function runAnswerAndTurnEnd(
         "`answerAndTurnEnd` requires { answer: string } with a non-empty answer.",
     };
   }
-  if (!ctx.isSagaRunning()) {
+  if (!ctx.isTurnRunning()) {
     return {
       ok: false,
       kind: "runtime_error",
       message:
-        "No saga is currently running. answerAndTurnEnd is only valid inside a SagaLens turn.",
+        "No agent turn is currently running. answerAndTurnEnd is only valid inside an active agent turn.",
     };
   }
   const answer = input.answer;
-  await ctx.concludeAgentSaga(answer);
+  await ctx.concludeAgentTurn(answer);
   return {
     ok: true,
     output: { turnEnded: true, answer },

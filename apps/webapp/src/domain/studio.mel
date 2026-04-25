@@ -16,10 +16,13 @@ domain Studio {
   type FocusKind = "action" | "state" | "computed"
   type FocusOrigin = "graph" | "source" | "diagnostic" | "interact" | "agent"
   type LensId = "interact" | "snapshot" | "plan" | "history" | "diagnostics" | "agent" | "saga"
-  // Saga = an interruption-resilient agent turn. Status lives in the
-  // runtime so browser refresh / network drop / LLM ramble all survive:
-  // the harness keeps resuming until the model calls concludeAgentSaga.
-  type AgentSagaStatus = "running" | "ended"
+  // Agent turn = a Manifesto-owned LLM turn lifecycle. `live` is the
+  // normal AgentLens path with a small retry budget; `durable` is the
+  // interruption-resilient SagaLens path with a larger budget. Status
+  // lives in the runtime so the harness can resume until the model
+  // structurally ends the turn through answerAndTurnEnd.
+  type AgentTurnMode = "live" | "durable"
+  type AgentTurnStatus = "running" | "ended"
   // ViewMode is the mutual-exclusion discriminator for "what view of
   // reality the Studio is currently presenting". `live` is the normal
   // case; `simulate` is a what-if preview against the live snapshot;
@@ -71,18 +74,20 @@ domain Studio {
     lastAgentAnswer: string | null = null
     agentTurnCount: number = 0
 
-    // ── Agent saga (interruption-resilient turn) ───────────────────
-    // Persisted turn state. A saga is running from beginAgentSaga
-    // until the model itself calls concludeAgentSaga. Anything in
-    // between — dropped streams, refreshed browser, model ramble —
-    // leaves the saga running so the harness can resume. Timestamps
-    // are intentionally NOT stored here (determinism discipline) —
-    // React shell correlates with its own clock.
-    agentSagaId: string | null = null
-    agentSagaStatus: AgentSagaStatus | null = null
-    agentSagaPrompt: string | null = null
-    agentSagaConclusion: string | null = null
-    agentSagaResendCount: number = 0
+    // ── Active agent turn lifecycle ────────────────────────────────
+    // Persisted turn state. A turn is running from beginAgentTurn
+    // until the model itself calls answerAndTurnEnd, which dispatches
+    // concludeAgentTurn. Anything in between — dropped streams,
+    // refreshed browser, model ramble — leaves the turn running so
+    // the harness can resume. Timestamps are intentionally NOT stored
+    // here (determinism discipline) — React shell correlates with its
+    // own clock.
+    agentTurnId: string | null = null
+    agentTurnMode: AgentTurnMode | null = null
+    agentTurnStatus: AgentTurnStatus | null = null
+    agentTurnPrompt: string | null = null
+    agentTurnConclusion: string | null = null
+    agentTurnResendCount: number = 0
   }
 
   computed hasFocus = focusedNodeId != null
@@ -201,44 +206,55 @@ domain Studio {
     }
   }
 
-  // ── Saga lifecycle ───────────────────────────────────────────────
-  // Only the React/LLM harness calls beginAgentSaga (on user prompt)
-  // and the model calls concludeAgentSaga (via the concludeSaga tool).
-  // beginAgentSaga is idempotent across "ended" sagas — starting a
-  // new one always resets resend count and conclusion. It is rejected
-  // while a prior saga is still running so double-sends don't stomp.
+  // ── Agent turn lifecycle ────────────────────────────────────────
+  // Only the React/LLM harness calls beginAgentTurn (on user prompt)
+  // and the model calls answerAndTurnEnd, which dispatches
+  // concludeAgentTurn. beginAgentTurn is idempotent across "ended"
+  // turns — starting a new one always resets resend count and
+  // conclusion. It is rejected while a prior turn is still running
+  // so double-sends don't stomp.
 
-  action beginAgentSaga(id: string, prompt: string)
-    dispatchable when agentSagaStatus == null || agentSagaStatus == "ended"
+  action beginAgentTurn(id: string, mode: AgentTurnMode, prompt: string)
+    dispatchable when agentTurnStatus == null || agentTurnStatus == "ended"
   {
     onceIntent {
-      patch agentSagaId = id
-      patch agentSagaStatus = "running"
-      patch agentSagaPrompt = prompt
-      patch agentSagaConclusion = null
-      patch agentSagaResendCount = 0
+      patch agentTurnId = id
+      patch agentTurnMode = mode
+      patch agentTurnStatus = "running"
+      patch agentTurnPrompt = prompt
+      patch agentTurnConclusion = null
+      patch agentTurnResendCount = 0
     }
   }
 
-  action concludeAgentSaga(summary: string)
-    dispatchable when agentSagaStatus == "running"
+  action concludeAgentTurn(answer: string)
+    dispatchable when agentTurnStatus == "running"
   {
     onceIntent {
-      patch agentSagaStatus = "ended"
-      patch agentSagaConclusion = summary
+      patch agentTurnStatus = "ended"
+      patch agentTurnConclusion = answer
+    }
+  }
+
+  action cancelAgentTurn(reason: string)
+    dispatchable when agentTurnStatus == "running"
+  {
+    onceIntent {
+      patch agentTurnStatus = "ended"
+      patch agentTurnConclusion = reason
     }
   }
 
   // Called by the harness every time it re-invokes the LLM within a
-  // running saga. Exposes a cheap hard-cap — React reads
-  // agentSagaResendCount and force-concludes when it exceeds the
-  // policy limit, so the LLM can't burn budget forever.
+  // running turn. Exposes a cheap hard-cap — React reads
+  // agentTurnResendCount and cancels when it exceeds the policy
+  // limit, so the LLM can't burn budget forever.
 
-  action incrementSagaResend()
-    dispatchable when agentSagaStatus == "running"
+  action incrementAgentTurnResend()
+    dispatchable when agentTurnStatus == "running"
   {
     onceIntent {
-      patch agentSagaResendCount = agentSagaResendCount + 1
+      patch agentTurnResendCount = agentTurnResendCount + 1
     }
   }
 }

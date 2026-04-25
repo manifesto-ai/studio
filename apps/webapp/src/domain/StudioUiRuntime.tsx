@@ -75,14 +75,15 @@ export type StudioUiSnapshot = {
   readonly lastUserPrompt: string | null;
   readonly lastAgentAnswer: string | null;
   readonly agentTurnCount: number;
-  /** Saga = interruption-resilient agent turn. `null` / `"ended"`
-   *  means no active saga. `"running"` means the harness should
-   *  keep re-invoking the LLM until the model calls concludeSaga. */
-  readonly agentSagaId: string | null;
-  readonly agentSagaStatus: "running" | "ended" | null;
-  readonly agentSagaPrompt: string | null;
-  readonly agentSagaConclusion: string | null;
-  readonly agentSagaResendCount: number;
+  /** Manifesto-owned active LLM turn. `null` / `"ended"` means no
+   *  active turn. `"running"` means the harness should keep
+   *  re-invoking the LLM until answerAndTurnEnd concludes it. */
+  readonly agentTurnId: string | null;
+  readonly agentTurnMode: "live" | "durable" | null;
+  readonly agentTurnStatus: "running" | "ended" | null;
+  readonly agentTurnPrompt: string | null;
+  readonly agentTurnConclusion: string | null;
+  readonly agentTurnResendCount: number;
   /** Computed projections. */
   readonly hasFocus: boolean;
   readonly isLive: boolean;
@@ -102,11 +103,12 @@ const EMPTY_SNAPSHOT: StudioUiSnapshot = {
   lastUserPrompt: null,
   lastAgentAnswer: null,
   agentTurnCount: 0,
-  agentSagaId: null,
-  agentSagaStatus: null,
-  agentSagaPrompt: null,
-  agentSagaConclusion: null,
-  agentSagaResendCount: 0,
+  agentTurnId: null,
+  agentTurnMode: null,
+  agentTurnStatus: null,
+  agentTurnPrompt: null,
+  agentTurnConclusion: null,
+  agentTurnResendCount: 0,
   hasFocus: false,
   isLive: true,
   isSimulating: false,
@@ -143,9 +145,14 @@ type StudioUiContextValue = {
   readonly resetScrub: () => void;
   readonly switchProject: (name: string) => void;
   readonly recordAgentTurn: (prompt: string, answer: string) => void;
-  readonly beginAgentSaga: (id: string, prompt: string) => void;
-  readonly concludeAgentSaga: (summary: string) => void;
-  readonly incrementSagaResend: () => void;
+  readonly beginAgentTurn: (
+    id: string,
+    mode: NonNullable<StudioUiSnapshot["agentTurnMode"]>,
+    prompt: string,
+  ) => void;
+  readonly concludeAgentTurn: (answer: string) => void;
+  readonly cancelAgentTurn: (reason: string) => void;
+  readonly incrementAgentTurnResend: () => void;
   // ── Low-level dispatch seam (for tests + programmatic callers) ──
   // Typed helpers above cover every known studio.mel action. These
   // lower-level seams are kept for callers that need Promise-shaped
@@ -308,11 +315,13 @@ export function StudioUiProvider({
       switchProject: (name) => dispatch("switchProject", [name]),
       recordAgentTurn: (prompt, answer) =>
         dispatch("recordAgentTurn", [prompt, answer]),
-      beginAgentSaga: (id, prompt) =>
-        dispatch("beginAgentSaga", [id, prompt]),
-      concludeAgentSaga: (summary) =>
-        dispatch("concludeAgentSaga", [summary]),
-      incrementSagaResend: () => dispatch("incrementSagaResend", []),
+      beginAgentTurn: (id, mode, prompt) =>
+        dispatch("beginAgentTurn", [id, mode, prompt]),
+      concludeAgentTurn: (answer) =>
+        dispatch("concludeAgentTurn", [answer]),
+      cancelAgentTurn: (reason) => dispatch("cancelAgentTurn", [reason]),
+      incrementAgentTurnResend: () =>
+        dispatch("incrementAgentTurnResend", []),
       createIntent: createIntentFn,
       dispatchAsync: dispatchIntent,
     }),
@@ -351,14 +360,16 @@ function readSnapshot(core: StudioCore): StudioUiSnapshot {
     activeProjectName: asStringOrNull(data.activeProjectName),
     lastUserPrompt: asStringOrNull(data.lastUserPrompt),
     lastAgentAnswer: asStringOrNull(data.lastAgentAnswer),
-    agentTurnCount: typeof data.agentTurnCount === "number" ? data.agentTurnCount : 0,
-    agentSagaId: asStringOrNull(data.agentSagaId),
-    agentSagaStatus: asSagaStatus(data.agentSagaStatus),
-    agentSagaPrompt: asStringOrNull(data.agentSagaPrompt),
-    agentSagaConclusion: asStringOrNull(data.agentSagaConclusion),
-    agentSagaResendCount:
-      typeof data.agentSagaResendCount === "number"
-        ? data.agentSagaResendCount
+    agentTurnCount:
+      typeof data.agentTurnCount === "number" ? data.agentTurnCount : 0,
+    agentTurnId: asStringOrNull(data.agentTurnId),
+    agentTurnMode: asAgentTurnMode(data.agentTurnMode),
+    agentTurnStatus: asAgentTurnStatus(data.agentTurnStatus),
+    agentTurnPrompt: asStringOrNull(data.agentTurnPrompt),
+    agentTurnConclusion: asStringOrNull(data.agentTurnConclusion),
+    agentTurnResendCount:
+      typeof data.agentTurnResendCount === "number"
+        ? data.agentTurnResendCount
         : 0,
     hasFocus: Boolean(computed.hasFocus),
     isLive: computed.isLive !== false,
@@ -406,6 +417,10 @@ function asViewMode(v: unknown): StudioUiSnapshot["viewMode"] | null {
   return v === "live" || v === "simulate" || v === "scrub" ? v : null;
 }
 
-function asSagaStatus(v: unknown): StudioUiSnapshot["agentSagaStatus"] {
+function asAgentTurnStatus(v: unknown): StudioUiSnapshot["agentTurnStatus"] {
   return v === "running" || v === "ended" ? v : null;
+}
+
+function asAgentTurnMode(v: unknown): StudioUiSnapshot["agentTurnMode"] {
+  return v === "live" || v === "durable" ? v : null;
 }

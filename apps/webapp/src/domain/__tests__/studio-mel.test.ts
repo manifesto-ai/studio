@@ -198,106 +198,130 @@ describe("studio.mel — recordAgentTurn is single-entry + advances lineage", ()
   });
 });
 
-describe("studio.mel — agent saga lifecycle", () => {
-  it("begins with no saga (status null, count 0)", async () => {
+describe("studio.mel — agent turn lifecycle", () => {
+  it("begins with no active turn (status null, count 0)", async () => {
     const core = await bootStudioRuntime();
     expect(readState(core)).toMatchObject({
-      agentSagaId: null,
-      agentSagaStatus: null,
-      agentSagaPrompt: null,
-      agentSagaConclusion: null,
-      agentSagaResendCount: 0,
+      agentTurnId: null,
+      agentTurnMode: null,
+      agentTurnStatus: null,
+      agentTurnPrompt: null,
+      agentTurnConclusion: null,
+      agentTurnResendCount: 0,
     });
   });
 
-  it("beginAgentSaga → running; concludeAgentSaga → ended", async () => {
+  it("beginAgentTurn -> running; concludeAgentTurn -> ended", async () => {
     const core = await bootStudioRuntime();
     const begin = await core.dispatchAsync(
-      core.createIntent("beginAgentSaga", "saga-1", "add priority field"),
+      core.createIntent(
+        "beginAgentTurn",
+        "turn-1",
+        "durable",
+        "add priority field",
+      ),
     );
     expect(begin.kind).toBe("completed");
     expect(readState(core)).toMatchObject({
-      agentSagaId: "saga-1",
-      agentSagaStatus: "running",
-      agentSagaPrompt: "add priority field",
-      agentSagaConclusion: null,
-      agentSagaResendCount: 0,
+      agentTurnId: "turn-1",
+      agentTurnMode: "durable",
+      agentTurnStatus: "running",
+      agentTurnPrompt: "add priority field",
+      agentTurnConclusion: null,
+      agentTurnResendCount: 0,
     });
 
     const conclude = await core.dispatchAsync(
-      core.createIntent("concludeAgentSaga", "added priority field"),
+      core.createIntent("concludeAgentTurn", "added priority field"),
     );
     expect(conclude.kind).toBe("completed");
     expect(readState(core)).toMatchObject({
-      agentSagaStatus: "ended",
-      agentSagaConclusion: "added priority field",
+      agentTurnStatus: "ended",
+      agentTurnConclusion: "added priority field",
     });
   });
 
-  it("rejects a second beginAgentSaga while one is running", async () => {
+  it("rejects a second beginAgentTurn while one is running", async () => {
     const core = await bootStudioRuntime();
     await core.dispatchAsync(
-      core.createIntent("beginAgentSaga", "saga-a", "first"),
+      core.createIntent("beginAgentTurn", "turn-a", "live", "first"),
     );
     const rejected = await core.dispatchAsync(
-      core.createIntent("beginAgentSaga", "saga-b", "second"),
+      core.createIntent("beginAgentTurn", "turn-b", "durable", "second"),
     );
     expect(rejected.kind).not.toBe("completed");
     expect(readState(core)).toMatchObject({
-      agentSagaId: "saga-a",
-      agentSagaPrompt: "first",
+      agentTurnId: "turn-a",
+      agentTurnMode: "live",
+      agentTurnPrompt: "first",
     });
   });
 
-  it("allows a new saga after the prior one ends (resets resend count + conclusion)", async () => {
+  it("allows a new turn after the prior one ends (resets mode, resend count + conclusion)", async () => {
     const core = await bootStudioRuntime();
     await core.dispatchAsync(
-      core.createIntent("beginAgentSaga", "saga-1", "p1"),
+      core.createIntent("beginAgentTurn", "turn-1", "live", "p1"),
     );
     await core.dispatchAsync(
-      core.createIntent("incrementSagaResend"),
+      core.createIntent("incrementAgentTurnResend"),
     );
     await core.dispatchAsync(
-      core.createIntent("concludeAgentSaga", "done"),
+      core.createIntent("concludeAgentTurn", "done"),
     );
     const next = await core.dispatchAsync(
-      core.createIntent("beginAgentSaga", "saga-2", "p2"),
+      core.createIntent("beginAgentTurn", "turn-2", "durable", "p2"),
     );
     expect(next.kind).toBe("completed");
     expect(readState(core)).toMatchObject({
-      agentSagaId: "saga-2",
-      agentSagaStatus: "running",
-      agentSagaPrompt: "p2",
-      agentSagaConclusion: null,
-      agentSagaResendCount: 0,
+      agentTurnId: "turn-2",
+      agentTurnMode: "durable",
+      agentTurnStatus: "running",
+      agentTurnPrompt: "p2",
+      agentTurnConclusion: null,
+      agentTurnResendCount: 0,
     });
   });
 
-  it("rejects concludeAgentSaga when no saga is running", async () => {
+  it("rejects concludeAgentTurn when no turn is running", async () => {
     const core = await bootStudioRuntime();
     const rejected = await core.dispatchAsync(
-      core.createIntent("concludeAgentSaga", "orphan"),
+      core.createIntent("concludeAgentTurn", "orphan"),
     );
     expect(rejected.kind).not.toBe("completed");
     expect(readState(core)).toMatchObject({
-      agentSagaStatus: null,
-      agentSagaConclusion: null,
+      agentTurnStatus: null,
+      agentTurnConclusion: null,
     });
   });
 
-  it("incrementSagaResend bumps the counter monotonically while running", async () => {
+  it("incrementAgentTurnResend bumps the counter monotonically while running", async () => {
     const core = await bootStudioRuntime();
     await core.dispatchAsync(
-      core.createIntent("beginAgentSaga", "saga-x", "pk"),
+      core.createIntent("beginAgentTurn", "turn-x", "durable", "pk"),
     );
     for (let i = 0; i < 3; i++) {
       const r = await core.dispatchAsync(
-        core.createIntent("incrementSagaResend"),
+        core.createIntent("incrementAgentTurnResend"),
       );
       expect(r.kind).toBe("completed");
     }
     expect(readState(core)).toMatchObject({
-      agentSagaResendCount: 3,
+      agentTurnResendCount: 3,
+    });
+  });
+
+  it("cancelAgentTurn ends a running turn with the given reason", async () => {
+    const core = await bootStudioRuntime();
+    await core.dispatchAsync(
+      core.createIntent("beginAgentTurn", "turn-cancel", "live", "pk"),
+    );
+    const cancelled = await core.dispatchAsync(
+      core.createIntent("cancelAgentTurn", "stopped by user"),
+    );
+    expect(cancelled.kind).toBe("completed");
+    expect(readState(core)).toMatchObject({
+      agentTurnStatus: "ended",
+      agentTurnConclusion: "stopped by user",
     });
   });
 });

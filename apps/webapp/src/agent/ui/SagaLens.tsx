@@ -2,10 +2,10 @@
  * SagaLens — AgentLens v2 with durable, interruption-resilient turns.
  *
  * A "saga" is an agent turn whose status lives in the StudioUi
- * Manifesto runtime (see `domain/studio.mel` agentSaga*). It does
+ * Manifesto runtime (see `domain/studio.mel` agentTurn*). It does
  * NOT end when the stream finishes, when the model runs out of
  * tokens, or when the model emits text without a tool call. A saga
- * ends ONLY when the model calls `concludeSaga({ summary })`.
+ * ends ONLY when the model calls `answerAndTurnEnd({ answer })`.
  *
  * Consequences:
  *   - Model rambles ("I will call createProposal...") without actually
@@ -15,7 +15,7 @@
  *     (via Manifesto lineage) → resume banner on mount.
  *   - LLM stream drops → saga still running → auto-retry.
  *
- * Safety valve: `SAGA_RESEND_HARD_CAP` — after N resends without
+ * Safety valve: `DURABLE_TURN_RESEND_HARD_CAP` - after N resends without
  * conclude, the shell force-concludes to prevent runaway cost.
  *
  * This is a parallel v2 to AgentLens; AgentLens itself is untouched.
@@ -112,9 +112,12 @@ import {
 import { readStudioAgentContext } from "../session/agent-context.js";
 import { buildRecentTurnsFromMessages } from "../session/recent-turns.js";
 import {
-  buildSagaSystemPrompt,
-  SAGA_RESEND_HARD_CAP,
-} from "../session/saga-state.js";
+  buildDurableAgentSystemPrompt,
+  DURABLE_TURN_RESEND_HARD_CAP,
+  newAgentTurnId,
+  readLiveAgentTurnMode,
+  readLiveAgentTurnStatus,
+} from "../session/agent-turn-state.js";
 import {
   verifyMelProposal,
 } from "../session/proposal-verifier.js";
@@ -131,8 +134,10 @@ import {
   StatusStrip,
   buildStudioToolContext,
   buildUserToolContext,
+  demoteAnswerAndTurnEndText,
   extractAssistantText,
   findMostRecentUserText,
+  messageHasToolCall,
   messagesToConversationTurns,
   readLastMessageUserText,
   safeGetSource,
@@ -301,8 +306,9 @@ export function SagaLens(): JSX.Element {
       getSource: readMelSource,
     };
     const answerAndTurnEndCtx: AnswerAndTurnEndContext = {
-      isSagaRunning: () => readLiveSagaStatus(uiRef.current.core) === "running",
-      concludeAgentSaga: async (answer) => {
+      isTurnRunning: () =>
+        readLiveAgentTurnStatus(uiRef.current.core) === "running",
+      concludeAgentTurn: async (answer) => {
         // Awaitable dispatch: await settles so the runtime's
         // snapshot is definitively "ended" by the time this returns,
         // which in turn means sendAutomaticallyWhen (reading live
@@ -310,7 +316,7 @@ export function SagaLens(): JSX.Element {
         // resend. Fire-and-forget would race.
         const ui = uiRef.current;
         if (ui.core === null) return;
-        const intent = ui.createIntent("concludeAgentSaga", answer);
+        const intent = ui.createIntent("concludeAgentTurn", answer);
         await ui.dispatchAsync(intent);
       },
     };
@@ -367,14 +373,15 @@ export function SagaLens(): JSX.Element {
           buildRecentTurnsFromMessages(messages as UIMessage[]),
         );
         const snap = uiSnapshotRef.current;
-        const system = buildSagaSystemPrompt({
+        const system = buildDurableAgentSystemPrompt({
           agentContext: agentCtx,
-          saga: {
-            id: snap.agentSagaId,
-            status: snap.agentSagaStatus,
-            prompt: snap.agentSagaPrompt,
-            conclusion: snap.agentSagaConclusion,
-            resendCount: snap.agentSagaResendCount,
+          turn: {
+            id: snap.agentTurnId,
+            mode: snap.agentTurnMode,
+            status: snap.agentTurnStatus,
+            prompt: snap.agentTurnPrompt,
+            conclusion: snap.agentTurnConclusion,
+            resendCount: snap.agentTurnResendCount,
           },
         });
         // If the previous invocation emitted zero tool calls, the
@@ -412,7 +419,7 @@ export function SagaLens(): JSX.Element {
         output: result as never,
       });
       // answerAndTurnEnd's user-visible rendering is handled by
-      // `demoteSagaAssistantText` below — it converts the tool part
+      // `demoteAnswerAndTurnEndText` — it converts the tool part
       // (which already carries `input.answer` as a progressively-
       // streaming string) into a text part in-place, so the answer
       // flows into the transcript character-by-character, no
@@ -421,7 +428,8 @@ export function SagaLens(): JSX.Element {
     // Saga loop: auto-continue while the saga status is "running".
     // This is the core of the v2 behavior — we don't care whether
     // the last assistant message had a tool call or was text-only,
-    // we only care whether the model has dispatched concludeSaga.
+    // we only care whether the model has dispatched concludeAgentTurn
+    // through answerAndTurnEnd.
     //
     // We read the Manifesto core snapshot directly (not the React-
     // tracked ref) because AI SDK evaluates this check synchronously
@@ -429,7 +437,8 @@ export function SagaLens(): JSX.Element {
     // re-render that would update uiSnapshotRef. Reading core is
     // always current regardless of React batching.
     sendAutomaticallyWhen: () =>
-      readLiveSagaStatus(uiRef.current.core) === "running",
+      readLiveAgentTurnStatus(uiRef.current.core) === "running" &&
+      readLiveAgentTurnMode(uiRef.current.core) === "durable",
     onFinish: ({ message }) => {
       // Track zero-tool-call streak: if the just-finished assistant
       // message has any tool part, the model complied with the
@@ -444,14 +453,17 @@ export function SagaLens(): JSX.Element {
       // the resend counter. When we cross the hard cap, force-end
       // the saga to bound cost.
       const snap = uiSnapshotRef.current;
-      if (snap.agentSagaStatus === "running") {
-        uiRef.current.incrementSagaResend();
-        if (snap.agentSagaResendCount + 1 >= SAGA_RESEND_HARD_CAP) {
-          uiRef.current.concludeAgentSaga(
-            `Saga force-ended at resend cap (${SAGA_RESEND_HARD_CAP}). The agent never called concludeSaga.`,
+      if (
+        snap.agentTurnStatus === "running" &&
+        snap.agentTurnMode === "durable"
+      ) {
+        uiRef.current.incrementAgentTurnResend();
+        if (snap.agentTurnResendCount + 1 >= DURABLE_TURN_RESEND_HARD_CAP) {
+          uiRef.current.cancelAgentTurn(
+            `Saga force-ended at resend cap (${DURABLE_TURN_RESEND_HARD_CAP}). The agent never called answerAndTurnEnd.`,
           );
           setAgentNotice(
-            `The agent did not call concludeSaga within ${SAGA_RESEND_HARD_CAP} turns; saga force-ended.`,
+            `The agent did not call answerAndTurnEnd within ${DURABLE_TURN_RESEND_HARD_CAP} turns; saga force-ended.`,
           );
         }
       }
@@ -503,7 +515,11 @@ export function SagaLens(): JSX.Element {
   const onSend = useCallback(() => {
     const prompt = draft.trim();
     if (prompt === "") return;
-    if (uiSnapshotRef.current.agentSagaStatus === "running") {
+    if (ui.core === null) {
+      setAgentNotice("Studio runtime is still starting. Try again shortly.");
+      return;
+    }
+    if (uiSnapshotRef.current.agentTurnStatus === "running") {
       setAgentNotice(
         "A saga is already running. Wait for it to conclude before starting another.",
       );
@@ -514,8 +530,8 @@ export function SagaLens(): JSX.Element {
     // Begin the saga BEFORE dispatching to the LLM so the
     // sendAutomaticallyWhen check sees status:"running" as soon as
     // the first invocation finishes.
-    const sagaId = newSagaId();
-    ui.beginAgentSaga(sagaId, prompt);
+    const sagaId = newAgentTurnId("durable");
+    ui.beginAgentTurn(sagaId, "durable", prompt);
     // Fresh prompt gets a fresh structural-escalation budget.
     zeroToolStreakRef.current = 0;
     void chat.sendMessage({ text: prompt });
@@ -526,8 +542,8 @@ export function SagaLens(): JSX.Element {
   }, [chat]);
 
   const onForceEnd = useCallback(() => {
-    if (uiSnapshotRef.current.agentSagaStatus !== "running") return;
-    ui.concludeAgentSaga("Saga ended manually by user.");
+    if (uiSnapshotRef.current.agentTurnStatus !== "running") return;
+    ui.cancelAgentTurn("Saga ended manually by user.");
     setAgentNotice("Saga ended manually.");
   }, [ui]);
 
@@ -552,7 +568,9 @@ export function SagaLens(): JSX.Element {
   // resume or force-end. Note: auto-resume is intentionally NOT
   // wired — the user should explicitly decide whether to continue
   // an orphaned saga so runaway spend is impossible.
-  const sagaIsRunning = ui.snapshot.agentSagaStatus === "running";
+  const sagaIsRunning =
+    ui.snapshot.agentTurnStatus === "running" &&
+    ui.snapshot.agentTurnMode === "durable";
   const messagesEmpty = chat.messages.length === 0;
   const orphanedSaga = sagaIsRunning && messagesEmpty;
 
@@ -566,7 +584,7 @@ export function SagaLens(): JSX.Element {
       ? configuredModelLabel
       : MODEL_LABEL_FALLBACK);
   const sagaLabel = sagaIsRunning
-    ? ` · saga running (${ui.snapshot.agentSagaResendCount}/${SAGA_RESEND_HARD_CAP})`
+    ? ` · saga running (${ui.snapshot.agentTurnResendCount}/${DURABLE_TURN_RESEND_HARD_CAP})`
     : "";
 
   const examplePrompts = useMemo<readonly string[]>(
@@ -591,7 +609,7 @@ export function SagaLens(): JSX.Element {
       {agentNotice !== null ? <AgentNotice message={agentNotice} /> : null}
       {orphanedSaga ? (
         <OrphanedSagaBanner
-          prompt={ui.snapshot.agentSagaPrompt}
+          prompt={ui.snapshot.agentTurnPrompt}
           onForceEnd={onForceEnd}
         />
       ) : null}
@@ -602,7 +620,7 @@ export function SagaLens(): JSX.Element {
           onReject={onRejectProposal}
         />
       ) : null}
-      <Messages messages={demoteSagaAssistantText(chat.messages)} />
+      <Messages messages={demoteAnswerAndTurnEndText(chat.messages)} />
       <Composer
         draft={draft}
         setDraft={setDraft}
@@ -669,7 +687,9 @@ function ForceEndStrip({
         color: "var(--color-ink-muted)",
       }}
     >
-      <span>Saga in flight. Harness will keep resuming until concludeSaga.</span>
+      <span>
+        Saga in flight. Harness will keep resuming until answerAndTurnEnd.
+      </span>
       <button
         type="button"
         onClick={onForceEnd}
@@ -680,76 +700,4 @@ function ForceEndStrip({
       </button>
     </div>
   );
-}
-
-/**
- * Rewrite `tool-answerAndTurnEnd` parts into `text` parts so the
- * final answer flows into the transcript character-by-character.
- *
- * AI SDK v6 streams tool-call arguments progressively — during the
- * `input-streaming` state `input.answer` is a growing string. By
- * substituting the tool part with `{type:"text", text: input.answer}`
- * we reuse the existing assistant-text renderer and get native
- * streaming UX for free; no synthesized after-the-fact message.
- *
- * Other assistant text parts are left untouched. The model's mid-
- * turn prose ("OK, now I'll check…") shows up as normal assistant
- * commentary, which keeps the UX feeling alive while work is in
- * progress. The "user-visible reply ⟺ answerAndTurnEnd" rule is
- * honored by the transport (toolChoice:"required") — we don't need
- * to suppress text in the UI on top of that.
- */
-function demoteSagaAssistantText(
-  messages: readonly UIMessage[],
-): readonly UIMessage[] {
-  return messages.map((message) => {
-    if (message.role !== "assistant") return message;
-    const parts = message.parts.map((part) => {
-      if (isAnswerAndTurnEndToolPart(part)) {
-        const answer = readStreamingAnswer(part);
-        return { type: "text", text: answer } as typeof part;
-      }
-      return part;
-    });
-    return { ...message, parts } as UIMessage;
-  });
-}
-
-function isAnswerAndTurnEndToolPart(part: { readonly type: string }): boolean {
-  return part.type === "tool-answerAndTurnEnd";
-}
-
-function readStreamingAnswer(part: unknown): string {
-  if (part === null || typeof part !== "object") return "";
-  const input = (part as { readonly input?: unknown }).input;
-  if (input === null || typeof input !== "object") return "";
-  const answer = (input as { readonly answer?: unknown }).answer;
-  return typeof answer === "string" ? answer : "";
-}
-
-function messageHasToolCall(message: UIMessage): boolean {
-  return message.parts.some((part) => part.type.startsWith("tool-"));
-}
-
-function readLiveSagaStatus(
-  core: ReturnType<typeof useStudioUi>["core"],
-): "running" | "ended" | null {
-  if (core === null) return null;
-  const snap = core.getSnapshot();
-  if (snap === null) return null;
-  const data = (snap as { readonly data?: Record<string, unknown> }).data ?? {};
-  const status = data.agentSagaStatus;
-  return status === "running" || status === "ended" ? status : null;
-}
-
-function newSagaId(): string {
-  // crypto.randomUUID is available in modern browsers; fall back to
-  // a short timestamp+random for test environments without it.
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return crypto.randomUUID();
-  }
-  return `saga-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
