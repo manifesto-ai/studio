@@ -90,8 +90,10 @@ describe("buildAgentSystemPrompt — identity + tool catalog", () => {
     // agent doesn't stop at the generate-only step.
     expect(prompt).toContain("seedMock");
     expect(prompt).toContain("generateMock");
-    expect(prompt).toContain("authorMelProposal");
     expect(prompt).toContain("createProposal");
+    expect(prompt).toContain("inspectSourceOutline");
+    expect(prompt).toContain("readDeclaration");
+    expect(prompt).toContain("findInSource");
     expect(prompt).toContain("detail.failureReport");
     expect(prompt).toContain("Adding a focused action is allowed");
     expect(prompt).toContain("Do not answer with a plain-text proposal summary");

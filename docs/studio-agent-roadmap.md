@@ -2,6 +2,7 @@
 
 > **Status:** 🟢 **Phase α done + β partially shipped + deployed to production (2026-04-24)**
 > **Ref:** [studio-backlog.md §8 Agent-first Studio](./studio-backlog.md), [phase-1-roadmap.md](./phase-1-roadmap.md), [building-agents-on-manifesto.md](./building-agents-on-manifesto.md)
+> **Author Agent rebuild:** [author-agent-roadmap.md](./author-agent-roadmap.md)
 > **Duration target:** 4 weeks prototype + 1 week extraction decision
 > **Scope marker:** every item tagged `AG-*` below is a single trackable deliverable.
 >
@@ -258,19 +259,15 @@ AG-β14 persistence ❌. **β 는 약 60% 완료**.
 
 ## 3. Phase γ — Refactor agent + proposal buffer (Week 3)
 
-> **Status: 🟡 ~55% — Verified Patch MVP + headless MEL Author Agent
-> package landed.** `authorMelProposal` 은 독립 패키지
-> `@manifesto-ai/studio-mel-author-agent` 를 호출해 임시 workspace 에서
-> MEL 초안을 만들고, webapp 은 결과를 기존 proposal verifier / Preview
-> 로 묶는다. Author 실패는 `failureReport` 로 구조화되어 UI Agent 가
-> 설명/질문/재시도할 수 있다. Author 는 bundled MEL guide 를 검색해
-> syntax/reference/error 지식을 필요 시 조회한다. Author tool 호출은
-> Author Agent lifecycle lineage 로 기록되어 `authorLineage` 로 추출된다.
-> source lens 로 outline-first / declaration-scoped read+patch 를 지원한다.
-> Critic / persistence / rich before-after ladder 는 후속.
+> **Status: ✅ Author 하드컷 완료.** 기존 Reader/Writer/Repair 서버 오케
+> 스트레이터 (`/api/agent/author`, `agent-author-handler`, `packages/
+> studio-mel-author-agent`) 는 전부 제거했다. MEL 편집은 UI agent 루프
+> 안의 클라이언트 사이드 tool 네 개로 단순화됐다: `inspectSourceOutline`,
+> `readDeclaration`, `findInSource`, `createProposal`. Verifier
+> (`session/proposal-verifier`) 가 진실의 출처이며, 별도 lineage /
+> failureReport 구조는 유지하지 않는다.
 
-**Goal**: 에이전트가 MEL 편집을 제안하고, 사용자는 diff + simulate
-preview를 보고 승인/거부. 첫 "쓰기" 에이전트.
+**Goal**: 에이전트가 MEL 편집을 제안하고, 사용자는 diff 를 보고 승인/거부.
 
 ### 3.1 Proposal buffer
 
@@ -280,30 +277,23 @@ preview를 보고 승인/거부. 첫 "쓰기" 에이전트.
   계산.
 - [x] **AG-γ2**: webapp의 Monaco 실제 source는 **승인 전엔 건드리지
   않음**. `adapter.setSource`는 승인 이후에만 호출
-- [~] **AG-γ3**: proposal에 대해 shadow `createStudioCore` 인스턴스를
-  돌려 build diagnostics 를 검증. simulate 결과 미리보기는 미착수.
+- [x] **AG-γ3**: proposal 에 대해 shadow `createStudioCore` 인스턴스를
+  돌려 build diagnostics 를 검증 (`session/proposal-verifier`).
 
-### 3.2 Refactor/Repair agent
+### 3.2 Source-change tools (post hard-cut)
 
-- [x] **AG-γ4**: `packages/studio-mel-author-agent/` — scoped edit 전문
-  headless MEL Author Agent package. 입력: 현재 source + 사용자 의도,
-  출력: ephemeral workspace 에서 build 된 full-source draft + rationale.
-- [x] **AG-γ5**: Orchestrator가 source-change 요청을 `authorMelProposal`
-  tool 로 위임. 결과는 기존 proposal buffer / verifier 로 묶음.
-- [x] **AG-γ5b**: Author 실패를 `failureReport` 로 구조화. compile
-  error / unchanged source / max steps / missing finalize / tool error /
-  provider error 를 UI Agent 가 설명 가능한 형태로 반환.
-- [x] **AG-γ5c**: Author knowledge retrieval. MEL reference / syntax /
-  error guide 를 package resource 로 포함하고, Author Agent 에
-  `searchAuthorGuide` tool 로 노출.
-- [x] **AG-γ5d**: Author lifecycle lineage. `readSource`, draft, build,
-  guide search, simulate, finalize 흐름을 Author Agent MEL action 으로
-  기록하고 `/api/agent/author` 응답에서 추출 가능하게 노출. no-action
-  stop 은 `stalled` 로 기록하며 retry cap 은 표현하되 host auto-retry 는
-  아직 하지 않음.
-- [x] **AG-γ5e**: Author source lens. 전체 source read 를 fallback 으로
-  낮추고, outline / findSource / readDeclaration / readSourceRange /
-  patchDeclaration 으로 declaration-scoped MEL 수정을 지원.
+- [x] **AG-γ4**: Author 서버 오케스트레이터 하드컷 완료. UI agent 루프
+  안에서 네 개의 클라이언트 사이드 tool 로 MEL 편집 제공.
+- [x] **AG-γ5**: `inspectSourceOutline` — 현재 MEL 의 declaration 목록
+  (domain/type/state/computed/action) 을 line 범위와 함께 반환.
+- [x] **AG-γ5b**: `readDeclaration` — target (domain:Name / state:name /
+  action:name 등) 의 실제 source 텍스트 반환. 모델이 기억으로 재구성
+  하지 못하게 강제.
+- [x] **AG-γ5c**: `findInSource` — substring grep, line/column 위치와
+  preview 반환. target 이름이 불확실할 때 사용.
+- [x] **AG-γ5d**: `createProposal` 이 MEL 편집의 유일한 finalization
+  경로. 성공 시 proposal buffer 에 기록, 실패 시 shadow verifier 의
+  diagnostics 를 반환해서 모델이 재제안 가능.
 
 ### 3.3 Contract Verifier (deterministic gate)
 

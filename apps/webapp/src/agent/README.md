@@ -49,47 +49,26 @@ OLLAMA_MODEL=gemma4:e4b
 `OLLAMA_*` env is present, otherwise Gateway when `AI_GATEWAY_*` env is
 present, otherwise local Ollama defaults.
 
-Most tools execute client-side in `AgentLens` because they read/mutate the
-live Manifesto runtime in the browser. The server receives schemas only,
-never those live-runtime tool implementations.
+All tools execute client-side in `AgentLens` because they read/mutate the
+live Manifesto runtime in the browser. The server receives tool schemas only
+and never runs tool implementations.
 
-Exception: `authorMelProposal` calls `/api/agent/author`, where the server
-runs the headless MEL Author Agent against a source string in an ephemeral
-workspace. That route has no access to the live browser runtime and returns
-only a draft source for the normal proposal verifier. The Author Agent also
-gets a package-local `searchAuthorGuide` tool backed by bundled MEL reference,
-syntax, and error-guide Markdown; it uses this for uncertain constructs and
-compiler diagnostics instead of relying only on model memory.
+## MEL source edits
 
-The Author Agent is outline-first. It should build, inspect the compact
-source outline, find/read only the relevant declaration or range, then patch
-that declaration. Full `readSource` / `replaceSource` remain available as
-fallbacks, but they are not the preferred path for normal edits.
+Source-change requests use the same single-loop agent as everything else —
+there is no separate Author server agent. The model is given four source-
+aware tools:
 
-Author tool calls are also recorded into the Author Agent's own lifecycle
-lineage and returned as `authorLineage` on `/api/agent/author` responses.
-This makes silent failures observable without server log scraping; a
-`readSource`-only stop is classified as `stalled` and recorded through
-`markStalled("read_source_only_stop")`. The lifecycle also caps retry
-records with `maxRetries` / `canRetry`; the host does not automatically
-retry from this signal yet.
+- `inspectSourceOutline` — list every declaration with line ranges.
+- `readDeclaration` — return the exact source text for one declaration.
+- `findInSource` — grep the current MEL source.
+- `createProposal` — submit a full proposed source; the shadow verifier
+  (`session/proposal-verifier`) builds it and gates acceptance.
 
-If authoring fails, the route returns a structured `failureReport`
-(`failureKind`, diagnostics, compact tool trace, source excerpt, retry
-advice). The UI Agent uses that report to explain the failure, ask the
-user when the request is ambiguous, or retry once with a narrower request.
-
-## MEL Author + Verified Patch
-
-Source-change requests now prefer `authorMelProposal`, which delegates to
-`@manifesto-ai/studio-mel-author-agent`. That package runs a headless,
-ephemeral MEL workspace and returns a full-source draft. The webapp then
-passes the draft through the same verified proposal buffer.
-
-`createProposal` remains as a low-level fallback when a complete proposed
-source is already available. Neither path edits source directly. The
-proposal is shadow-built by the verifier in `session/`, rendered by
-`ui/ProposalPreview`, and applied only when the user clicks Accept
+The system prompt tells the model to outline, read the targets it intends
+to touch, and only then call `createProposal` with the complete file.
+`createProposal` does NOT edit source directly — the proposal is rendered
+by `ui/ProposalPreview` and applied only when the user clicks Accept
 (`adapter.setSource` + `adapter.requestBuild`).
 
 ## Why no React in `tools/agents/session/`

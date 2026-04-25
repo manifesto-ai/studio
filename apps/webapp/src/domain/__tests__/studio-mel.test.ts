@@ -198,6 +198,110 @@ describe("studio.mel — recordAgentTurn is single-entry + advances lineage", ()
   });
 });
 
+describe("studio.mel — agent saga lifecycle", () => {
+  it("begins with no saga (status null, count 0)", async () => {
+    const core = await bootStudioRuntime();
+    expect(readState(core)).toMatchObject({
+      agentSagaId: null,
+      agentSagaStatus: null,
+      agentSagaPrompt: null,
+      agentSagaConclusion: null,
+      agentSagaResendCount: 0,
+    });
+  });
+
+  it("beginAgentSaga → running; concludeAgentSaga → ended", async () => {
+    const core = await bootStudioRuntime();
+    const begin = await core.dispatchAsync(
+      core.createIntent("beginAgentSaga", "saga-1", "add priority field"),
+    );
+    expect(begin.kind).toBe("completed");
+    expect(readState(core)).toMatchObject({
+      agentSagaId: "saga-1",
+      agentSagaStatus: "running",
+      agentSagaPrompt: "add priority field",
+      agentSagaConclusion: null,
+      agentSagaResendCount: 0,
+    });
+
+    const conclude = await core.dispatchAsync(
+      core.createIntent("concludeAgentSaga", "added priority field"),
+    );
+    expect(conclude.kind).toBe("completed");
+    expect(readState(core)).toMatchObject({
+      agentSagaStatus: "ended",
+      agentSagaConclusion: "added priority field",
+    });
+  });
+
+  it("rejects a second beginAgentSaga while one is running", async () => {
+    const core = await bootStudioRuntime();
+    await core.dispatchAsync(
+      core.createIntent("beginAgentSaga", "saga-a", "first"),
+    );
+    const rejected = await core.dispatchAsync(
+      core.createIntent("beginAgentSaga", "saga-b", "second"),
+    );
+    expect(rejected.kind).not.toBe("completed");
+    expect(readState(core)).toMatchObject({
+      agentSagaId: "saga-a",
+      agentSagaPrompt: "first",
+    });
+  });
+
+  it("allows a new saga after the prior one ends (resets resend count + conclusion)", async () => {
+    const core = await bootStudioRuntime();
+    await core.dispatchAsync(
+      core.createIntent("beginAgentSaga", "saga-1", "p1"),
+    );
+    await core.dispatchAsync(
+      core.createIntent("incrementSagaResend"),
+    );
+    await core.dispatchAsync(
+      core.createIntent("concludeAgentSaga", "done"),
+    );
+    const next = await core.dispatchAsync(
+      core.createIntent("beginAgentSaga", "saga-2", "p2"),
+    );
+    expect(next.kind).toBe("completed");
+    expect(readState(core)).toMatchObject({
+      agentSagaId: "saga-2",
+      agentSagaStatus: "running",
+      agentSagaPrompt: "p2",
+      agentSagaConclusion: null,
+      agentSagaResendCount: 0,
+    });
+  });
+
+  it("rejects concludeAgentSaga when no saga is running", async () => {
+    const core = await bootStudioRuntime();
+    const rejected = await core.dispatchAsync(
+      core.createIntent("concludeAgentSaga", "orphan"),
+    );
+    expect(rejected.kind).not.toBe("completed");
+    expect(readState(core)).toMatchObject({
+      agentSagaStatus: null,
+      agentSagaConclusion: null,
+    });
+  });
+
+  it("incrementSagaResend bumps the counter monotonically while running", async () => {
+    const core = await bootStudioRuntime();
+    await core.dispatchAsync(
+      core.createIntent("beginAgentSaga", "saga-x", "pk"),
+    );
+    for (let i = 0; i < 3; i++) {
+      const r = await core.dispatchAsync(
+        core.createIntent("incrementSagaResend"),
+      );
+      expect(r.kind).toBe("completed");
+    }
+    expect(readState(core)).toMatchObject({
+      agentSagaResendCount: 3,
+    });
+  });
+});
+
 describe("studio.mel — switchProject resets dependent state", () => {
   it("clears focus and view mode on project switch", async () => {
     const core = await bootStudioRuntime();

@@ -40,28 +40,6 @@ function agentApiDevPlugin(): Plugin {
         },
       );
       server.middlewares.use(
-        "/api/agent/author",
-        async (req: IncomingMessage, res: ServerResponse) => {
-          try {
-            const mod = (await server.ssrLoadModule(
-              "/src/server/agent-author-handler.ts",
-            )) as typeof import("./src/server/agent-author-handler.js");
-            const webRequest = await nodeRequestToWebRequest(req);
-            const webResponse = await mod.handleAgentAuthor(webRequest);
-            await writeWebResponseToNode(webResponse, res);
-          } catch (err) {
-            res.statusCode = 500;
-            res.setHeader("content-type", "application/json");
-            res.end(
-              JSON.stringify({
-                error:
-                  err instanceof Error ? err.message : String(err),
-              }),
-            );
-          }
-        },
-      );
-      server.middlewares.use(
         "/api/agent/config",
         async (req: IncomingMessage, res: ServerResponse) => {
           try {

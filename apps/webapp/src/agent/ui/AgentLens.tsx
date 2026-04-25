@@ -109,11 +109,17 @@ import {
   type CreateProposalContext,
 } from "../tools/create-proposal.js";
 import {
-  createAuthorMelProposalTool,
-  type AuthorMelDraftRequest,
-  type AuthorMelDraftResult,
-  type AuthorMelProposalContext,
-} from "../tools/author-mel-proposal.js";
+  createInspectSourceOutlineTool,
+  type InspectSourceOutlineContext,
+} from "../tools/inspect-source-outline.js";
+import {
+  createReadDeclarationTool,
+  type ReadDeclarationContext,
+} from "../tools/read-declaration.js";
+import {
+  createFindInSourceTool,
+  type FindInSourceContext,
+} from "../tools/find-in-source.js";
 import {
   buildAgentSystemPrompt,
   readStudioAgentContext,
@@ -285,11 +291,16 @@ export function AgentLens(): JSX.Element {
       verify: verifyMelProposal,
       setProposal,
     };
-    const authorMelProposalCtx: AuthorMelProposalContext = {
-      getOriginalSource: readMelSource,
-      draft: requestMelAuthorDraft,
-      verify: verifyMelProposal,
-      setProposal,
+    const inspectSourceOutlineCtx: InspectSourceOutlineContext = {
+      getModule: () => core.getModule(),
+      getSource: readMelSource,
+    };
+    const readDeclarationCtx: ReadDeclarationContext = {
+      getModule: () => core.getModule(),
+      getSource: readMelSource,
+    };
+    const findInSourceCtx: FindInSourceContext = {
+      getSource: readMelSource,
     };
     const tools = [
       bindTool(createDispatchTool(), userCtx),
@@ -304,7 +315,9 @@ export function AgentLens(): JSX.Element {
       bindTool(createInspectConversationTool(), inspectConversationCtx),
       bindTool(createGenerateMockTool(), generateMockCtx),
       bindTool(createSeedMockTool(), seedMockCtx),
-      bindTool(createAuthorMelProposalTool(), authorMelProposalCtx),
+      bindTool(createInspectSourceOutlineTool(), inspectSourceOutlineCtx),
+      bindTool(createReadDeclarationTool(), readDeclarationCtx),
+      bindTool(createFindInSourceTool(), findInSourceCtx),
       bindTool(createCreateProposalTool(), createProposalCtx),
     ];
     if (ui.core !== null) {
@@ -344,13 +357,8 @@ export function AgentLens(): JSX.Element {
         const forceProposal =
           latestUserText !== null &&
           melSource.trim() !== "" &&
-          (toolSchemas.authorMelProposal !== undefined ||
-            toolSchemas.createProposal !== undefined) &&
+          toolSchemas.createProposal !== undefined &&
           looksLikeSourceChangeRequest(latestUserText);
-        const proposalToolName =
-          toolSchemas.authorMelProposal !== undefined
-            ? "authorMelProposal"
-            : "createProposal";
         return {
           body: {
             id,
@@ -358,7 +366,7 @@ export function AgentLens(): JSX.Element {
             system,
             tools: toolSchemas,
             toolChoice: forceProposal
-              ? { type: "tool", toolName: proposalToolName }
+              ? { type: "tool", toolName: "createProposal" }
               : undefined,
             // Server caps the loop; 10 steps is plenty for
             // inspect → explain → dispatch chains.
@@ -525,7 +533,7 @@ export function AgentLens(): JSX.Element {
 // Status strip
 // --------------------------------------------------------------------
 
-function StatusStrip({
+export function StatusStrip({
   modelLabel,
   status,
   error,
@@ -601,7 +609,7 @@ function StatusStrip({
   );
 }
 
-function AgentNotice({ message }: { readonly message: string }): JSX.Element {
+export function AgentNotice({ message }: { readonly message: string }): JSX.Element {
   return (
     <div
       className="
@@ -623,7 +631,7 @@ function AgentNotice({ message }: { readonly message: string }): JSX.Element {
 // Messages
 // --------------------------------------------------------------------
 
-function Messages({
+export function Messages({
   messages,
 }: {
   readonly messages: readonly UIMessage[];
@@ -861,7 +869,7 @@ function ToolRow({ part }: { readonly part: ToolPart }): JSX.Element {
 // Composer
 // --------------------------------------------------------------------
 
-function Composer({
+export function Composer({
   draft,
   setDraft,
   onSend,
@@ -999,11 +1007,17 @@ function resolveToolChannel(name: string): string {
     name === "dispatch" ||
     name === "studioDispatch" ||
     name === "seedMock" ||
-    name === "authorMelProposal"
+    name === "createProposal"
   ) {
     return "var(--color-sig-action)";
   }
-  if (name.startsWith("inspect") || name === "generateMock") {
+  if (
+    name.startsWith("inspect") ||
+    name === "generateMock" ||
+    name === "readDeclaration" ||
+    name === "findInSource" ||
+    name === "locateSource"
+  ) {
     return "var(--color-sig-computed)";
   }
   if (name === "explainLegality") {
@@ -1065,21 +1079,21 @@ function truncate(s: string, n: number): string {
 // Helpers: message → derived data
 // --------------------------------------------------------------------
 
-function extractUserText(m: UIMessage): string {
+export function extractUserText(m: UIMessage): string {
   return m.parts
     .map((p) => (p.type === "text" ? p.text : ""))
     .join("")
     .trim();
 }
 
-function extractAssistantText(m: UIMessage): string {
+export function extractAssistantText(m: UIMessage): string {
   return m.parts
     .map((p) => (p.type === "text" ? p.text : ""))
     .join("")
     .trim();
 }
 
-function findMostRecentUserText(
+export function findMostRecentUserText(
   messages: readonly UIMessage[],
 ): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -1092,7 +1106,7 @@ function findMostRecentUserText(
   return null;
 }
 
-function readLastMessageUserText(
+export function readLastMessageUserText(
   messages: readonly UIMessage[],
 ): string | null {
   const last = messages[messages.length - 1];
@@ -1101,7 +1115,7 @@ function readLastMessageUserText(
   return text === "" ? null : text;
 }
 
-function looksLikeSourceChangeRequest(text: string): boolean {
+export function looksLikeSourceChangeRequest(text: string): boolean {
   const normalized = text.toLowerCase();
   const sourceCues = [
     "mel",
@@ -1144,14 +1158,14 @@ function looksLikeSourceChangeRequest(text: string): boolean {
   );
 }
 
-function isReasoningOnlyAssistantTurn(message: UIMessage): boolean {
+export function isReasoningOnlyAssistantTurn(message: UIMessage): boolean {
   const hasText = extractAssistantText(message) !== "";
   const hasTool = message.parts.some(isToolPart);
   const hasReasoning = message.parts.some((part) => part.type === "reasoning");
   return hasReasoning && !hasText && !hasTool;
 }
 
-function messagesToConversationTurns(
+export function messagesToConversationTurns(
   messages: readonly UIMessage[],
 ): readonly FullConversationTurn[] {
   const turns: FullConversationTurn[] = [];
@@ -1203,7 +1217,7 @@ function messagesToConversationTurns(
 // Tool contexts — user + studio domain
 // --------------------------------------------------------------------
 
-function buildUserToolContext(
+export function buildUserToolContext(
   core: StudioCore,
 ): LegalityContext & DispatchContext {
   type CoreExplain = (intent: unknown) => ReturnType<
@@ -1228,7 +1242,7 @@ function buildUserToolContext(
   };
 }
 
-function buildStudioToolContext(core: StudioCore): StudioDispatchContext {
+export function buildStudioToolContext(core: StudioCore): StudioDispatchContext {
   return {
     isActionAvailable: (name) => core.isActionAvailable(name),
     createIntent: (action, ...args) => core.createIntent(action, ...args),
@@ -1244,7 +1258,7 @@ function buildStudioToolContext(core: StudioCore): StudioDispatchContext {
   };
 }
 
-function safeGetSource(adapter: EditorAdapter): string {
+export function safeGetSource(adapter: EditorAdapter): string {
   try {
     return adapter.getSource();
   } catch {
@@ -1252,47 +1266,3 @@ function safeGetSource(adapter: EditorAdapter): string {
   }
 }
 
-async function requestMelAuthorDraft(
-  input: AuthorMelDraftRequest,
-): Promise<AuthorMelDraftResult> {
-  const response = await fetch("/api/agent/author", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      source: input.source,
-      request: input.request,
-      title: input.title,
-    }),
-  });
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    return {
-      ok: false,
-      kind: "runtime_error",
-      message: `MEL Author Agent returned non-JSON response (${response.status}).`,
-    };
-  }
-  if (!response.ok) {
-    const record =
-      payload !== null && typeof payload === "object"
-        ? (payload as Record<string, unknown>)
-        : {};
-    return {
-      ok: false,
-      kind: "runtime_error",
-      message:
-        typeof record.message === "string"
-          ? record.message
-          : typeof record.error === "string"
-            ? record.error
-            : `MEL Author Agent request failed (${response.status}).`,
-      detail: payload,
-    };
-  }
-  return payload as AuthorMelDraftResult;
-}

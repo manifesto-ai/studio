@@ -25,7 +25,7 @@
     "monaco-editor": ">=0.52.0"
   },
   "devDependencies": {
-    "@manifesto-ai/compiler": "^3.7.0",
+    "@manifesto-ai/compiler": "^3.8.0",
     "jsdom": "^25.0.0",
     "monaco-editor": "^0.52.0"
   },

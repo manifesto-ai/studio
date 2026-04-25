@@ -37,10 +37,12 @@
  */
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
+  buildAiSdkToolSet,
+  normalizeAiSdkToolChoice,
+} from "@manifesto-ai/agent-ai-sdk";
+import {
   convertToModelMessages,
-  jsonSchema,
   streamText,
-  type ToolChoice,
   type ToolSet,
   type UIMessage,
 } from "ai";
@@ -162,17 +164,18 @@ export async function handleAgentChat(req: Request): Promise<Response> {
   // into the right shape; without it the SDK tries to call the
   // schema as a function ("schema is not a function").
   const sdkTools: ToolSet = tools
-    ? Object.fromEntries(
-        Object.entries(tools).map(([name, spec]) => [
-          name,
-          {
+    ? buildAiSdkToolSet(
+        Object.entries(tools).map(([name, spec]) => ({
+          type: "function" as const,
+          function: {
+            name,
             description: spec.description,
-            inputSchema: jsonSchema(spec.parameters as never),
+            parameters: spec.parameters,
           },
-        ]),
+        })),
       )
     : {};
-  const sdkToolChoice = normalizeToolChoice(toolChoice, sdkTools);
+  const sdkToolChoice = normalizeAiSdkToolChoice(toolChoice, sdkTools);
   if (sdkToolChoice.kind === "error") {
     return jsonError(400, sdkToolChoice.message);
   }
@@ -228,28 +231,6 @@ function readEnv(name: string): string | null {
   const raw = process.env[name];
   if (typeof raw === "string" && raw.trim() !== "") return raw.trim();
   return null;
-}
-
-function normalizeToolChoice(
-  value:
-    | "auto"
-    | "none"
-    | "required"
-    | { readonly type: "tool"; readonly toolName: string }
-    | undefined,
-  tools: ToolSet,
-):
-  | { readonly kind: "ok"; readonly value: ToolChoice<ToolSet> | undefined }
-  | { readonly kind: "error"; readonly message: string } {
-  if (value === undefined) return { kind: "ok", value: undefined };
-  if (typeof value === "string") return { kind: "ok", value };
-  if (tools[value.toolName] === undefined) {
-    return {
-      kind: "error",
-      message: `invalid toolChoice: unknown tool "${value.toolName}".`,
-    };
-  }
-  return { kind: "ok", value };
 }
 
 export function resolveAgentModel():
