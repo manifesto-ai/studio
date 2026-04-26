@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StudioAgentContext } from "../agent-context.js";
 import {
-  buildDurableAgentSystemPrompt,
   buildLiveAgentSystemPrompt,
   readLiveAgentTurnMode,
   readLiveAgentTurnStatus,
@@ -9,7 +8,15 @@ import {
 
 const CTX: StudioAgentContext = {
   hasModule: true,
-  melSource: "domain Todo { state { count: number = 0 } }",
+  domainSummary: {
+    schemaId: "Todo",
+    schemaHash: "hash",
+    source: { present: true, lineCount: 1, charCount: 42 },
+    stateFields: ["count"],
+    computedFields: [],
+    actions: [],
+    graph: { nodeCount: 1, edgeCount: 0 },
+  },
   diagnostics: { errors: 0, warnings: 0 },
   recentTurns: [],
 };
@@ -29,17 +36,17 @@ describe("agent turn prompts", () => {
     });
 
     expect(prompt).toContain("Agent turn - structural rules");
-    expect(prompt).toContain("answerAndTurnEnd({ answer })");
-    expect(prompt).toContain("Do not treat plain text as the final answer");
+    expect(prompt).toContain("endTurn({ summary? })");
+    expect(prompt).toContain("plain assistant text");
     expect(prompt).not.toContain("```json");
   });
 
-  it("adds durable resume pressure after a resend", () => {
-    const prompt = buildDurableAgentSystemPrompt({
+  it("adds live resume pressure after a resend", () => {
+    const prompt = buildLiveAgentSystemPrompt({
       agentContext: CTX,
       turn: {
-        id: "durable-1",
-        mode: "durable",
+        id: "live-1",
+        mode: "live",
         status: "running",
         prompt: "add priority",
         conclusion: null,
@@ -47,10 +54,10 @@ describe("agent turn prompts", () => {
       },
     });
 
-    expect(prompt).toContain("Durable agent turn - structural rules");
-    expect(prompt).toContain("toolChoice:required");
-    expect(prompt).toContain("RESUME - durable turn durable-1, resend #2");
-    expect(prompt).toContain("Do not keep working silently");
+    expect(prompt).toContain("Agent turn - structural rules");
+    expect(prompt).toContain("endTurn");
+    expect(prompt).toContain("RESUME - live turn live-1, resend #2");
+    expect(prompt).toContain("Do not keep retrying silently");
   });
 });
 
@@ -60,13 +67,13 @@ describe("agent turn live snapshot readers", () => {
       getSnapshot: () => ({
         data: {
           agentTurnStatus: "running",
-          agentTurnMode: "durable",
+          agentTurnMode: "live",
         },
       }),
     };
 
     expect(readLiveAgentTurnStatus(core)).toBe("running");
-    expect(readLiveAgentTurnMode(core)).toBe("durable");
+    expect(readLiveAgentTurnMode(core)).toBe("live");
   });
 
   it("returns null for absent or invalid turn values", () => {

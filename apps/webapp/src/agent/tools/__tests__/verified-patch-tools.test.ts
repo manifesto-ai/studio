@@ -49,6 +49,32 @@ describe("simulateIntent", () => {
     expect(result.output.schemaHash).toBe("hash1");
   });
 
+  it("normalizes graph action node ids before simulating", async () => {
+    const seen: string[] = [];
+    const ctx: SimulateIntentContext = {
+      createIntent: (action) => {
+        seen.push(action);
+        return { type: action };
+      },
+      explainIntent: () => ({
+        kind: "admitted",
+        available: true,
+        dispatchable: true,
+      }),
+      simulate: () => ({}),
+      listActionNames: () => ["addTodo"],
+    };
+    const result = await createSimulateIntentTool().run(
+      { action: "action:addTodo" },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output.action).toBe("addTodo");
+    expect(seen).toEqual(["addTodo"]);
+  });
+
   it("does not simulate blocked intents", async () => {
     const simulate = vi.fn();
     const ctx: SimulateIntentContext = {

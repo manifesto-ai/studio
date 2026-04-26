@@ -1,18 +1,3 @@
-/**
- * agent-context tests — post introspection pivot.
- *
- * StudioAgentContext now carries only the static pieces the system
- * prompt needs (hasModule + melSource + diagnostics). All dynamic
- * values (focus, snapshot, availability, graph neighbors) flow through
- * inspect-* tools and are not tested here.
- *
- * Coverage:
- *   1. Reader — hasModule reflects compile state, diagnostics counted.
- *   2. Builder — identity anchor present, tool catalog present, MEL
- *      source block emitted, and — crucially — no dynamic snapshot /
- *      focus / availability content leaks into the prompt (that's the
- *      whole point of the pivot).
- */
 import { describe, expect, it } from "vitest";
 import {
   buildAgentSystemPrompt,
@@ -25,10 +10,49 @@ function makeCore(overrides: Partial<AgentContextCore> = {}): AgentContextCore {
     getModule: () =>
       ({
         schema: {
-          actions: {
-            toggleTodo: { params: ["id"] },
-            addTodo: { params: ["text"] },
+          id: "Todo",
+          hash: "schema-hash",
+          types: {
+            Priority: {
+              definition: {
+                kind: "union",
+                types: [
+                  { kind: "literal", value: "low" },
+                  { kind: "literal", value: "med" },
+                  { kind: "literal", value: "high" },
+                ],
+              },
+            },
           },
+          state: { fields: { todos: {}, filter: {} } },
+          computed: { fields: { openCount: {} } },
+          actions: {
+            addTodo: {
+              params: ["title", "priority"],
+              inputType: {
+                kind: "object",
+                fields: {
+                  title: {
+                    type: { kind: "primitive", type: "string" },
+                    optional: false,
+                  },
+                  priority: {
+                    type: { kind: "ref", name: "Priority" },
+                    optional: false,
+                  },
+                },
+              },
+              description: "Add a todo item.",
+            },
+            clearDone: {
+              params: [],
+              dispatchable: {},
+            },
+          },
+        },
+        graph: {
+          nodes: [{ id: "state:todos" }, { id: "action:addTodo" }],
+          edges: [{ source: "action:addTodo", target: "state:todos" }],
         },
       }) as unknown as ReturnType<AgentContextCore["getModule"]>,
     getDiagnostics: () => [],
@@ -37,14 +61,40 @@ function makeCore(overrides: Partial<AgentContextCore> = {}): AgentContextCore {
 }
 
 describe("readStudioAgentContext", () => {
-  it("returns hasModule:true when the user module compiles", () => {
-    const ctx = readStudioAgentContext(makeCore(), "/* mel */");
+  it("returns a compact domain summary instead of raw MEL", () => {
+    const ctx = readStudioAgentContext(makeCore(), "domain Todo {\n}");
+
     expect(ctx.hasModule).toBe(true);
-    expect(ctx.melSource).toBe("/* mel */");
-    expect(ctx.diagnostics).toEqual({ errors: 0, warnings: 0 });
+    expect(ctx).not.toHaveProperty("melSource");
+    expect(ctx.domainSummary).toMatchObject({
+      schemaId: "Todo",
+      schemaHash: "schema-hash",
+      source: { present: true, lineCount: 2 },
+      stateFields: ["filter", "todos"],
+      computedFields: ["openCount"],
+      graph: { nodeCount: 2, edgeCount: 1 },
+    });
+    expect(ctx.domainSummary.actions).toEqual([
+      {
+        name: "addTodo",
+        params: ["title", "priority"],
+        paramHints: ['title: string', 'priority: "low" | "med" | "high"'],
+        inputHint: 'title: string, priority: "low" | "med" | "high"',
+        hasDispatchableGate: false,
+        description: "Add a todo item.",
+      },
+      {
+        name: "clearDone",
+        params: [],
+        paramHints: [],
+        inputHint: null,
+        hasDispatchableGate: true,
+        description: null,
+      },
+    ]);
   });
 
-  it("returns hasModule:false with diagnostics when the module didn't compile", () => {
+  it("returns hasModule:false with diagnostics and source stats", () => {
     const ctx = readStudioAgentContext(
       makeCore({
         getModule: () => null,
@@ -57,71 +107,68 @@ describe("readStudioAgentContext", () => {
       }),
       "state { bad }",
     );
+
     expect(ctx.hasModule).toBe(false);
     expect(ctx.diagnostics).toEqual({ errors: 2, warnings: 1 });
-    expect(ctx.melSource).toBe("state { bad }");
+    expect(ctx.domainSummary.source).toMatchObject({
+      present: true,
+      lineCount: 1,
+      charCount: "state { bad }".length,
+    });
   });
 });
 
-describe("buildAgentSystemPrompt — identity + tool catalog", () => {
-  it("leads with the identity anchor (MEL as soul source)", () => {
+describe("buildAgentSystemPrompt", () => {
+  it("contains the live tool contract and grounding rules", () => {
     const ctx = readStudioAgentContext(makeCore(), "state {}");
     const prompt = buildAgentSystemPrompt(ctx);
-    // Identity framing is what stops the model from treating MEL as
-    // external reference material. These phrases are load-bearing.
-    expect(prompt).toContain("You know this Manifesto runtime from the inside");
-    expect(prompt).toContain("soul source code");
-    expect(prompt).toMatch(/introspect via tools/);
-  });
 
-  it("advertises every inspect tool by name in the catalog", () => {
-    const ctx = readStudioAgentContext(makeCore(), "state {}");
-    const prompt = buildAgentSystemPrompt(ctx);
+    expect(prompt).toContain("compact schema summary plus live tools");
+    expect(prompt).toContain("inspectToolAffordances");
     expect(prompt).toContain("inspectFocus()");
     expect(prompt).toContain("inspectSnapshot()");
     expect(prompt).toContain("inspectAvailability()");
-    expect(prompt).toContain("inspectNeighbors(nodeId)");
-    expect(prompt).toContain("simulateIntent");
-    expect(prompt).toContain("locateSource");
+    expect(prompt).toContain("inspectNeighbors");
     expect(prompt).toContain("explainLegality");
-    expect(prompt).toContain("dispatch(action, args)");
-    expect(prompt).toContain("studioDispatch(action, args)");
-    // seedMock is the one-call write path — must be listed so the
-    // agent doesn't stop at the generate-only step.
-    expect(prompt).toContain("seedMock");
-    expect(prompt).toContain("generateMock");
-    expect(prompt).toContain("createProposal");
-    expect(prompt).toContain("inspectSourceOutline");
-    expect(prompt).toContain("readDeclaration");
-    expect(prompt).toContain("findInSource");
-    expect(prompt).toContain("detail.failureReport");
-    expect(prompt).toContain("Adding a focused action is allowed");
-    expect(prompt).toContain("Do not answer with a plain-text proposal summary");
-    expect(prompt).toContain("Do not write the full MEL source yourself");
-  });
-
-  it("gives a grounding recipe so the model knows to inspect first", () => {
-    const ctx = readStudioAgentContext(makeCore(), "state {}");
-    const prompt = buildAgentSystemPrompt(ctx);
-    expect(prompt).toContain("How to ground yourself");
-    // Deictic cue explicitly listed so gemma4 picks it up.
+    expect(prompt).toContain("simulateIntent");
+    expect(prompt).toContain("dispatch({action, args})");
+    expect(prompt).toContain("studioDispatch({action, args})");
+    expect(prompt).toContain("endTurn({summary?})");
     expect(prompt).toContain("'이거'");
-    // Each inspect tool has an "when to call it" hint.
-    expect(prompt).toMatch(/inspectFocus\(\) first/);
-    expect(prompt).toMatch(/inspectSnapshot\(\)/);
   });
-});
 
-describe("buildAgentSystemPrompt — MEL body", () => {
-  it("emits the MEL source under '# Your soul (MEL)'", () => {
-    const ctx = readStudioAgentContext(makeCore(), "domain Foo { state {} }");
+  it("emits a compact domain summary without full MEL source", () => {
+    const source = "domain Todo { state { count: number = 0 } }";
+    const ctx = readStudioAgentContext(makeCore(), source);
     const prompt = buildAgentSystemPrompt(ctx);
-    expect(prompt).toContain("# Your soul (MEL)");
-    expect(prompt).toContain("```mel");
-    expect(prompt).toContain("domain Foo { state {} }");
+
+    expect(prompt).toContain("# Domain Summary");
+    expect(prompt).toContain("compiled: true");
+    expect(prompt).toContain("schema: Todo @ schema-hash");
+    expect(prompt).toContain("state: filter, todos");
+    expect(prompt).toContain("computed: openCount");
+    expect(prompt).toContain('addTodo(title: string, priority: "low" | "med" | "high")');
+    expect(prompt).toContain("clearDone [guarded]");
+    expect(prompt).not.toContain("```mel");
+    expect(prompt).not.toContain(source);
   });
 
-  it("falls back to a 'no compiled MEL' header with diagnostics when the module failed", () => {
+  it("does not advertise source-authoring or removed mock tools", () => {
+    const prompt = buildAgentSystemPrompt(
+      readStudioAgentContext(makeCore(), "state {}"),
+    );
+
+    expect(prompt).toContain("You do not have source-authoring tools");
+    expect(prompt).not.toContain("createProposal");
+    expect(prompt).not.toContain("inspectSourceOutline");
+    expect(prompt).not.toContain("readDeclaration");
+    expect(prompt).not.toContain("findInSource");
+    expect(prompt).not.toContain("seedMock");
+    expect(prompt).not.toContain("generateMock");
+    expect(prompt).not.toContain("inspectConversation");
+  });
+
+  it("falls back to diagnostics without embedding invalid source", () => {
     const ctx = readStudioAgentContext(
       makeCore({
         getModule: () => null,
@@ -135,96 +182,47 @@ describe("buildAgentSystemPrompt — MEL body", () => {
       "state { bad }",
     );
     const prompt = buildAgentSystemPrompt(ctx);
-    expect(prompt).toContain("No compiled MEL");
-    expect(prompt).toContain("errors=2");
-    expect(prompt).toContain("warnings=1");
-    // Even when the module didn't compile we still ship the source so
-    // the agent can answer "why doesn't it compile" follow-ups.
-    expect(prompt).toContain("state { bad }");
-  });
-});
 
-describe("buildAgentSystemPrompt — recent conversation tail", () => {
-  it("emits no tail when no turns have landed yet", () => {
-    const ctx = readStudioAgentContext(makeCore(), "state {}", []);
-    const prompt = buildAgentSystemPrompt(ctx);
-    expect(prompt).not.toContain("# Recent conversation");
+    expect(prompt).toContain("compiled: false");
+    expect(prompt).toContain("diagnostics: 2 errors, 1 warnings");
+    expect(prompt).not.toContain("state { bad }");
   });
 
-  it("emits the turns newest-first with user/you framing", () => {
+  it("emits the recent turns newest-first", () => {
     const ctx = readStudioAgentContext(makeCore(), "state {}", [
       {
         turnId: "t3",
         userPrompt: "why is this blocked?",
-        assistantExcerpt: "toggleTodo needs todoCount > 0.",
+        assistantExcerpt: "clearDone is guarded.",
         toolCount: 2,
       },
       {
         turnId: "t2",
-        userPrompt: "seed 5 tasks",
-        assistantExcerpt: "Done — 5 completed.",
-        toolCount: 1,
-      },
-    ]);
-    const prompt = buildAgentSystemPrompt(ctx);
-    expect(prompt).toContain("# Recent conversation");
-    // Pointer to the search tool for older history.
-    expect(prompt).toContain("inspectConversation");
-    // Newest-first numbering: last entry in array is OLDEST shown.
-    // The label is "turn N" where N decreases as we go down.
-    const idxTurn2 = prompt.indexOf("turn 2");
-    const idxTurn1 = prompt.indexOf("turn 1");
-    expect(idxTurn2).toBeGreaterThan(-1);
-    expect(idxTurn1).toBeGreaterThan(idxTurn2);
-    expect(prompt).toContain("user: why is this blocked?");
-    expect(prompt).toContain("you: toggleTodo needs todoCount > 0.");
-    expect(prompt).toContain("· 2 tool");
-  });
-
-  it("marks a tool-only turn (empty excerpt) instead of printing blank", () => {
-    const ctx = readStudioAgentContext(makeCore(), "state {}", [
-      {
-        turnId: "t1",
         userPrompt: "what's focused?",
         assistantExcerpt: "",
         toolCount: 1,
       },
     ]);
     const prompt = buildAgentSystemPrompt(ctx);
+
+    expect(prompt).toContain("# Recent Conversation");
+    const idxTurn2 = prompt.indexOf("turn 2");
+    const idxTurn1 = prompt.indexOf("turn 1");
+    expect(idxTurn2).toBeGreaterThan(-1);
+    expect(idxTurn1).toBeGreaterThan(idxTurn2);
+    expect(prompt).toContain("user: why is this blocked?");
+    expect(prompt).toContain("you: clearDone is guarded.");
     expect(prompt).toContain("you: (tool-only turn)");
   });
-});
 
-describe("buildAgentSystemPrompt — dynamic state is NOT in the prompt", () => {
-  // The whole pivot is: dynamic state flows through tools, never the
-  // prompt. These assertions guard against regression — a future
-  // tempted dev must not add focus/snapshot/availability blocks back
-  // into buildAgentSystemPrompt.
+  it("does not embed dynamic runtime state", () => {
+    const prompt = buildAgentSystemPrompt(
+      readStudioAgentContext(makeCore(), "state {}"),
+    );
 
-  it("does not embed a focus summary line", () => {
-    const ctx = readStudioAgentContext(makeCore(), "state {}");
-    const prompt = buildAgentSystemPrompt(ctx);
     expect(prompt).not.toMatch(/^focus = /m);
-  });
-
-  it("does not embed a ui state line", () => {
-    const ctx = readStudioAgentContext(makeCore(), "state {}");
-    const prompt = buildAgentSystemPrompt(ctx);
     expect(prompt).not.toMatch(/^ui = /m);
-  });
-
-  it("does not embed an availability listing section", () => {
-    const ctx = readStudioAgentContext(makeCore(), "state {}");
-    const prompt = buildAgentSystemPrompt(ctx);
-    // The old prompt had "✓ toggleTodo" / "✗ clearDone" lines. The
-    // new prompt must not enumerate actions — inspectAvailability()
-    // does that.
     expect(prompt).not.toMatch(/^- [✓✗] \w+/m);
-  });
-
-  it("does not embed a snapshot JSON block", () => {
-    const ctx = readStudioAgentContext(makeCore(), "state {}");
-    const prompt = buildAgentSystemPrompt(ctx);
     expect(prompt).not.toContain("```json");
     expect(prompt).not.toContain("Your current state (snapshot)");
   });

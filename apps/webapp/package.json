@@ -17,6 +17,7 @@
     "@ai-sdk/react": "^3.0.170",
     "@manifesto-ai/agent-ai-sdk": "workspace:*",
     "@manifesto-ai/agent-core": "workspace:*",
+    "@manifesto-ai/compiler": "^3.9.0",
     "@manifesto-ai/studio-adapter-monaco": "workspace:*",
     "@manifesto-ai/studio-core": "workspace:*",
     "@manifesto-ai/studio-react": "workspace:*",

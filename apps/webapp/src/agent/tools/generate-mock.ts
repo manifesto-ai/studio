@@ -11,6 +11,7 @@
  * reviewer can see a preview before anything mutates the runtime).
  */
 import type { AgentTool } from "./types.js";
+import { normalizeActionName } from "./action-name.js";
 import {
   generateForAction,
   type GenerateForActionResult,
@@ -55,7 +56,8 @@ export function createGenerateMockTool(): AgentTool<
           type: "string",
           description:
             "User-domain action name to generate args for. Must match " +
-            "an action declared in the current MEL module.",
+            "an action declared in the current MEL module. Graph node ids " +
+            "like `action:createTask` are also accepted and normalized.",
         },
         count: {
           type: "integer",
@@ -74,11 +76,19 @@ export function createGenerateMockTool(): AgentTool<
       },
     },
     run: async (input, ctx) => {
-      if (typeof input?.action !== "string" || input.action === "") {
+      if (typeof input?.action !== "string" || input.action.trim() === "") {
         return {
           ok: false,
           kind: "invalid_input",
           message: "`action` must be a non-empty string",
+        };
+      }
+      const action = normalizeActionName(input.action);
+      if (action === "") {
+        return {
+          ok: false,
+          kind: "invalid_input",
+          message: "`action` must be a non-empty action name",
         };
       }
       const mod = ctx.getModule();
@@ -91,7 +101,7 @@ export function createGenerateMockTool(): AgentTool<
         };
       }
       try {
-        const result = generateForAction(mod, input.action, {
+        const result = generateForAction(mod, action, {
           count: input.count,
           seed: input.seed,
         });

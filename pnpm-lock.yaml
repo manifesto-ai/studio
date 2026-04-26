@@ -12,7 +12,7 @@ importers:
         specifier: ^1.2.0
         version: 1.2.0
       '@types/node':
-        specifier: ^24.0.0
+        specifier: ^24.12.2
         version: 24.12.2
       tsup:
         specifier: ^8.5.1
@@ -27,7 +27,7 @@ importers:
         specifier: 8.0.8
         version: 8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1)
       vitest:
-        specifier: ^4.1.4
+        specifier: ^4.1.5
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@24.12.2)(jsdom@25.0.1)(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))
 
   apps/webapp:
@@ -44,6 +44,9 @@ importers:
       '@manifesto-ai/agent-core':
         specifier: workspace:*
         version: link:../../packages/agent-core
+      '@manifesto-ai/compiler':
+        specifier: ^3.9.0
+        version: 3.9.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@5.4.21(@types/node@24.12.2)(lightningcss@1.32.0))(zod@4.3.6)
       '@manifesto-ai/studio-adapter-monaco':
         specifier: workspace:*
         version: link:../../packages/studio-adapter-monaco
@@ -166,8 +169,8 @@ importers:
         version: link:../studio-core
     devDependencies:
       '@manifesto-ai/compiler':
-        specifier: ^3.8.0
-        version: 3.8.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
+        specifier: ^3.9.0
+        version: 3.9.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
 
   packages/studio-adapter-monaco:
     dependencies:
@@ -176,8 +179,8 @@ importers:
         version: link:../studio-core
     devDependencies:
       '@manifesto-ai/compiler':
-        specifier: ^3.8.0
-        version: 3.8.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
+        specifier: ^3.9.0
+        version: 3.9.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
       jsdom:
         specifier: ^25.0.0
         version: 25.0.1
@@ -188,14 +191,14 @@ importers:
   packages/studio-core:
     dependencies:
       '@manifesto-ai/compiler':
-        specifier: ^3.8.0
-        version: 3.8.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
+        specifier: ^3.9.0
+        version: 3.9.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
       '@manifesto-ai/lineage':
-        specifier: ^3.10.3
-        version: 3.12.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
+        specifier: ^3.12.1
+        version: 3.12.1(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
       '@manifesto-ai/sdk':
-        specifier: ^3.18.0
-        version: 3.18.0(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
+        specifier: ^3.18.1
+        version: 3.18.1(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
       better-sqlite3:
         specifier: ^12.5.0
         version: 12.9.0
@@ -223,8 +226,8 @@ importers:
         version: 3.2.0
     devDependencies:
       '@manifesto-ai/compiler':
-        specifier: ^3.8.0
-        version: 3.8.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
+        specifier: ^3.9.0
+        version: 3.9.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
       '@manifesto-ai/studio-adapter-headless':
         specifier: workspace:*
         version: link:../studio-adapter-headless
@@ -738,8 +741,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@manifesto-ai/compiler@3.8.0':
-    resolution: {integrity: sha512-ik9oeuMkkyajsfoQE7ywt4IMWoQyZL/3GiZSpJRB5rZSvIr+Sk2IbGFl/hKma3pL3CfWqF+4jS2hJydMb9Hphw==}
+  '@manifesto-ai/compiler@3.9.0':
+    resolution: {integrity: sha512-1/hDs56QPOUTfQn4DHnfAngaEqZK4ICLDtIRo6n83EQX85A6wQSWuR8DC231gkrUuNivBgpFfFK6JYtZC/cDMg==}
     peerDependencies:
       '@anthropic-ai/sdk': ^0.26.0
       '@manifesto-ai/core': ^2.13.0
@@ -764,13 +767,13 @@ packages:
     peerDependencies:
       '@manifesto-ai/core': ^2.13.0
 
-  '@manifesto-ai/lineage@3.12.0':
-    resolution: {integrity: sha512-o1IeiG2rRsEmEzBaVYB+MiUZ1GLmA6pNzzkYndPuq21al54PJlP4/0KbUqTI9mmyZWQO94tEQZVeffRcgRyFtQ==}
+  '@manifesto-ai/lineage@3.12.1':
+    resolution: {integrity: sha512-QrU/xt1xIexNnQ1LF9ua4LjQyF0JSEzrLNcz0tI2hAavMRRKozuGvrdDIg4W5sLOWl4jp3qWUDvHurKGxo4URQ==}
     peerDependencies:
       '@manifesto-ai/core': ^2.13.0
 
-  '@manifesto-ai/sdk@3.18.0':
-    resolution: {integrity: sha512-k2EKvTs61a/C4m5BPhfibw0rkipN5BQ5jIEdzCv9k5ewYIq6V782fiJHKy8+E2U3XC7dkunKb8e8N9Mnb7C+uA==}
+  '@manifesto-ai/sdk@3.18.1':
+    resolution: {integrity: sha512-Cg9b9QEBlD+hrwawnr11wMTba7bEsWNE4yVRmjYoeJu6nhMM0ha7h7zWtWgGUanYXwZl+IdW8TnQ97ofyIZPDA==}
 
   '@manifesto-ai/skills@1.2.0':
     resolution: {integrity: sha512-k4rxZbMInfRhFUW3wkJEb77ZdmOp8tZ7xuKNYq65wQRvfsvxGj8NqL9n4sq3G4Lzb1hmZ2N//zqbEXhwNX1/kg==}
@@ -3447,7 +3450,15 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@manifesto-ai/compiler@3.8.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)':
+  '@manifesto-ai/compiler@3.9.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@5.4.21(@types/node@24.12.2)(lightningcss@1.32.0))(zod@4.3.6)':
+    dependencies:
+      '@manifesto-ai/core': 2.13.0(zod@4.3.6)
+      unplugin: 3.0.0
+      zod: 4.3.6
+    optionalDependencies:
+      vite: 5.4.21(@types/node@24.12.2)(lightningcss@1.32.0)
+
+  '@manifesto-ai/compiler@3.9.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)':
     dependencies:
       '@manifesto-ai/core': 2.13.0(zod@4.3.6)
       unplugin: 3.0.0
@@ -3463,19 +3474,19 @@ snapshots:
     dependencies:
       '@manifesto-ai/core': 2.13.0(zod@4.3.6)
 
-  '@manifesto-ai/lineage@3.12.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)':
+  '@manifesto-ai/lineage@3.12.1(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)':
     dependencies:
       '@manifesto-ai/core': 2.13.0(zod@4.3.6)
-      '@manifesto-ai/sdk': 3.18.0(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
+      '@manifesto-ai/sdk': 3.18.1(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
     transitivePeerDependencies:
       - '@anthropic-ai/sdk'
       - openai
       - vite
       - zod
 
-  '@manifesto-ai/sdk@3.18.0(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)':
+  '@manifesto-ai/sdk@3.18.1(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)':
     dependencies:
-      '@manifesto-ai/compiler': 3.8.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
+      '@manifesto-ai/compiler': 3.9.0(@manifesto-ai/core@2.13.0(zod@4.3.6))(vite@8.0.8(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1))(zod@4.3.6)
       '@manifesto-ai/core': 2.13.0(zod@4.3.6)
       '@manifesto-ai/host': 2.9.1(@manifesto-ai/core@2.13.0(zod@4.3.6))
     transitivePeerDependencies:

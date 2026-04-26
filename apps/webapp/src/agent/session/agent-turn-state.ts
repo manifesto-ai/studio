@@ -3,20 +3,19 @@
  *
  * The active LLM turn lifecycle lives in the StudioUi Manifesto
  * runtime (see domain/studio.mel beginAgentTurn / concludeAgentTurn /
- * incrementAgentTurnResend / cancelAgentTurn). AgentLens uses the
- * "live" flavor with a small retry budget. SagaLens uses the
- * "durable" flavor with a larger retry budget and forced tool-only
- * transport.
+ * incrementAgentTurnResend / cancelAgentTurn).
  *
  * Structural termination: a turn ends exactly when the model calls
- * answerAndTurnEnd({ answer }). That tool is the terminal user-visible
- * reply channel and dispatches concludeAgentTurn in the StudioUi
- * runtime.
+ * `endTurn({ summary? })`. The visible reply itself is the assistant
+ * text the model emits — text streams natively in every provider,
+ * which avoids the tool-arg-streaming gap (Ollama/gemma sends tool
+ * calls atomically). `endTurn` is just the structural signal that
+ * dispatches concludeAgentTurn in the StudioUi runtime.
  */
 import type { StudioAgentContext } from "./agent-context.js";
 import { buildAgentSystemPrompt } from "./agent-context.js";
 
-export type AgentTurnMode = "live" | "durable";
+export type AgentTurnMode = "live";
 export type AgentTurnStatus = "running" | "ended";
 
 /**
@@ -33,19 +32,6 @@ export type AgentTurnProjection = {
   readonly resendCount: number;
 };
 
-/**
- * Live AgentLens keeps the retry budget tight. A normal reply should
- * terminate in one invocation; the extra laps are only for providers
- * that emit text without calling the terminal tool.
- */
-export const LIVE_TURN_RESEND_HARD_CAP = 3;
-
-/**
- * Durable SagaLens gives long inspect/propose workflows more room
- * before the shell cancels a pathological loop.
- */
-export const DURABLE_TURN_RESEND_HARD_CAP = 20;
-
 export function buildLiveAgentSystemPrompt(input: {
   readonly agentContext: StudioAgentContext;
   readonly turn: AgentTurnProjection;
@@ -55,43 +41,20 @@ export function buildLiveAgentSystemPrompt(input: {
   const lines: string[] = [
     "",
     "# Agent turn - structural rules",
-    "The Studio runtime has begun a live agent turn. Use inspect / read / dispatch / propose tools when you need current state or mutations.",
-    "When you are ready to answer the user, call `answerAndTurnEnd({ answer })` with the full visible reply. That single tool call delivers the answer and ends the Manifesto turn.",
-    "Do not treat plain text as the final answer. If you can answer immediately, call answerAndTurnEnd immediately.",
-    "If you cannot complete the request, call answerAndTurnEnd with a concise explanation of the blocker.",
+    "The Studio runtime has begun a live agent turn. Use inspect / dispatch tools when you need current state or mutations.",
+    "Reply pattern: type your visible answer as plain assistant text (it streams character-by-character to the user), THEN call `endTurn({ summary? })` as your last tool call to mark the turn complete.",
+    "Without endTurn the runtime may recover by ending plain-text answers or stopping repeated non-terminal loops, but the intended terminal path is still endTurn.",
+    "",
+    "# Asking the user a question",
+    "**The user CANNOT respond mid-turn. They can only reply by starting a new turn.** This means: if you need clarification, missing info, or a yes/no decision from the user, treat that as the END of this turn. Type your question concisely as assistant text, then call endTurn() immediately. Do NOT keep reasoning, do NOT keep retrying, and do NOT keep apologizing. The user will read your question and reply with the next turn.",
+    "",
+    "If you cannot complete the request, type a brief explanation of the blocker, then call endTurn().",
   ];
   if (turn.status === "running" && turn.resendCount > 0) {
     lines.push(
       "",
       `# RESUME - live turn ${turn.id ?? "(unknown)"}, resend #${turn.resendCount}`,
-      "The prior invocation finished without ending the turn. Call answerAndTurnEnd now with the best answer you have.",
-    );
-  }
-  return [base, ...lines].join("\n");
-}
-
-export function buildDurableAgentSystemPrompt(input: {
-  readonly agentContext: StudioAgentContext;
-  readonly turn: AgentTurnProjection;
-}): string {
-  const base = buildAgentSystemPrompt(input.agentContext);
-  const turn = input.turn;
-  const lines: string[] = [
-    "",
-    "# Durable agent turn - structural rules",
-    "You are in a durable agent turn. User-visible replies can only be emitted through the `answerAndTurnEnd({ answer })` tool. Plain text responses are not delivered as the final answer and will not end the turn; toolChoice:required enforces this at the transport layer.",
-    "",
-    "Workflow:",
-    "- Use inspect / read / dispatch / propose tools freely while doing the work.",
-    "- When you are ready to speak to the user, call `answerAndTurnEnd({ answer })` with the full reply text. That single call delivers the answer and ends the turn.",
-    "- If you can answer the user in one go (Q&A, summary, explanation), do it: call answerAndTurnEnd immediately. You do not need any other tool first.",
-    "- If you cannot complete the request, call answerAndTurnEnd with an answer that explains why. The turn ends either way.",
-  ];
-  if (turn.status === "running" && turn.resendCount > 0) {
-    lines.push(
-      "",
-      `# RESUME - durable turn ${turn.id ?? "(unknown)"}, resend #${turn.resendCount}`,
-      "The prior invocation finished without calling answerAndTurnEnd. Call it now with whatever answer you have, even a short acknowledgement of what was attempted. Do not keep working silently.",
+      "The prior invocation finished without ending the turn. Type whatever finishing remark or question you have and call endTurn() now. Do not keep retrying silently.",
     );
   }
   return [base, ...lines].join("\n");
@@ -114,7 +77,7 @@ export function readLiveAgentTurnMode(
 ): AgentTurnMode | null {
   const data = readSnapshotData(core);
   const mode = data?.agentTurnMode;
-  return mode === "live" || mode === "durable" ? mode : null;
+  return mode === "live" ? mode : null;
 }
 
 export function newAgentTurnId(prefix: AgentTurnMode): string {

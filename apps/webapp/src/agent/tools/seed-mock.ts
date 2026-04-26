@@ -19,6 +19,7 @@
  * the agent can describe the partial result.
  */
 import type { AgentTool } from "./types.js";
+import { normalizeActionName } from "./action-name.js";
 import {
   generateForAction,
   type GenerateForActionResult,
@@ -111,7 +112,8 @@ export function createSeedMockTool(): AgentTool<
           type: "string",
           description:
             "User-domain action name to seed. Must match an action declared " +
-            "in the current MEL module.",
+            "in the current MEL module. Graph node ids like `action:createTask` " +
+            "are also accepted and normalized.",
         },
         count: {
           type: "integer",
@@ -130,11 +132,19 @@ export function createSeedMockTool(): AgentTool<
       },
     },
     run: async (input, ctx) => {
-      if (typeof input?.action !== "string" || input.action === "") {
+      if (typeof input?.action !== "string" || input.action.trim() === "") {
         return {
           ok: false,
           kind: "invalid_input",
           message: "`action` must be a non-empty string",
+        };
+      }
+      const action = normalizeActionName(input.action);
+      if (action === "") {
+        return {
+          ok: false,
+          kind: "invalid_input",
+          message: "`action` must be a non-empty action name",
         };
       }
       const mod = ctx.getModule();
@@ -149,7 +159,7 @@ export function createSeedMockTool(): AgentTool<
 
       let generated: GenerateForActionResult;
       try {
-        generated = generateForAction(mod, input.action, {
+        generated = generateForAction(mod, action, {
           count: input.count,
           seed: input.seed,
         });
@@ -173,7 +183,7 @@ export function createSeedMockTool(): AgentTool<
       // subsequent dispatches.
       for (const args of generated.samples) {
         try {
-          const intent = ctx.createIntent(input.action, ...args);
+          const intent = ctx.createIntent(action, ...args);
           const report = await ctx.dispatchAsync(intent);
           if (report.kind === "completed") {
             completed += 1;
@@ -216,7 +226,7 @@ export function createSeedMockTool(): AgentTool<
       return {
         ok: true,
         output: {
-          action: input.action,
+          action,
           attempted: generated.samples.length,
           completed,
           rejected,

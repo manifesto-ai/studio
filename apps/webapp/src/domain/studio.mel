@@ -15,14 +15,23 @@
 domain Studio {
   type FocusKind = "action" | "state" | "computed"
   type FocusOrigin = "graph" | "source" | "diagnostic" | "interact" | "agent"
-  type LensId = "interact" | "snapshot" | "plan" | "history" | "diagnostics" | "agent" | "saga"
+  type LensId = "interact" | "snapshot" | "plan" | "history" | "diagnostics" | "agent"
   // Agent turn = a Manifesto-owned LLM turn lifecycle. `live` is the
-  // normal AgentLens path with a small retry budget; `durable` is the
-  // interruption-resilient SagaLens path with a larger budget. Status
-  // lives in the runtime so the harness can resume until the model
-  // structurally ends the turn through answerAndTurnEnd.
-  type AgentTurnMode = "live" | "durable"
+  // AgentLens path. Status lives in the runtime so the harness can
+  // resume until the model structurally ends the turn through endTurn.
+  type AgentTurnMode = "live"
   type AgentTurnStatus = "running" | "ended"
+  type AgentToolName =
+    "inspectToolAffordances"
+    | "inspectFocus"
+    | "studioDispatch"
+    | "inspectSnapshot"
+    | "inspectAvailability"
+    | "inspectNeighbors"
+    | "explainLegality"
+    | "simulateIntent"
+    | "dispatch"
+    | "endTurn"
   // ViewMode is the mutual-exclusion discriminator for "what view of
   // reality the Studio is currently presenting". `live` is the normal
   // case; `simulate` is a what-if preview against the live snapshot;
@@ -76,7 +85,7 @@ domain Studio {
 
     // ── Active agent turn lifecycle ────────────────────────────────
     // Persisted turn state. A turn is running from beginAgentTurn
-    // until the model itself calls answerAndTurnEnd, which dispatches
+    // until the model itself calls endTurn, which dispatches
     // concludeAgentTurn. Anything in between — dropped streams,
     // refreshed browser, model ramble — leaves the turn running so
     // the harness can resume. Timestamps are intentionally NOT stored
@@ -88,12 +97,35 @@ domain Studio {
     agentTurnPrompt: string | null = null
     agentTurnConclusion: string | null = null
     agentTurnResendCount: number = 0
+    // Tool-result progress guard. The harness records tool outcomes
+    // here; studio.mel owns the no-progress interpretation. Repeating
+    // the same failing tool result ends the active turn instead of
+    // allowing an infinite resend loop.
+    agentLastToolResultName: string | null = null
+    agentLastToolFailureKey: string | null = null
+    agentLastToolFailureReason: string | null = null
+    agentToolFailureRepeatCount: number = 0
+    agentLastToolSuccessKey: string | null = null
+    agentToolSuccessRepeatCount: number = 0
+    agentToolLoopBlockReason: string | null = null
+    agentLastModelFinishKey: string | null = null
+    agentModelFinishRepeatCount: number = 0
+    // Tool admission context. Host runtimes synchronize the user
+    // domain's coarse state into this contract; Studio MEL owns the
+    // actual per-tool admission gates below.
+    agentUserModuleReady: boolean = false
+    agentMelSourceNonEmpty: boolean = false
+    agentFocusedActionName: string | null = null
+    agentFocusedActionAvailable: boolean = false
+    agentLastAdmittedToolName: string | null = null
   }
 
   computed hasFocus = focusedNodeId != null
   computed isLive = viewMode == "live"
   computed isSimulating = viewMode == "simulate"
   computed isScrubbing = viewMode == "scrub"
+  computed agentToolLoopBlocked = agentToolFailureRepeatCount >= 2 || agentToolSuccessRepeatCount >= 2 || agentModelFinishRepeatCount >= 2
+  computed agentHasFocusedAction = agentFocusedActionName != null
 
   // ── Focus actions ────────────────────────────────────────────────
 
@@ -206,10 +238,48 @@ domain Studio {
     }
   }
 
+  // ── Agent tool admission ────────────────────────────────────────
+  // Tool implementations live in the host, but the identity and
+  // availability of tools visible to the LLM live here. The host
+  // synchronizes only coarse user-runtime facts; every actual tool
+  // call must first dispatch requestTool(tool).
+
+  action syncAgentToolContext(
+    userModuleReady: boolean,
+    melSourceNonEmpty: boolean,
+    focusedActionName: string | null,
+    focusedActionAvailable: boolean
+  ) {
+    onceIntent {
+      patch agentUserModuleReady = userModuleReady
+      patch agentMelSourceNonEmpty = melSourceNonEmpty
+      patch agentFocusedActionName = focusedActionName
+      patch agentFocusedActionAvailable = focusedActionAvailable
+    }
+  }
+
+  action requestTool(tool: AgentToolName)
+    available when agentTurnStatus == "running"
+    dispatchable when match(
+      tool,
+      ["inspectSnapshot", agentUserModuleReady],
+      ["inspectAvailability", agentUserModuleReady],
+      ["inspectNeighbors", agentUserModuleReady],
+      ["explainLegality", agentUserModuleReady],
+      ["simulateIntent", agentUserModuleReady && viewMode == "live"],
+      ["dispatch", agentUserModuleReady],
+      true
+    )
+  {
+    onceIntent {
+      patch agentLastAdmittedToolName = tool
+    }
+  }
+
   // ── Agent turn lifecycle ────────────────────────────────────────
   // Only the React/LLM harness calls beginAgentTurn (on user prompt)
-  // and the model calls answerAndTurnEnd, which dispatches
-  // concludeAgentTurn. beginAgentTurn is idempotent across "ended"
+  // and the model calls endTurn, which dispatches concludeAgentTurn.
+  // beginAgentTurn is idempotent across "ended"
   // turns — starting a new one always resets resend count and
   // conclusion. It is rejected while a prior turn is still running
   // so double-sends don't stomp.
@@ -224,6 +294,110 @@ domain Studio {
       patch agentTurnPrompt = prompt
       patch agentTurnConclusion = null
       patch agentTurnResendCount = 0
+      patch agentLastToolResultName = null
+      patch agentLastToolFailureKey = null
+      patch agentLastToolFailureReason = null
+      patch agentToolFailureRepeatCount = 0
+      patch agentLastToolSuccessKey = null
+      patch agentToolSuccessRepeatCount = 0
+      patch agentToolLoopBlockReason = null
+      patch agentLastModelFinishKey = null
+      patch agentModelFinishRepeatCount = 0
+      patch agentLastAdmittedToolName = null
+    }
+  }
+
+  // The LLM harness records each tool outcome, but the loop policy
+  // lives here. One repeated failure is recoverable: the model can
+  // inspect the structured error and choose another path. Repeating
+  // the same success or failure without a terminal endTurn is no
+  // progress, so this action ends the turn from inside the Studio
+  // runtime.
+
+  action recordAgentToolResult(
+    toolName: string,
+    toolResultKey: string,
+    ok: boolean,
+    reason: string
+  )
+    dispatchable when agentTurnStatus == "running"
+  {
+    onceIntent {
+      patch agentToolFailureRepeatCount =
+        ok ? 0 : (agentLastToolFailureKey == toolResultKey ? agentToolFailureRepeatCount + 1 : 1)
+      patch agentToolSuccessRepeatCount =
+        ok ? (agentLastToolSuccessKey == toolResultKey ? agentToolSuccessRepeatCount + 1 : 1) : 0
+      patch agentToolLoopBlockReason =
+        ok
+          ? (agentLastToolSuccessKey == toolResultKey && agentToolSuccessRepeatCount >= 1 ? reason : null)
+          : (agentLastToolFailureKey == toolResultKey && agentToolFailureRepeatCount >= 1 ? reason : null)
+      patch agentTurnStatus =
+        (
+          ok
+            ? agentLastToolSuccessKey == toolResultKey && agentToolSuccessRepeatCount >= 1
+            : agentLastToolFailureKey == toolResultKey && agentToolFailureRepeatCount >= 1
+        ) ? "ended" : agentTurnStatus
+      patch agentTurnConclusion =
+        (
+          ok
+            ? agentLastToolSuccessKey == toolResultKey && agentToolSuccessRepeatCount >= 1
+            : agentLastToolFailureKey == toolResultKey && agentToolFailureRepeatCount >= 1
+        ) ? reason : agentTurnConclusion
+      patch agentLastToolResultName = toolName
+      patch agentLastToolFailureKey = ok ? null : toolResultKey
+      patch agentLastToolFailureReason = ok ? null : reason
+      patch agentLastToolSuccessKey = ok ? toolResultKey : null
+    }
+  }
+
+  // Called once per assistant finish while a turn is still running.
+  // The normal terminal path is still the explicit endTurn tool. This
+  // action covers non-terminal finishes so the runtime, not prompt
+  // prose, owns the escape hatch:
+  // - text with no tool call is treated as a completed answer and
+  //   ends the turn even if the model forgot endTurn
+  // - repeated reasoning-only finishes end as no progress
+  // - tool-call finishes stay running; tool result guards above catch
+  //   repeated successful/failed calls
+
+  action recordAgentModelFinish(
+    finishKey: string,
+    hasText: boolean,
+    hasToolCalls: boolean,
+    reason: string
+  )
+    dispatchable when agentTurnStatus == "running"
+  {
+    onceIntent {
+      patch agentModelFinishRepeatCount =
+        agentLastModelFinishKey == finishKey ? agentModelFinishRepeatCount + 1 : 1
+      patch agentToolLoopBlockReason =
+        hasText && hasToolCalls == false
+          ? null
+          : (
+              hasToolCalls
+                ? agentToolLoopBlockReason
+                : (agentLastModelFinishKey == finishKey && agentModelFinishRepeatCount >= 1 ? reason : agentToolLoopBlockReason)
+            )
+      patch agentTurnStatus =
+        hasText && hasToolCalls == false
+          ? "ended"
+          : (
+              hasToolCalls
+                ? agentTurnStatus
+                : (agentLastModelFinishKey == finishKey && agentModelFinishRepeatCount >= 1 ? "ended" : agentTurnStatus)
+            )
+      patch agentTurnConclusion =
+        hasText && hasToolCalls == false
+          ? reason
+          : (
+              hasToolCalls
+                ? agentTurnConclusion
+                : (agentLastModelFinishKey == finishKey && agentModelFinishRepeatCount >= 1 ? reason : agentTurnConclusion)
+            )
+      patch agentTurnResendCount =
+        hasText && hasToolCalls == false ? agentTurnResendCount : agentTurnResendCount + 1
+      patch agentLastModelFinishKey = finishKey
     }
   }
 
@@ -246,9 +420,8 @@ domain Studio {
   }
 
   // Called by the harness every time it re-invokes the LLM within a
-  // running turn. Exposes a cheap hard-cap — React reads
-  // agentTurnResendCount and cancels when it exceeds the policy
-  // limit, so the LLM can't burn budget forever.
+  // running turn. The count is observational; the user remains in
+  // control of stopping a long-running turn.
 
   action incrementAgentTurnResend()
     dispatchable when agentTurnStatus == "running"

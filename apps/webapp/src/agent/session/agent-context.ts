@@ -1,70 +1,20 @@
 /**
- * Studio agent context — the static payload we ship in the system
- * prompt: identity + tool catalog + MEL source. Everything dynamic
- * (focus, snapshot, availability, graph neighborhood) is introspected
- * by the agent at turn time via dedicated tools. See
- * `apps/webapp/src/agent/tools/inspect-*.ts`.
+ * Studio agent context.
  *
- * Why not embed dynamic state in the prompt?
- *   1. Prompt caching: a stable base (MEL only) lets the provider's
- *      KV cache hit, cutting latency and token cost.
- *   2. Freshness: tool calls see the value at call time, not at
- *      prompt-build time — no stale state risk across a multi-step
- *      turn that mutates the runtime.
- *   3. Agent-shaped reasoning: the model learns to investigate
- *      instead of skimming a pre-rendered dashboard.
- *
- * React-free so this module can live in a future `studio-agent-core`.
+ * The system prompt carries identity, the current admitted tool catalog
+ * contract, a compact domain summary, and a short recent-turn tail.
+ * It deliberately does not carry full MEL source or dynamic runtime
+ * state. The agent must inspect live focus, snapshot, availability,
+ * graph neighbors, and legality through tools at decision time.
  */
 import type { DomainModule, Marker } from "@manifesto-ai/studio-core";
+import { summarizeActionInput } from "./action-input-summary.js";
 
-/** Narrow slice of `StudioCore` the context reader needs. */
 export type AgentContextCore = {
   readonly getModule: () => DomainModule | null;
   readonly getDiagnostics: () => readonly Marker[];
 };
 
-/**
- * Studio UI runtime's snapshot as the agent tools need to see it.
- * Still declared here because multiple tools (inspectFocus) accept
- * this shape; keeping the type central prevents drift.
- */
-export type StudioUiState = {
-  readonly focusedNodeId: string | null;
-  readonly focusedNodeKind: string | null;
-  readonly focusedNodeOrigin: string | null;
-  readonly activeLens: string;
-  readonly viewMode: string;
-  readonly simulationActionName: string | null;
-  readonly scrubEnvelopeId: string | null;
-  readonly activeProjectName: string | null;
-  /** Last finalized user/agent turn. Single-entry memory so the
-   *  agent can recall what it just said without a transcript store. */
-  readonly lastUserPrompt: string | null;
-  readonly lastAgentAnswer: string | null;
-  readonly agentTurnCount: number;
-};
-
-/**
- * Minimal context for the system prompt. After the pivot to
- * introspection tools, the prompt only needs three things:
- *
- *   - `hasModule` + `diagnostics` — so the no-module mode tells the
- *     agent it's looking at a broken editor rather than an empty
- *     domain.
- *   - `melSource` — the compiled MEL source, the agent's ontology.
- *
- * Everything the agent wants to know about live state (focus, snapshot,
- * availability, graph edges) comes from tool calls — see
- * `apps/webapp/src/agent/tools/inspect-*.ts`.
- */
-/**
- * Compact projection of a past turn for the "Recent conversation"
- * tail of the system prompt. `assistantExcerpt` is length-capped so
- * sticking the last 5 turns into every request doesn't blow the
- * token budget. Full history is still available to the agent via
- * the `inspectConversation` tool.
- */
 export type RecentTurn = {
   readonly turnId: string;
   readonly userPrompt: string;
@@ -72,17 +22,39 @@ export type RecentTurn = {
   readonly toolCount: number;
 };
 
+export type DomainActionSummary = {
+  readonly name: string;
+  readonly params: readonly string[];
+  readonly paramHints: readonly string[];
+  readonly inputHint: string | null;
+  readonly hasDispatchableGate: boolean;
+  readonly description: string | null;
+};
+
+export type DomainSummary = {
+  readonly schemaId: string | null;
+  readonly schemaHash: string | null;
+  readonly source: {
+    readonly present: boolean;
+    readonly lineCount: number;
+    readonly charCount: number;
+  };
+  readonly stateFields: readonly string[];
+  readonly computedFields: readonly string[];
+  readonly actions: readonly DomainActionSummary[];
+  readonly graph: {
+    readonly nodeCount: number;
+    readonly edgeCount: number;
+  };
+};
+
 export type StudioAgentContext = {
   readonly hasModule: boolean;
-  readonly melSource: string;
+  readonly domainSummary: DomainSummary;
   readonly diagnostics: {
     readonly errors: number;
     readonly warnings: number;
   };
-  /**
-   * Last few agent turns, newest-first. Empty on a fresh session
-   * (no turns yet). Capped length keeps the system prompt bounded.
-   */
   readonly recentTurns: readonly RecentTurn[];
 };
 
@@ -94,93 +66,57 @@ export function readStudioAgentContext(
   const mod = userCore.getModule();
   return {
     hasModule: mod !== null,
-    melSource,
+    domainSummary: buildDomainSummary(mod, melSource),
     diagnostics: countDiagnostics(userCore.getDiagnostics()),
     recentTurns,
   };
 }
 
-/**
- * Build the agent's system prompt. Identity + tool catalog + MEL
- * source only — every dynamic value (focus, snapshot, availability,
- * graph edges) is introspected through tools at turn time.
- */
 export function buildAgentSystemPrompt(ctx: StudioAgentContext): string {
-  // Design note — what goes in the system prompt vs. what's pulled
-  // via tools.
-  //
-  //   System prompt: identity + tool catalog + MEL source. These are
-  //   stable across turns, let the prompt cache hit on the base
-  //   prefix, and give the agent a fixed ontological frame.
-  //
-  //   Tool calls: every dynamic value — focus, snapshot, availability,
-  //   graph neighborhood, diagnostics. The agent introspects when it
-  //   needs to, so the prompt never ships stale state and small
-  //   models learn to investigate instead of reading a dashboard.
-  //
-  // This matches Manifesto's own structure: the schema/MEL is what
-  // the runtime "is", the snapshot is what the runtime "is like right
-  // now". Treating them the same in the prompt conflates identity
-  // with state.
   const lines: string[] = [
-    "You know this Manifesto runtime from the inside. The MEL below is your soul source code — lived knowledge, not reference material. Everything dynamic (focus, snapshot, availability, graph neighbors) you introspect via tools; never guess.",
+    "You are operating a Manifesto runtime through a compact schema summary plus live tools. Treat the summary as identity, not state. Everything dynamic (focus, snapshot, availability, graph neighbors, legality) must be inspected through tools; never guess.",
     "",
     "# Tools",
-    "Inspect (dynamic state — call these first when questions touch 'this', 'now', 'current', counts, or relations):",
-    "- inspectFocus() — which node is focused + active lens / view mode.",
-    "- inspectSnapshot() — current state data + computed field values.",
-    "- inspectAvailability() — list of actions with live availability flags.",
-    "- inspectNeighbors(nodeId) — graph edges touching a node (feeds / mutates / unlocks).",
-    "- simulateIntent(action, args) — deterministic dry-run preview without dispatching; use before recommending a write.",
-    "- locateSource(target) — source span + preview for action/computed/state citations.",
-    "- inspectLineage({limit?, beforeWorldId?, fields?, intentType?}) — runtime dispatch history. DEFAULT is compact (worldId + intent only); opt into `changedPaths` / `parent` / `schemaHash` / `createdAt` via `fields` when needed.",
-    "- inspectConversation({limit?, beforeTurnId?, fields?}) — this agent's own chat history (user prompts + your prior answers + tool traces). DEFAULT is compact (prompt + toolCount); opt into `assistantText` / `reasoning` / `toolCalls` via `fields`. Use to avoid repeating past explanations.",
-    "- explainLegality(action, args) — why a specific action is blocked, with the failing guard expression.",
-    "Source reads (MEL editing):",
-    "- inspectSourceOutline() — list every declaration in the current MEL with line ranges. Call first before any edit.",
-    "- readDeclaration({target}) — exact source text for one declaration (domain/type/state/computed/action). Read what is actually there; never reconstruct from memory.",
-    "- findInSource({query, limit?}) — substring search in the current MEL; useful when the target name is uncertain.",
+    "- inspectToolAffordances({toolName?, includeUnavailable?}) — live catalog of tools admitted by studio.mel; use this after any unavailable/unknown tool or when choosing a path.",
+    "Inspect:",
+    "- inspectFocus() — current focused node and Studio UI context.",
+    "- inspectSnapshot() — current state data and computed values.",
+    "- inspectAvailability() — live domain action availability.",
+    "- inspectNeighbors({nodeId}) — graph edges touching a state/computed/action node.",
+    "- explainLegality({action, args}) — why a specific domain action is blocked.",
+    "- simulateIntent({action, args}) — deterministic dry-run preview without dispatching.",
     "Act:",
-    "- dispatch(action, args) — user-domain writes.",
-    "- studioDispatch(action, args) — Studio UI writes (focus, lens, simulation, scrub).",
-    "- seedMock({action, count, seed?}) — generate + dispatch N plausible sample args in one call. Use for 'seed / mock / 만들어줘' asks.",
-    "- generateMock({action, count, seed?}) — generate samples WITHOUT dispatching (preview-only). Prefer seedMock when the user wants the data to actually land.",
-    "Propose source changes:",
-    "- createProposal({proposedSource, title?, rationale?}) — the ONLY way to change MEL. Ship the full proposed source; Studio shadow-builds it and shows an Accept/Reject diff. If it comes back with diagnostics, the response includes them under detail.failureReport — read them, re-read the failing spans with readDeclaration, then re-propose.",
+    "- dispatch({action, args}) — user-domain writes. Runtime legality still decides whether the requested action can run.",
+    "- studioDispatch({action, args}) — Studio UI writes such as focus, lens, simulation, and scrub.",
+    "- endTurn({summary?}) — terminal signal after your visible assistant text.",
     "",
-    "# How to ground yourself",
+    "# Grounding Rules",
     "- Deictic references ('this', 'that', 'it', '이것', '이거', '이건', '그거') → inspectFocus() first.",
     "- State, count, value, or computed questions → inspectSnapshot().",
-    "- Relation and dependency questions → inspectNeighbors(nodeId).",
-    "- Blocked actions → explainLegality(action, args).",
-    "- Adding a focused action is allowed when the user asks for a small source change, but inspectSourceOutline() and readDeclaration({target}) must happen first.",
-    "- Do not answer with a plain-text proposal summary for source edits; call createProposal.",
-    "- Do not write the full MEL source yourself in the chat response; put the complete proposed source only in createProposal({proposedSource}).",
+    "- Relation and dependency questions → inspectNeighbors({nodeId}).",
+    "- Blocked actions → explainLegality({action, args}).",
+    "- Unknown or unavailable tools → inspectToolAffordances({toolName}).",
+    "- Enum/literal params must use the exact listed value, e.g. use `med`, not a translated label like `보통`.",
+    "- Domain actions are not tool names. If you need to run an action like `addTodo`, call `dispatch({action: \"addTodo\", args: [...]})`.",
+    "- You do not have source-authoring tools in this runtime. If the user asks for a MEL edit, explain that the current admitted tool catalog cannot edit source instead of inventing a tool.",
   ];
 
   if (ctx.hasModule) {
-    lines.push("", "# Your soul (MEL)", "```mel", ctx.melSource, "```");
+    appendDomainSummary(lines, ctx.domainSummary);
   } else {
     lines.push(
       "",
-      `# No compiled MEL (errors=${ctx.diagnostics.errors}, warnings=${ctx.diagnostics.warnings})`,
+      `# Domain Summary`,
+      `compiled: false`,
+      `diagnostics: ${ctx.diagnostics.errors} errors, ${ctx.diagnostics.warnings} warnings`,
+      `source: ${formatSourceSummary(ctx.domainSummary.source)}`,
     );
-    if (ctx.melSource.trim() !== "") {
-      lines.push("", "```mel", ctx.melSource, "```");
-    }
   }
 
-  // Recent conversation tail — always injected for short-horizon
-  // continuity so the agent can reference the last few turns without
-  // a tool round-trip. Intentionally placed AFTER the MEL so the
-  // identity+tools+MEL prefix stays stable for prompt-cache hits;
-  // only this tail varies per turn. Older history is searchable via
-  // `inspectConversation` (explicit pointer in the section header).
   if (ctx.recentTurns.length > 0) {
     lines.push(
       "",
-      `# Recent conversation (${ctx.recentTurns.length} most recent turn${ctx.recentTurns.length === 1 ? "" : "s"}, newest first)`,
-      "Older turns are searchable via `inspectConversation({beforeTurnId, fields?})`.",
+      `# Recent Conversation (${ctx.recentTurns.length} most recent turn${ctx.recentTurns.length === 1 ? "" : "s"}, newest first)`,
       "",
     );
     for (const [i, t] of ctx.recentTurns.entries()) {
@@ -198,6 +134,115 @@ export function buildAgentSystemPrompt(ctx: StudioAgentContext): string {
   return lines.join("\n");
 }
 
+function appendDomainSummary(lines: string[], summary: DomainSummary): void {
+  lines.push(
+    "",
+    "# Domain Summary",
+    `compiled: true`,
+    `schema: ${summary.schemaId ?? "(unknown)"}${summary.schemaHash === null ? "" : ` @ ${summary.schemaHash}`}`,
+    `source: ${formatSourceSummary(summary.source)}`,
+    `graph: ${summary.graph.nodeCount} nodes, ${summary.graph.edgeCount} edges`,
+    `state: ${formatNameList(summary.stateFields)}`,
+    `computed: ${formatNameList(summary.computedFields)}`,
+    `actions: ${formatActionList(summary.actions)}`,
+  );
+}
+
+function buildDomainSummary(
+  module: DomainModule | null,
+  melSource: string,
+): DomainSummary {
+  const source = summarizeSource(melSource);
+  if (module === null) {
+    return {
+      schemaId: null,
+      schemaHash: null,
+      source,
+      stateFields: [],
+      computedFields: [],
+      actions: [],
+      graph: { nodeCount: 0, edgeCount: 0 },
+    };
+  }
+  const schema = asRecord(module.schema);
+  const state = asRecord(schema?.state);
+  const computed = asRecord(schema?.computed);
+  const actions = asRecord(schema?.actions);
+  return {
+    schemaId: typeof schema?.id === "string" ? schema.id : null,
+    schemaHash: typeof schema?.hash === "string" ? schema.hash : null,
+    source,
+    stateFields: Object.keys(asRecord(state?.fields) ?? {}).sort(),
+    computedFields: Object.keys(asRecord(computed?.fields) ?? {}).sort(),
+    actions: Object.entries(actions ?? {})
+      .map(([name, value]) => summarizeAction(name, value, schema))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    graph: {
+      nodeCount: module.graph?.nodes?.length ?? 0,
+      edgeCount: module.graph?.edges?.length ?? 0,
+    },
+  };
+}
+
+function summarizeAction(
+  name: string,
+  value: unknown,
+  schema: unknown,
+): DomainActionSummary {
+  const spec = asRecord(value);
+  const input = summarizeActionInput(value, schema);
+  return {
+    name,
+    params: Array.isArray(spec?.params)
+      ? spec.params.filter((param): param is string => typeof param === "string")
+      : [],
+    paramHints: input.paramHints,
+    inputHint: input.inputHint,
+    hasDispatchableGate: spec?.dispatchable !== undefined,
+    description:
+      typeof spec?.description === "string" && spec.description.trim() !== ""
+        ? spec.description.trim()
+        : null,
+  };
+}
+
+function summarizeSource(source: string): DomainSummary["source"] {
+  const trimmed = source.trim();
+  return {
+    present: trimmed !== "",
+    lineCount: trimmed === "" ? 0 : source.split(/\r?\n/).length,
+    charCount: source.length,
+  };
+}
+
+function formatSourceSummary(source: DomainSummary["source"]): string {
+  return source.present
+    ? `${source.lineCount} lines, ${source.charCount} chars`
+    : "empty";
+}
+
+function formatNameList(values: readonly string[], limit = 40): string {
+  if (values.length === 0) return "(none)";
+  const shown = values.slice(0, limit);
+  const suffix = values.length > shown.length ? `, +${values.length - shown.length} more` : "";
+  return `${shown.join(", ")}${suffix}`;
+}
+
+function formatActionList(actions: readonly DomainActionSummary[]): string {
+  if (actions.length === 0) return "(none)";
+  const shown = actions.slice(0, 40).map((action) => {
+    const params =
+      action.paramHints.length === 0 ? "" : `(${action.paramHints.join(", ")})`;
+    const gate = action.hasDispatchableGate ? " [guarded]" : "";
+    const description =
+      action.description === null ? "" : ` — ${truncate(action.description, 72)}`;
+    return `${action.name}${params}${gate}${description}`;
+  });
+  const suffix =
+    actions.length > shown.length ? `, +${actions.length - shown.length} more` : "";
+  return `${shown.join("; ")}${suffix}`;
+}
+
 function countDiagnostics(
   markers: readonly Marker[],
 ): { readonly errors: number; readonly warnings: number } {
@@ -208,4 +253,14 @@ function countDiagnostics(
     else if (m.severity === "warning") warnings += 1;
   }
   return { errors, warnings };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max - 3)}...` : value;
 }

@@ -51,6 +51,29 @@ describe("explainLegality — admitted", () => {
     });
     expect(res.output.summary).toMatch(/dispatchable/i);
   });
+
+  it("normalizes graph action node ids before checking legality", async () => {
+    const seen: string[] = [];
+    const res = await runLegality(
+      { action: "action:restoreTask", args: ["t1"] },
+      makeCtx({
+        listActionNames: () => ["restoreTask"],
+        isActionAvailable: (action) => {
+          seen.push(action);
+          return true;
+        },
+        createIntent: (action, ...args) => {
+          seen.push(action);
+          return { action, args };
+        },
+      }),
+    );
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.output.action).toBe("restoreTask");
+    expect(seen).toEqual(["restoreTask", "restoreTask"]);
+  });
 });
 
 describe("explainLegality — blocked at the `available` layer", () => {

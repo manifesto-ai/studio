@@ -64,8 +64,7 @@ export type StudioUiSnapshot = {
     | "plan"
     | "history"
     | "diagnostics"
-    | "agent"
-    | "saga";
+    | "agent";
   readonly viewMode: "live" | "simulate" | "scrub";
   readonly simulationActionName: string | null;
   readonly scrubEnvelopeId: string | null;
@@ -77,18 +76,34 @@ export type StudioUiSnapshot = {
   readonly agentTurnCount: number;
   /** Manifesto-owned active LLM turn. `null` / `"ended"` means no
    *  active turn. `"running"` means the harness should keep
-   *  re-invoking the LLM until answerAndTurnEnd concludes it. */
+   *  re-invoking the LLM until endTurn concludes it. */
   readonly agentTurnId: string | null;
-  readonly agentTurnMode: "live" | "durable" | null;
+  readonly agentTurnMode: "live" | null;
   readonly agentTurnStatus: "running" | "ended" | null;
   readonly agentTurnPrompt: string | null;
   readonly agentTurnConclusion: string | null;
   readonly agentTurnResendCount: number;
+  readonly agentLastToolResultName: string | null;
+  readonly agentLastToolFailureKey: string | null;
+  readonly agentLastToolFailureReason: string | null;
+  readonly agentToolFailureRepeatCount: number;
+  readonly agentLastToolSuccessKey: string | null;
+  readonly agentToolSuccessRepeatCount: number;
+  readonly agentToolLoopBlockReason: string | null;
+  readonly agentLastModelFinishKey: string | null;
+  readonly agentModelFinishRepeatCount: number;
+  readonly agentUserModuleReady: boolean;
+  readonly agentMelSourceNonEmpty: boolean;
+  readonly agentFocusedActionName: string | null;
+  readonly agentFocusedActionAvailable: boolean;
+  readonly agentLastAdmittedToolName: string | null;
   /** Computed projections. */
   readonly hasFocus: boolean;
   readonly isLive: boolean;
   readonly isSimulating: boolean;
   readonly isScrubbing: boolean;
+  readonly agentToolLoopBlocked: boolean;
+  readonly agentHasFocusedAction: boolean;
 };
 
 const EMPTY_SNAPSHOT: StudioUiSnapshot = {
@@ -109,10 +124,26 @@ const EMPTY_SNAPSHOT: StudioUiSnapshot = {
   agentTurnPrompt: null,
   agentTurnConclusion: null,
   agentTurnResendCount: 0,
+  agentLastToolResultName: null,
+  agentLastToolFailureKey: null,
+  agentLastToolFailureReason: null,
+  agentToolFailureRepeatCount: 0,
+  agentLastToolSuccessKey: null,
+  agentToolSuccessRepeatCount: 0,
+  agentToolLoopBlockReason: null,
+  agentLastModelFinishKey: null,
+  agentModelFinishRepeatCount: 0,
+  agentUserModuleReady: false,
+  agentMelSourceNonEmpty: false,
+  agentFocusedActionName: null,
+  agentFocusedActionAvailable: false,
+  agentLastAdmittedToolName: null,
   hasFocus: false,
   isLive: true,
   isSimulating: false,
   isScrubbing: false,
+  agentToolLoopBlocked: false,
+  agentHasFocusedAction: false,
 };
 
 type StudioUiContextValue = {
@@ -145,6 +176,12 @@ type StudioUiContextValue = {
   readonly resetScrub: () => void;
   readonly switchProject: (name: string) => void;
   readonly recordAgentTurn: (prompt: string, answer: string) => void;
+  readonly syncAgentToolContext: (
+    userModuleReady: boolean,
+    melSourceNonEmpty: boolean,
+    focusedActionName: string | null,
+    focusedActionAvailable: boolean,
+  ) => void;
   readonly beginAgentTurn: (
     id: string,
     mode: NonNullable<StudioUiSnapshot["agentTurnMode"]>,
@@ -315,6 +352,18 @@ export function StudioUiProvider({
       switchProject: (name) => dispatch("switchProject", [name]),
       recordAgentTurn: (prompt, answer) =>
         dispatch("recordAgentTurn", [prompt, answer]),
+      syncAgentToolContext: (
+        userModuleReady,
+        melSourceNonEmpty,
+        focusedActionName,
+        focusedActionAvailable,
+      ) =>
+        dispatch("syncAgentToolContext", [
+          userModuleReady,
+          melSourceNonEmpty,
+          focusedActionName,
+          focusedActionAvailable,
+        ]),
       beginAgentTurn: (id, mode, prompt) =>
         dispatch("beginAgentTurn", [id, mode, prompt]),
       concludeAgentTurn: (answer) =>
@@ -371,10 +420,35 @@ function readSnapshot(core: StudioCore): StudioUiSnapshot {
       typeof data.agentTurnResendCount === "number"
         ? data.agentTurnResendCount
         : 0,
+    agentLastToolResultName: asStringOrNull(data.agentLastToolResultName),
+    agentLastToolFailureKey: asStringOrNull(data.agentLastToolFailureKey),
+    agentLastToolFailureReason: asStringOrNull(data.agentLastToolFailureReason),
+    agentToolFailureRepeatCount:
+      typeof data.agentToolFailureRepeatCount === "number"
+        ? data.agentToolFailureRepeatCount
+        : 0,
+    agentLastToolSuccessKey: asStringOrNull(data.agentLastToolSuccessKey),
+    agentToolSuccessRepeatCount:
+      typeof data.agentToolSuccessRepeatCount === "number"
+        ? data.agentToolSuccessRepeatCount
+        : 0,
+    agentToolLoopBlockReason: asStringOrNull(data.agentToolLoopBlockReason),
+    agentLastModelFinishKey: asStringOrNull(data.agentLastModelFinishKey),
+    agentModelFinishRepeatCount:
+      typeof data.agentModelFinishRepeatCount === "number"
+        ? data.agentModelFinishRepeatCount
+        : 0,
+    agentUserModuleReady: data.agentUserModuleReady === true,
+    agentMelSourceNonEmpty: data.agentMelSourceNonEmpty === true,
+    agentFocusedActionName: asStringOrNull(data.agentFocusedActionName),
+    agentFocusedActionAvailable: data.agentFocusedActionAvailable === true,
+    agentLastAdmittedToolName: asStringOrNull(data.agentLastAdmittedToolName),
     hasFocus: Boolean(computed.hasFocus),
     isLive: computed.isLive !== false,
     isSimulating: Boolean(computed.isSimulating),
     isScrubbing: Boolean(computed.isScrubbing),
+    agentToolLoopBlocked: Boolean(computed.agentToolLoopBlocked),
+    agentHasFocusedAction: Boolean(computed.agentHasFocusedAction),
   };
 }
 
@@ -407,8 +481,7 @@ function asLensId(v: unknown): StudioUiSnapshot["activeLens"] | null {
     v === "plan" ||
     v === "history" ||
     v === "diagnostics" ||
-    v === "agent" ||
-    v === "saga"
+    v === "agent"
     ? v
     : null;
 }
@@ -422,5 +495,5 @@ function asAgentTurnStatus(v: unknown): StudioUiSnapshot["agentTurnStatus"] {
 }
 
 function asAgentTurnMode(v: unknown): StudioUiSnapshot["agentTurnMode"] {
-  return v === "live" || v === "durable" ? v : null;
+  return v === "live" ? v : null;
 }

@@ -18,6 +18,7 @@
  * `../__tests__/import-boundaries.test.ts`.
  */
 import type { AgentTool, ToolRunResult } from "./types.js";
+import { normalizeActionName } from "./action-name.js";
 
 /**
  * The StudioCore slice this tool needs. Each caller (real core, test
@@ -115,7 +116,8 @@ const JSON_SCHEMA: Record<string, unknown> = {
   properties: {
     action: {
       type: "string",
-      description: "The action name exactly as declared in the MEL module.",
+      description:
+        "The action name as declared in the MEL module. Graph node ids like `action:restoreTask` are also accepted and normalized.",
     },
     args: {
       type: "array",
@@ -148,7 +150,7 @@ export async function runLegality(
     typeof input !== "object" ||
     input === null ||
     typeof input.action !== "string" ||
-    input.action === ""
+    input.action.trim() === ""
   ) {
     return {
       ok: false,
@@ -158,7 +160,16 @@ export async function runLegality(
         safeStringify(input),
     };
   }
-  const action = input.action;
+  const action = normalizeActionName(input.action);
+  if (action === "") {
+    return {
+      ok: false,
+      kind: "invalid_input",
+      message:
+        "explainLegality requires a non-empty action name — received " +
+        safeStringify(input.action),
+    };
+  }
   const args = Array.isArray(input.args) ? input.args : [];
 
   const known = ctx.listActionNames?.();

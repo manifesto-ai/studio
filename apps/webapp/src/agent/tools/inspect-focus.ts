@@ -33,6 +33,21 @@ export type InspectFocusOutput = {
   readonly lastUserPrompt: string | null;
   readonly lastAgentAnswer: string | null;
   readonly agentTurnCount: number;
+  readonly agentLastToolResultName?: string | null;
+  readonly agentLastToolFailureKey?: string | null;
+  readonly agentLastToolFailureReason?: string | null;
+  readonly agentToolFailureRepeatCount?: number;
+  readonly agentLastToolSuccessKey?: string | null;
+  readonly agentToolSuccessRepeatCount?: number;
+  readonly agentToolLoopBlocked?: boolean;
+  readonly agentToolLoopBlockReason?: string | null;
+  readonly agentLastModelFinishKey?: string | null;
+  readonly agentModelFinishRepeatCount?: number;
+  readonly agentUserModuleReady?: boolean;
+  readonly agentMelSourceNonEmpty?: boolean;
+  readonly agentFocusedActionName?: string | null;
+  readonly agentFocusedActionAvailable?: boolean;
+  readonly agentLastAdmittedToolName?: string | null;
 };
 
 export function createInspectFocusTool(): AgentTool<

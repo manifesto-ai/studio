@@ -184,6 +184,30 @@ describe("generateMock", () => {
     expect(result.output.samples).toHaveLength(2);
     expect(result.output.paramNames).toEqual(["newFilter"]);
   });
+
+  it("accepts graph action node ids", async () => {
+    const { createGenerateMockTool } = await import("../generate-mock.js");
+    const tool = createGenerateMockTool();
+    const fakeModule = {
+      schema: {
+        actions: {
+          setFilter: {
+            params: ["newFilter"],
+            inputType: { kind: "primitive", type: "string" },
+          },
+        },
+        types: {},
+      },
+    } as never;
+    const result = await tool.run(
+      { action: "action:setFilter", count: 1, seed: 7 },
+      { getModule: () => fakeModule },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output.action).toBe("setFilter");
+  });
 });
 
 describe("inspectLineage", () => {
@@ -500,6 +524,28 @@ describe("seedMock", () => {
     expect(dispatched).toHaveLength(3);
   });
 
+  it("normalizes graph action node ids before seeding", async () => {
+    const { createSeedMockTool } = await import("../seed-mock.js");
+    const dispatched: unknown[] = [];
+    const tool = createSeedMockTool();
+    const result = await tool.run(
+      { action: "action:setFilter", count: 1, seed: 1 },
+      {
+        getModule: () => fakeModule,
+        createIntent: (action, ...args) => ({ type: action, input: args }),
+        dispatchAsync: async (intent) => {
+          dispatched.push(intent);
+          return { kind: "completed" };
+        },
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output.action).toBe("setFilter");
+    expect(dispatched[0]).toMatchObject({ type: "setFilter" });
+  });
+
   it("captures rejection code + message so the agent can explain WHY", async () => {
     const { createSeedMockTool } = await import("../seed-mock.js");
     const tool = createSeedMockTool();
@@ -653,6 +699,8 @@ describe("inspectAvailability", () => {
         name === "toggleTodo"
           ? {
               paramNames: ["id"],
+              paramHints: ["id: string"],
+              inputHint: "id: string",
               hasDispatchableGate: true,
               description: "toggle done",
             }
@@ -666,6 +714,8 @@ describe("inspectAvailability", () => {
       name: "toggleTodo",
       available: true,
       paramNames: ["id"],
+      paramHints: ["id: string"],
+      inputHint: "id: string",
       hasDispatchableGate: true,
       description: "toggle done",
     });

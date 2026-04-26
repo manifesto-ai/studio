@@ -1,60 +1,51 @@
 /**
- * AgentLens — AI SDK chat surface.
+ * AgentLens - minimal live Manifesto tool loop.
  *
- * Transport: browser ⇄ `/api/agent/chat` ⇄ configured AI SDK provider. The
- * server handler streams `toUIMessageStreamResponse()` back; `useChat`
- * consumes it and manages the message list.
- *
- * Tool execution: client-side. `onToolCall` dispatches the model's
- * tool calls against our local `ToolRegistry` (which wraps the live
- * Manifesto runtime) and resolves with the result. AI SDK then
- * auto-resubmits via `sendAutomaticallyWhen` so the model can
- * observe the tool result and continue reasoning.
- *
- * Message shape: each `UIMessage.parts[]` entry is either:
- *   - `{type: "text", text}` — assistant/user prose
- *   - `{type: "tool-<name>", state, input, output?}` — tool invocation
- *   - `{type: "reasoning", text}` — thinking tokens (for capable models)
- *
- * The UI walks these parts in order so a single assistant turn can
- * interleave "think → call → explain → call → conclude" naturally.
- *
- * Styling stays true to the earlier Manifesto-flavored pass:
- *   - Hairline status strip (model name, clear button).
- *   - User bubbles right-aligned in violet-hot.
- *   - Assistant blocks prefixed by a 2px violet accent bar.
- *   - Tool rows as `▸ toolName { args } → ok/error`, channel-colored.
- *   - Reasoning as muted italic monospace, collapsible.
+ * This lens is intentionally thin:
+ *   1. Begin a live agent turn in studio.mel.
+ *   2. Build a static identity prompt.
+ *   3. Expose only currently-available runtime tools.
+ *   4. Execute model-selected tools after the same guard recheck.
+ *   5. Keep looping until the model calls endTurn.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useStudio } from "@manifesto-ai/studio-react";
-import type { EditorAdapter, StudioCore } from "@manifesto-ai/studio-core";
-import { useStudioUi } from "@/domain/StudioUiRuntime";
-import {
-  useChat,
-  type UseChatHelpers,
-} from "@ai-sdk/react";
+import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
+  type UIDataTypes,
   type UIMessage,
   type UIMessagePart,
-  type UIDataTypes,
   type UITools,
 } from "ai";
+import { AnimatePresence, motion } from "motion/react";
+import { useStudio } from "@manifesto-ai/studio-react";
+import type { EditorAdapter, StudioCore } from "@manifesto-ai/studio-core";
+import {
+  useStudioUi,
+  type StudioUiSnapshot,
+} from "@/domain/StudioUiRuntime";
 import {
   bindTool,
   createToolRegistry,
-  type ToolRegistry,
+  type ToolRunResult,
 } from "../tools/types.js";
 import {
-  createLegalityTool,
-  type LegalityContext,
-} from "../tools/legality.js";
+  admitToolCall,
+  createAdmittedToolRegistry,
+  createInspectToolAffordancesTool,
+  rejectUnavailableTool,
+  type ToolAdmissionRuntime,
+  type ToolImplementation,
+} from "../tools/affordances.js";
 import {
   createDispatchTool,
   type DispatchContext,
   type DispatchResultLike,
 } from "../tools/dispatch.js";
+import {
+  createLegalityTool,
+  type LegalityContext,
+} from "../tools/legality.js";
 import {
   createStudioDispatchTool,
   type StudioDispatchContext,
@@ -81,100 +72,48 @@ import {
   type SimulateIntentContext,
 } from "../tools/simulate-intent.js";
 import {
-  createSourceMapTool,
-  type SourceMapContext,
-} from "../tools/source-map.js";
-import {
-  createGenerateMockTool,
-  type GenerateMockContext,
-} from "../tools/generate-mock.js";
-import {
-  createSeedMockTool,
-  type SeedMockContext,
-} from "../tools/seed-mock.js";
-import {
-  createInspectLineageTool,
-  type FullLineageEntry,
-  type InspectLineageContext,
-  type WorldOriginLike,
-} from "../tools/inspect-lineage.js";
-import {
-  createInspectConversationTool,
-  type FullConversationTurn,
-  type InspectConversationContext,
-} from "../tools/inspect-conversation.js";
-import {
-  createCreateProposalTool,
-  type CreateProposalContext,
-} from "../tools/create-proposal.js";
-import {
-  createInspectSourceOutlineTool,
-  type InspectSourceOutlineContext,
-} from "../tools/inspect-source-outline.js";
-import {
-  createReadDeclarationTool,
-  type ReadDeclarationContext,
-} from "../tools/read-declaration.js";
-import {
-  createFindInSourceTool,
-  type FindInSourceContext,
-} from "../tools/find-in-source.js";
-import {
-  createAnswerAndTurnEndTool,
-  type AnswerAndTurnEndContext,
-} from "../tools/answer-and-turn-end.js";
-import {
-  readStudioAgentContext,
-} from "../session/agent-context.js";
+  createEndTurnTool,
+  type EndTurnContext,
+} from "../tools/end-turn.js";
+import { readStudioAgentContext } from "../session/agent-context.js";
+import { buildRecentTurnsFromMessages } from "../session/recent-turns.js";
 import {
   buildLiveAgentSystemPrompt,
-  LIVE_TURN_RESEND_HARD_CAP,
   newAgentTurnId,
   readLiveAgentTurnMode,
   readLiveAgentTurnStatus,
+  type AgentTurnProjection,
 } from "../session/agent-turn-state.js";
-import { buildRecentTurnsFromMessages } from "../session/recent-turns.js";
-import {
-  verifyMelProposal,
-} from "../session/proposal-verifier.js";
-import type { AgentProposal } from "../session/proposal-buffer.js";
 import {
   buildToolSchemaMap,
   executeToolLocally,
 } from "../adapters/ai-sdk-tools.js";
 import { MarkdownBody } from "./MarkdownBody.js";
-import { ProposalPreview } from "./ProposalPreview.js";
-
-const MODEL_LABEL_FALLBACK = "server-selected model";
-
-type AgentModelConfigResponse = {
-  readonly label?: unknown;
-  readonly status?: unknown;
-};
+import { summarizeActionInput } from "../session/action-input-summary.js";
 
 export function AgentLens(): JSX.Element {
   const { core, adapter } = useStudio();
   const ui = useStudioUi();
-  const [proposal, setProposal] = useState<AgentProposal | null>(null);
+  const [draft, setDraft] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
 
-  // Tool contexts — same pattern as before. Each tool sees only the
-  // narrow slice it declares. Refs let closures read live values
-  // without busting the useMemo cache every render.
   const uiSnapshotRef = useRef(ui.snapshot);
   uiSnapshotRef.current = ui.snapshot;
 
   const uiRef = useRef(ui);
   uiRef.current = ui;
 
-  // Reading MEL source can't go through useMemo — adapter.getSource()
-  // reads live editor content, which isn't a value React tracks. We
-  // call it at send/tool time so source reflects what's on screen.
+  const optimisticTurnRunningRef = useRef(false);
+  useEffect(() => {
+    optimisticTurnRunningRef.current = ui.snapshot.agentTurnStatus === "running";
+  }, [ui.snapshot.agentTurnStatus]);
+
   const readMelSource = useCallback(
     (): string => (adapter !== null ? safeGetSource(adapter) : ""),
     [adapter],
   );
 
-  const registry = useMemo<ToolRegistry>(() => {
+  const toolImplementations = useMemo<readonly ToolImplementation[]>(() => {
     const userCtx = buildUserToolContext(core);
     const inspectFocusCtx: InspectFocusContext = {
       getFocus: (): InspectFocusOutput => {
@@ -191,6 +130,21 @@ export function AgentLens(): JSX.Element {
           lastUserPrompt: s.lastUserPrompt,
           lastAgentAnswer: s.lastAgentAnswer,
           agentTurnCount: s.agentTurnCount,
+          agentLastToolResultName: s.agentLastToolResultName,
+          agentLastToolFailureKey: s.agentLastToolFailureKey,
+          agentLastToolFailureReason: s.agentLastToolFailureReason,
+          agentToolFailureRepeatCount: s.agentToolFailureRepeatCount,
+          agentLastToolSuccessKey: s.agentLastToolSuccessKey,
+          agentToolSuccessRepeatCount: s.agentToolSuccessRepeatCount,
+          agentToolLoopBlocked: s.agentToolLoopBlocked,
+          agentToolLoopBlockReason: s.agentToolLoopBlockReason,
+          agentLastModelFinishKey: s.agentLastModelFinishKey,
+          agentModelFinishRepeatCount: s.agentModelFinishRepeatCount,
+          agentUserModuleReady: s.agentUserModuleReady,
+          agentMelSourceNonEmpty: s.agentMelSourceNonEmpty,
+          agentFocusedActionName: s.agentFocusedActionName,
+          agentFocusedActionAvailable: s.agentFocusedActionAvailable,
+          agentLastAdmittedToolName: s.agentLastAdmittedToolName,
         };
       },
     };
@@ -198,26 +152,16 @@ export function AgentLens(): JSX.Element {
       getSnapshot: () => core.getSnapshot(),
     };
     const inspectNeighborsCtx: InspectNeighborsContext = {
-      getEdges: () => {
-        const mod = core.getModule();
-        return mod?.graph?.edges ?? [];
-      },
-      hasNode: (nodeId) => {
-        const mod = core.getModule();
-        const nodes = mod?.graph?.nodes;
-        return nodes?.some((n) => n.id === nodeId) ?? false;
-      },
+      getEdges: () => core.getModule()?.graph?.edges ?? [],
+      hasNode: (nodeId) =>
+        core.getModule()?.graph?.nodes?.some((n) => n.id === nodeId) ?? false,
     };
     const inspectAvailabilityCtx: InspectAvailabilityContext = {
-      listActionNames: () => {
-        const mod = core.getModule();
-        const actions = mod?.schema.actions;
-        return actions !== undefined ? Object.keys(actions) : [];
-      },
+      listActionNames: () => listActionNames(core),
       isActionAvailable: (name) => core.isActionAvailable(name),
       describeAction: (name) => {
-        const mod = core.getModule();
-        const spec = mod?.schema.actions?.[name] as
+        const module = core.getModule();
+        const spec = module?.schema.actions?.[name] as
           | {
               readonly description?: string;
               readonly params?: readonly string[];
@@ -225,8 +169,11 @@ export function AgentLens(): JSX.Element {
             }
           | undefined;
         if (spec === undefined) return null;
+        const input = summarizeActionInput(spec, module?.schema);
         return {
           paramNames: spec.params ?? [],
+          paramHints: input.paramHints,
+          inputHint: input.inputHint,
           hasDispatchableGate: spec.dispatchable !== undefined,
           description: spec.description,
         };
@@ -240,303 +187,259 @@ export function AgentLens(): JSX.Element {
         ) as never,
       simulate: (intent) =>
         core.simulate(intent as Parameters<typeof core.simulate>[0]) as never,
-      listActionNames: () => {
-        const mod = core.getModule();
-        const actions = mod?.schema.actions;
-        return actions !== undefined ? Object.keys(actions) : [];
-      },
+      listActionNames: () => listActionNames(core),
     };
-    const sourceMapCtx: SourceMapContext = {
-      getModule: () => core.getModule(),
-      getSource: readMelSource,
-    };
-    const generateMockCtx: GenerateMockContext = {
-      getModule: () => core.getModule(),
-    };
-    const seedMockCtx: SeedMockContext = {
-      getModule: () => core.getModule(),
-      createIntent: (action, ...args) => core.createIntent(action, ...args),
-      dispatchAsync: (intent) =>
-        core.dispatchAsync(
-          intent as Parameters<typeof core.dispatchAsync>[0],
-        ) as unknown as Promise<{ kind: string }>,
-    };
-    // inspectConversation reads the live useChat messages — see
-    // conversationTurnsRef below. Context is captured at tool-run
-    // time, not tool-bind time.
-    const inspectConversationCtx: InspectConversationContext = {
-      getTurns: () => conversationTurnsRef.current,
-    };
-    const inspectLineageCtx: InspectLineageContext = {
-      getLineage: () => {
-        const lineage = core.getLineage();
-        const worlds = lineage.worlds ?? [];
-        return [...worlds].reverse().map<FullLineageEntry>((w) => {
-          const origin = w.origin as {
-            readonly kind: "build" | "dispatch";
-            readonly intentType?: string;
-            readonly buildId?: string;
-          };
-          const projected: WorldOriginLike =
-            origin.kind === "dispatch"
-              ? { kind: "dispatch", intentType: origin.intentType ?? "(unknown)" }
-              : { kind: "build", buildId: origin.buildId };
-          return {
-            worldId: String(w.id ?? ""),
-            parentWorldId:
-              w.parentId === undefined || w.parentId === null
-                ? null
-                : String(w.parentId),
-            schemaHash: String(w.schemaHash ?? ""),
-            origin: projected,
-            changedPaths: Array.isArray(w.changedPaths) ? w.changedPaths : [],
-            createdAt:
-              typeof w.recordedAt === "number"
-                ? new Date(w.recordedAt).toISOString()
-                : new Date().toISOString(),
-          };
-        });
-      },
-    };
-    const createProposalCtx: CreateProposalContext = {
-      getOriginalSource: readMelSource,
-      verify: verifyMelProposal,
-      setProposal,
-    };
-    const inspectSourceOutlineCtx: InspectSourceOutlineContext = {
-      getModule: () => core.getModule(),
-      getSource: readMelSource,
-    };
-    const readDeclarationCtx: ReadDeclarationContext = {
-      getModule: () => core.getModule(),
-      getSource: readMelSource,
-    };
-    const findInSourceCtx: FindInSourceContext = {
-      getSource: readMelSource,
-    };
-    const answerAndTurnEndCtx: AnswerAndTurnEndContext = {
+    const endTurnCtx: EndTurnContext = {
       isTurnRunning: () =>
         readLiveAgentTurnStatus(uiRef.current.core) === "running",
-      concludeAgentTurn: async (answer) => {
-        const ui = uiRef.current;
-        if (ui.core === null) return;
-        const intent = ui.createIntent("concludeAgentTurn", answer);
-        await ui.dispatchAsync(intent);
+      concludeAgentTurn: async (summary) => {
+        const currentUi = uiRef.current;
+        if (currentUi.core === null) return;
+        const intent = currentUi.createIntent("concludeAgentTurn", summary);
+        await currentUi.dispatchAsync(intent);
       },
     };
-    const tools = [
-      bindTool(createDispatchTool(), userCtx),
-      bindTool(createLegalityTool(), userCtx),
-      bindTool(createInspectFocusTool(), inspectFocusCtx),
-      bindTool(createInspectSnapshotTool(), inspectSnapshotCtx),
-      bindTool(createInspectNeighborsTool(), inspectNeighborsCtx),
-      bindTool(createInspectAvailabilityTool(), inspectAvailabilityCtx),
-      bindTool(createSimulateIntentTool(), simulateIntentCtx),
-      bindTool(createSourceMapTool(), sourceMapCtx),
-      bindTool(createInspectLineageTool(), inspectLineageCtx),
-      bindTool(createInspectConversationTool(), inspectConversationCtx),
-      bindTool(createGenerateMockTool(), generateMockCtx),
-      bindTool(createSeedMockTool(), seedMockCtx),
-      bindTool(createInspectSourceOutlineTool(), inspectSourceOutlineCtx),
-      bindTool(createReadDeclarationTool(), readDeclarationCtx),
-      bindTool(createFindInSourceTool(), findInSourceCtx),
-      bindTool(createCreateProposalTool(), createProposalCtx),
-      bindTool(createAnswerAndTurnEndTool(), answerAndTurnEndCtx),
+
+    const tools: ToolImplementation[] = [
+      {
+        tool: bindTool(createInspectToolAffordancesTool(), {
+          getTools: () => tools,
+          getRuntime: () => buildToolAdmissionRuntime(uiRef.current.core),
+          getDomainActionNames: () => listActionNames(core),
+        }),
+        admissionAction: "requestTool",
+        admissionArgs: ["inspectToolAffordances"],
+      },
+      {
+        tool: bindTool(createInspectFocusTool(), inspectFocusCtx),
+        admissionAction: "requestTool",
+        admissionArgs: ["inspectFocus"],
+      },
+      {
+        tool: bindTool(
+          createStudioDispatchTool(),
+          ui.core !== null ? buildStudioToolContext(ui.core) : nullStudioContext(),
+        ),
+        admissionAction: "requestTool",
+        admissionArgs: ["studioDispatch"],
+      },
+      {
+        tool: bindTool(createInspectSnapshotTool(), inspectSnapshotCtx),
+        admissionAction: "requestTool",
+        admissionArgs: ["inspectSnapshot"],
+      },
+      {
+        tool: bindTool(createInspectAvailabilityTool(), inspectAvailabilityCtx),
+        admissionAction: "requestTool",
+        admissionArgs: ["inspectAvailability"],
+      },
+      {
+        tool: bindTool(createInspectNeighborsTool(), inspectNeighborsCtx),
+        admissionAction: "requestTool",
+        admissionArgs: ["inspectNeighbors"],
+      },
+      {
+        tool: bindTool(createLegalityTool(), userCtx),
+        admissionAction: "requestTool",
+        admissionArgs: ["explainLegality"],
+      },
+      {
+        tool: bindTool(createSimulateIntentTool(), simulateIntentCtx),
+        admissionAction: "requestTool",
+        admissionArgs: ["simulateIntent"],
+      },
+      {
+        tool: bindTool(createDispatchTool(), userCtx),
+        admissionAction: "requestTool",
+        admissionArgs: ["dispatch"],
+      },
+      {
+        tool: bindTool(createEndTurnTool(), endTurnCtx),
+        admissionAction: "requestTool",
+        admissionArgs: ["endTurn"],
+      },
     ];
-    if (ui.core !== null) {
-      tools.push(
-        bindTool(createStudioDispatchTool(), buildStudioToolContext(ui.core)),
-      );
-    }
-    return createToolRegistry(tools);
-  }, [core, readMelSource, ui.core]);
+    return tools;
+  }, [core, ui.core]);
 
-  // useChat transport + handlers. prepareSendMessagesRequest injects
-  // the system prompt + tool schemas fresh per turn so the server
-  // sees the current MEL + tool set without the client having to
-  // re-create the Chat instance.
-  const conversationTurnsRef = useRef<readonly FullConversationTurn[]>([]);
-  const toolSchemas = useMemo(() => buildToolSchemaMap(registry), [registry]);
-  const [agentNotice, setAgentNotice] = useState<string | null>(null);
-  const zeroToolStreakRef = useRef(0);
-
-  const chat: UseChatHelpers<UIMessage> = useChat({
+  const chat = useChat({
     id: "manifesto-agent",
     transport: new DefaultChatTransport({
       api: "/api/agent/chat",
-      // Stream the body per request. Prepare function reads the
-      // latest studio state every time so focus / source / recent
-      // turns reflect what's on screen at send-time, not at mount.
-      prepareSendMessagesRequest: ({ messages, id }) => {
+      prepareSendMessagesRequest: async ({ messages, id }) => {
         const melSource = readMelSource();
-        const ctx = readStudioAgentContext(
+        const snap = uiSnapshotRef.current;
+        await syncAgentToolContext({
+          core,
+          uiCore: uiRef.current.core,
+          uiSnapshot: snap,
+          melSource,
+        });
+        const turn = readAgentTurnProjection(uiRef.current.core, snap);
+        const admissionRuntime = buildToolAdmissionRuntime(uiRef.current.core);
+        const availableRegistry = createAdmittedToolRegistry(
+          toolImplementations,
+          admissionRuntime,
+        );
+        const agentContext = readStudioAgentContext(
           core,
           melSource,
           buildRecentTurnsFromMessages(messages as UIMessage[]),
         );
-        const snap = uiSnapshotRef.current;
         const system = buildLiveAgentSystemPrompt({
-          agentContext: ctx,
-          turn: {
-            id: snap.agentTurnId,
-            mode: snap.agentTurnMode,
-            status: snap.agentTurnStatus,
-            prompt: snap.agentTurnPrompt,
-            conclusion: snap.agentTurnConclusion,
-            resendCount: snap.agentTurnResendCount,
-          },
+          agentContext,
+          turn,
         });
-        const latestUserText = readLastMessageUserText(
-          messages as UIMessage[],
-        );
-        const forceProposal =
-          latestUserText !== null &&
-          melSource.trim() !== "" &&
-          toolSchemas.createProposal !== undefined &&
-          looksLikeSourceChangeRequest(latestUserText);
-        const stuck = zeroToolStreakRef.current >= 1;
         return {
           body: {
             id,
             messages,
             system,
-            tools: toolSchemas,
-            toolChoice: stuck
-              ? { type: "tool", toolName: "answerAndTurnEnd" }
-              : forceProposal
-                ? { type: "tool", toolName: "createProposal" }
-                : undefined,
-            // Server caps the loop; 10 steps is plenty for
-            // inspect → explain → dispatch chains.
+            tools: buildToolSchemaMap(availableRegistry),
             maxSteps: 10,
             temperature: 0.2,
           },
         };
       },
     }),
-    // Client-side tool execution — dispatches against our local
-    // Manifesto runtime and resolves with a JSON result.
     onToolCall: async ({ toolCall }) => {
-      setAgentNotice(null);
-      const result = await executeToolLocally(
-        registry,
+      setNotice(null);
+      await syncAgentToolContext({
+        core,
+        uiCore: uiRef.current.core,
+        uiSnapshot: uiSnapshotRef.current,
+        melSource: readMelSource(),
+      });
+      const admissionRuntime = buildToolAdmissionRuntime(uiRef.current.core);
+      const toolImplementation = toolImplementations.find(
+        (entry) => entry.tool.name === toolCall.toolName,
+      );
+      const admissionResult =
+        toolImplementation === undefined
+            ? rejectUnavailableTool(
+                toolImplementations,
+                toolCall.toolName,
+                admissionRuntime,
+                { domainActionNames: listActionNames(core) },
+              )
+          : await admitToolCall(
+              toolImplementation,
+              admissionRuntime,
+              toolCall.input,
+            );
+      const result =
+        !admissionResult.ok || toolImplementation === undefined
+          ? admissionResult
+          : await executeToolLocally(
+              createToolRegistry([toolImplementation.tool]),
+              toolCall.toolName,
+              toolCall.input,
+            );
+      await recordAgentToolResult(
+        uiRef.current.core,
         toolCall.toolName,
         toolCall.input,
+        result,
       );
+      const blockReason = readAgentToolLoopBlockReason(uiRef.current.core);
+      if (blockReason !== null) {
+        optimisticTurnRunningRef.current = false;
+        setNotice(blockReason);
+      }
       chat.addToolResult({
         tool: toolCall.toolName,
         toolCallId: toolCall.toolCallId,
         output: result as never,
       });
     },
-    // Auto-continue while the Manifesto-owned turn is still running.
-    // Tool result loops and text-only provider misses use the same
-    // snapshot gate: the turn ends only through answerAndTurnEnd.
     sendAutomaticallyWhen: () =>
+      optimisticTurnRunningRef.current &&
       readLiveAgentTurnStatus(uiRef.current.core) === "running" &&
       readLiveAgentTurnMode(uiRef.current.core) === "live",
     onFinish: ({ message }) => {
-      const hadToolCall = messageHasToolCall(message);
-      zeroToolStreakRef.current = hadToolCall
-        ? 0
-        : zeroToolStreakRef.current + 1;
-
-      const snap = uiSnapshotRef.current;
-      if (
-        snap.agentTurnStatus === "running" &&
-        snap.agentTurnMode === "live"
-      ) {
-        uiRef.current.incrementAgentTurnResend();
-        if (snap.agentTurnResendCount + 1 >= LIVE_TURN_RESEND_HARD_CAP) {
-          uiRef.current.cancelAgentTurn(
-            `Live agent turn cancelled at resend cap (${LIVE_TURN_RESEND_HARD_CAP}). The agent never called answerAndTurnEnd.`,
-          );
-          setAgentNotice(
-            `The agent did not call answerAndTurnEnd within ${LIVE_TURN_RESEND_HARD_CAP} turns; live turn cancelled.`,
-          );
-        } else {
-          setAgentNotice(
-            isReasoningOnlyAssistantTurn(message)
-              ? "The model returned reasoning only and did not call a tool or produce an answer. Retrying inside the active turn."
-              : null,
-          );
+      const finish = readModelFinish(message, uiSnapshotRef.current);
+      if (finish.endsTurnWithoutEndTurn) {
+        optimisticTurnRunningRef.current = false;
+      }
+      void recordAgentModelFinish(uiRef.current.core, finish).then(() => {
+        const blockReason = readAgentToolLoopBlockReason(uiRef.current.core);
+        if (blockReason !== null) {
+          optimisticTurnRunningRef.current = false;
+          setNotice(blockReason);
+          return;
         }
-      } else {
-        setAgentNotice(
-          isReasoningOnlyAssistantTurn(message)
-            ? "The model returned reasoning only and did not call a tool or produce an answer. Try again, or switch provider if this repeats."
+        setNotice(
+          finish.reasoningOnly
+            ? "The model returned reasoning only. Retrying inside the active turn."
             : null,
         );
-      }
-      // Commit this turn into studio.mel so it joins the runtime's
-      // lineage (see studio.mel recordAgentTurn). We only do this on
-      // assistant turns that finished naturally; aborts / errors are
-      // out of scope.
+      });
+
       const prompt = findMostRecentUserText(chat.messages);
-      const answer = extractAssistantText(message);
       if (prompt !== null) {
+        const answer = extractAssistantText(message);
         ui.recordAgentTurn(prompt, answer === "" ? "(tool-only turn)" : answer);
       }
     },
   });
 
-  // Keep conversation-turns ref in sync for inspectConversation tool.
-  useEffect(() => {
-    conversationTurnsRef.current = messagesToConversationTurns(chat.messages);
-  }, [chat.messages]);
-
-  const [draft, setDraft] = useState("");
-  const [serverModelLabel, setServerModelLabel] = useState<string | null>(
-    null,
-  );
-
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/agent/config", {
-      method: "GET",
-      signal: controller.signal,
-      headers: { Accept: "application/json" },
-    })
-      .then(async (response) => {
-        if (!response.ok) return null;
-        return (await response.json()) as AgentModelConfigResponse;
-      })
-      .then((config) => {
-        if (config === null) return;
-        if (typeof config.label !== "string" || config.label.trim() === "") {
-          return;
-        }
-        const suffix =
-          config.status === "misconfigured" ? " (misconfigured)" : "";
-        setServerModelLabel(`${config.label.trim()}${suffix}`);
-      })
-      .catch((err: unknown) => {
-        if (err instanceof DOMException && err.name === "AbortError") return;
-      });
-
-    return () => controller.abort();
-  }, []);
+  const sending = chat.status === "streaming" || chat.status === "submitted";
 
   const onSend = useCallback(() => {
     const prompt = draft.trim();
     if (prompt === "") return;
-    if (ui.core === null) {
-      setAgentNotice("Studio runtime is still starting. Try again shortly.");
+    const uiCore = ui.core;
+    if (uiCore === null) {
+      setNotice("Studio runtime is still starting. Try again shortly.");
       return;
     }
-    if (uiSnapshotRef.current.agentTurnStatus === "running") {
-      setAgentNotice(
-        "An agent turn is already running. Wait for it to end before starting another.",
-      );
+    if (
+      uiSnapshotRef.current.agentTurnStatus === "running" ||
+      readLiveAgentTurnStatus(uiCore) === "running"
+    ) {
+      setNotice("An agent turn is already running.");
       return;
     }
-    setAgentNotice(null);
+    setNotice(null);
     setDraft("");
+    optimisticTurnRunningRef.current = true;
     const turnId = newAgentTurnId("live");
-    ui.beginAgentTurn(turnId, "live", prompt);
-    zeroToolStreakRef.current = 0;
-    void chat.sendMessage({ text: prompt });
-  }, [chat, draft, ui]);
+    void (async () => {
+      let turnStarted = false;
+      try {
+        const result = await uiCore.dispatchAsync(
+          uiCore.createIntent("beginAgentTurn", turnId, "live", prompt),
+        );
+        if (result.kind !== "completed") {
+          optimisticTurnRunningRef.current = false;
+          setDraft(prompt);
+          setNotice(
+            `Could not start agent turn: ${readDispatchFailureMessage(result)}`,
+          );
+          return;
+        }
+        turnStarted = true;
+        await syncAgentToolContext({
+          core,
+          uiCore,
+          uiSnapshot: uiSnapshotRef.current,
+          melSource: readMelSource(),
+        });
+        await chat.sendMessage({ text: prompt });
+      } catch (err) {
+        optimisticTurnRunningRef.current = false;
+        if (turnStarted) {
+          await cancelAgentTurnAfterSendFailure(uiCore);
+        }
+        setDraft(prompt);
+        setNotice(
+          `Could not start agent turn: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    })();
+  }, [chat, core, draft, readMelSource, ui.core]);
 
   const onStop = useCallback(() => {
     void chat.stop();
@@ -544,150 +447,62 @@ export function AgentLens(): JSX.Element {
       uiSnapshotRef.current.agentTurnStatus === "running" &&
       uiSnapshotRef.current.agentTurnMode === "live"
     ) {
+      optimisticTurnRunningRef.current = false;
       ui.cancelAgentTurn("Live agent turn stopped by user.");
     }
   }, [chat, ui]);
 
-  const onClear = useCallback(() => {
-    chat.setMessages([]);
-  }, [chat]);
-
-  const onAcceptProposal = useCallback(() => {
-    if (proposal === null || proposal.status !== "verified") return;
-    if (adapter === null) return;
-    adapter.setSource(proposal.proposedSource);
-    adapter.requestBuild();
-    setProposal(null);
-  }, [adapter, proposal]);
-
-  const onRejectProposal = useCallback(() => {
-    setProposal(null);
-  }, []);
-
-  const sending = chat.status === "streaming" || chat.status === "submitted";
-  const configuredModelLabel = (
-    import.meta.env?.VITE_AGENT_MODEL as string | undefined
-  )?.trim();
-  const modelLabel =
-    serverModelLabel ??
-    (configuredModelLabel !== undefined && configuredModelLabel !== ""
-      ? configuredModelLabel
-      : MODEL_LABEL_FALLBACK);
-
-  const examplePrompts = useMemo<readonly string[]>(
-    () => [
-      "What guards this action?",
-      "Describe the current snapshot.",
-      "List actions I can dispatch.",
-      "Seed 5 rows for this action.",
-    ],
-    [],
-  );
-
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <StatusStrip
-        modelLabel={modelLabel}
+      <StatusBar
         status={chat.status}
         error={chat.error}
-        onClear={onClear}
         canClear={chat.messages.length > 0 && !sending}
+        onClear={() => chat.setMessages([])}
       />
-      {agentNotice !== null ? <AgentNotice message={agentNotice} /> : null}
-      {proposal !== null ? (
-        <ProposalPreview
-          proposal={proposal}
-          onAccept={onAcceptProposal}
-          onReject={onRejectProposal}
-        />
-      ) : null}
-      <Messages messages={demoteAnswerAndTurnEndText(chat.messages)} />
+      <AnimatePresence initial={false}>
+        {notice !== null ? <Notice key="notice" message={notice} /> : null}
+      </AnimatePresence>
+      <MessageList messages={chat.messages} />
       <Composer
         draft={draft}
         setDraft={setDraft}
+        sending={sending}
         onSend={onSend}
         onStop={onStop}
-        sending={sending}
-        examples={chat.messages.length === 0 ? examplePrompts : undefined}
-        onPickExample={(text) => setDraft(text)}
       />
     </div>
   );
 }
 
-// --------------------------------------------------------------------
-// Status strip
-// --------------------------------------------------------------------
-
-export function StatusStrip({
-  modelLabel,
+function StatusBar({
   status,
   error,
-  onClear,
   canClear,
+  onClear,
 }: {
-  readonly modelLabel: string;
-  readonly status: UseChatHelpers<UIMessage>["status"];
+  readonly status: string;
   readonly error: Error | undefined;
-  readonly onClear: () => void;
   readonly canClear: boolean;
+  readonly onClear: () => void;
 }): JSX.Element {
-  const tone: "ok" | "warn" | "info" =
-    error !== undefined
-      ? "warn"
-      : status === "streaming" || status === "submitted"
-        ? "info"
-        : "ok";
-  const dotColor =
-    tone === "ok"
-      ? "var(--color-sig-state)"
-      : tone === "warn"
-        ? "var(--color-sig-effect)"
-        : "var(--color-violet-hot)";
   const label =
     error !== undefined
-      ? "error"
+      ? `error: ${error.message}`
       : status === "streaming"
-        ? "streaming…"
+        ? "streaming"
         : status === "submitted"
-          ? "thinking…"
+          ? "thinking"
           : "ready";
   return (
-    <div
-      className="
-        flex items-center gap-2
-        px-3 py-1.5
-        border-b border-[var(--color-rule)]
-        text-[10.5px] font-mono
-      "
-      aria-label="Agent connection status"
-    >
-      <span
-        aria-hidden
-        className="h-[6px] w-[6px] rounded-full shrink-0"
-        style={{ background: dotColor, boxShadow: `0 0 8px ${dotColor}` }}
-      />
-      <span className="text-[var(--color-ink-dim)] truncate">{modelLabel}</span>
-      <span className="text-[var(--color-ink-mute)] truncate">· {label}</span>
-      {error !== undefined ? (
-        <span
-          className="text-[var(--color-sig-effect)] truncate"
-          title={error.message}
-        >
-          · {error.message}
-        </span>
-      ) : null}
+    <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-rule)] text-[10.5px] font-mono">
+      <span className="text-[var(--color-ink-dim)]">agent loop</span>
+      <span className="text-[var(--color-ink-mute)]">/ {label}</span>
       <button
         type="button"
         onClick={onClear}
         disabled={!canClear}
-        className="
-          ml-auto shrink-0 text-[var(--color-ink-mute)]
-          hover:text-[var(--color-ink-dim)]
-          disabled:opacity-30 disabled:hover:text-[var(--color-ink-mute)]
-          disabled:cursor-not-allowed
-        "
-        title="Clear conversation"
+        className="ml-auto text-[var(--color-ink-mute)] hover:text-[var(--color-ink)] disabled:opacity-30"
       >
         clear
       </button>
@@ -695,187 +510,125 @@ export function StatusStrip({
   );
 }
 
-export function AgentNotice({ message }: { readonly message: string }): JSX.Element {
+function Notice({ message }: { readonly message: string }): JSX.Element {
   return (
-    <div
-      className="
-        mx-4 mt-3 px-3 py-2
-        rounded-[10px]
-        border border-[color-mix(in_oklch,var(--color-sig-effect)_45%,var(--color-rule))]
-        bg-[color-mix(in_oklch,var(--color-sig-effect)_9%,transparent)]
-        text-[11.5px] font-sans leading-relaxed
-        text-[var(--color-ink-dim)]
-      "
-      role="status"
+    <motion.div
+      initial={{ opacity: 0, y: -6, height: 0 }}
+      animate={{ opacity: 1, y: 0, height: "auto" }}
+      exit={{ opacity: 0, y: -4, height: 0 }}
+      transition={{ duration: 0.18, ease: "easeOut" }}
+      className="mx-4 mt-3 overflow-hidden rounded-[8px] border border-[var(--color-rule)] px-3 py-2 text-[11.5px] text-[var(--color-ink-dim)]"
     >
       {message}
-    </div>
+    </motion.div>
   );
 }
 
-// --------------------------------------------------------------------
-// Messages
-// --------------------------------------------------------------------
-
-export function Messages({
+function MessageList({
   messages,
 }: {
   readonly messages: readonly UIMessage[];
 }): JSX.Element {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const stickyRef = useRef(true);
-  const onScroll = useCallback((): void => {
-    const el = scrollerRef.current;
-    if (el === null) return;
-    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickyRef.current = dist < 40;
-  }, []);
-
-  // Re-scroll on any content change (new messages or streaming
-  // parts). Joining part ids + lengths gives a cheap signature.
-  const signature = messages
-    .map((m) =>
-      m.parts
-        .map((p) => {
-          if ("text" in p && typeof p.text === "string") {
-            return `${m.id}:${p.type}:${p.text.length}`;
-          }
-          if (isToolPart(p)) return `${m.id}:${p.type}:${p.state}`;
-          return `${m.id}:${p.type}`;
-        })
-        .join("|"),
-    )
-    .join("||");
-
   useEffect(() => {
     const el = scrollerRef.current;
-    if (el === null) return;
-    if (!stickyRef.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [signature]);
+    if (el !== null) el.scrollTop = el.scrollHeight;
+  }, [messages]);
 
   return (
-    <div
-      ref={scrollerRef}
-      onScroll={onScroll}
-      className="flex-1 min-h-0 overflow-y-auto px-4 py-5"
-    >
+    <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-5">
       {messages.length === 0 ? (
-        <EmptyState />
+        <motion.div
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.18, ease: "easeOut" }}
+          className="h-full min-h-[220px] flex items-center text-[13px] text-[var(--color-ink-mute)]"
+        >
+          Ask the runtime what it sees or what it can do next.
+        </motion.div>
       ) : (
-        <ol className="flex flex-col gap-5">
-          {messages.map((m) => (
-            <li key={m.id} className="list-none">
-              {m.role === "user" ? (
-                <UserBubble text={extractUserText(m)} />
-              ) : m.role === "assistant" ? (
-                <AssistantBlock message={m} />
-              ) : null}
-            </li>
-          ))}
+        <ol className="flex flex-col gap-4">
+          <AnimatePresence initial={false} mode="popLayout">
+            {messages.map((message) => {
+              const rendered =
+                message.role === "user" ? (
+                  <UserMessage text={extractUserText(message)} />
+                ) : message.role === "assistant" ? (
+                  <AssistantMessage message={message} />
+                ) : null;
+              return rendered === null ? null : (
+                <motion.li
+                  key={message.id}
+                  layout="position"
+                  initial={{ opacity: 0, y: 8, scale: 0.99 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -6, scale: 0.99 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  className="list-none"
+                >
+                  {rendered}
+                </motion.li>
+              );
+            })}
+          </AnimatePresence>
         </ol>
       )}
     </div>
   );
 }
 
-function EmptyState(): JSX.Element {
+function UserMessage({ text }: { readonly text: string }): JSX.Element {
   return (
-    <div className="flex flex-col items-start justify-center h-full min-h-[240px] gap-2 select-none">
-      <div className="flex items-center gap-2">
-        <span aria-hidden className="h-px w-5 bg-[var(--color-violet-hot)]" />
-        <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--color-ink-mute)]">
-          manifesto · agent
-        </span>
+    <motion.div
+      initial={{ opacity: 0, x: 10 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.18, ease: "easeOut" }}
+      className="flex justify-end"
+    >
+      <div className="max-w-[78%] rounded-[8px] px-3 py-2 text-[13px] bg-[var(--color-violet-hot)] text-[var(--color-void)] whitespace-pre-wrap break-words">
+        {text}
       </div>
-      <div className="text-[14px] font-sans leading-snug text-[var(--color-ink)] max-w-[420px]">
-        Ask the runtime about itself — why an action is blocked, what the
-        snapshot looks like, what to dispatch next.
-      </div>
-    </div>
+    </motion.div>
   );
 }
 
-function UserBubble({ text }: { readonly text: string }): JSX.Element {
-  return (
-    <div className="flex justify-end">
-      <div
-        className="
-          max-w-[78%] rounded-[10px]
-          px-3 py-[7px] text-[13px] font-sans leading-relaxed
-          bg-[color-mix(in_oklch,var(--color-violet-hot)_92%,transparent)]
-          text-[var(--color-void)]
-          break-words
-        "
-      >
-        <div className="whitespace-pre-wrap">{text}</div>
-      </div>
-    </div>
-  );
-}
-
-function AssistantBlock({
+function AssistantMessage({
   message,
 }: {
   readonly message: UIMessage;
-}): JSX.Element {
+}): JSX.Element | null {
+  const renderedParts = message.parts
+    .map((part, index) => {
+      if (part.type === "text") {
+        return (
+          <div
+            key={index}
+            className="text-[13px] leading-relaxed text-[var(--color-ink)] break-words"
+          >
+            <MarkdownBody>{part.text}</MarkdownBody>
+          </div>
+        );
+      }
+      if (part.type === "reasoning") return null;
+      if (isToolPart(part)) {
+        return <ToolActivityRow key={index} part={part} />;
+      }
+      return null;
+    })
+    .filter((part): part is JSX.Element => part !== null);
+  if (renderedParts.length === 0) return null;
   return (
     <div className="flex gap-3">
-      <div
-        aria-hidden
-        className="
-          w-[2px] self-stretch rounded-full
-          bg-[color-mix(in_oklch,var(--color-violet-hot)_75%,transparent)]
-        "
+      <motion.div
+        initial={{ scaleY: 0, opacity: 0 }}
+        animate={{ scaleY: 1, opacity: 1 }}
+        transition={{ duration: 0.22, ease: "easeOut" }}
+        className="w-[2px] self-stretch rounded-full bg-[var(--color-violet-hot)] origin-top"
       />
       <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-        {message.parts.map((part, idx) => {
-          if (part.type === "text") {
-            return (
-              <div
-                key={idx}
-                className="text-[13px] font-sans leading-relaxed text-[var(--color-ink)] break-words"
-              >
-                <MarkdownBody>{part.text}</MarkdownBody>
-              </div>
-            );
-          }
-          if (part.type === "reasoning") {
-            return <ReasoningPane key={idx} text={part.text} />;
-          }
-          if (isToolPart(part)) {
-            return <ToolRow key={idx} part={part} />;
-          }
-          return null;
-        })}
+        {renderedParts}
       </div>
     </div>
-  );
-}
-
-function ReasoningPane({ text }: { readonly text: string }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  return (
-    <details
-      open={open}
-      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
-      className="-ml-[2px]"
-    >
-      <summary
-        className="
-          cursor-pointer list-none
-          text-[10.5px] font-mono uppercase tracking-wider
-          text-[var(--color-ink-mute)]
-          hover:text-[var(--color-ink-dim)]
-          select-none
-        "
-      >
-        reasoning · {text.length}c {open ? "▾" : "▸"}
-      </summary>
-      <pre className="mt-1.5 text-[11px] font-mono whitespace-pre-wrap text-[var(--color-ink-dim)] leading-relaxed italic">
-        {text}
-      </pre>
-    </details>
   );
 }
 
@@ -885,460 +638,671 @@ type ToolPart = Extract<
 >;
 
 function isToolPart(
-  p: UIMessagePart<UIDataTypes, UITools>,
-): p is ToolPart {
-  return typeof p.type === "string" && p.type.startsWith("tool-");
+  part: UIMessagePart<UIDataTypes, UITools>,
+): part is ToolPart {
+  return typeof part.type === "string" && part.type.startsWith("tool-");
 }
 
-export function messageHasToolCall(message: UIMessage): boolean {
-  return message.parts.some((part) => part.type.startsWith("tool-"));
-}
-
-export function demoteAnswerAndTurnEndText(
-  messages: readonly UIMessage[],
-): readonly UIMessage[] {
-  return messages.map((message) => {
-    if (message.role !== "assistant") return message;
-    const parts = message.parts.map((part) => {
-      if (part.type === "tool-answerAndTurnEnd") {
-        const answer = readStreamingAnswer(part);
-        return { type: "text", text: answer } as typeof part;
-      }
-      return part;
-    });
-    return { ...message, parts } as UIMessage;
-  });
-}
-
-function readStreamingAnswer(part: unknown): string {
-  if (part === null || typeof part !== "object") return "";
-  const input = (part as { readonly input?: unknown }).input;
-  if (input === null || typeof input !== "object") return "";
-  const answer = (input as { readonly answer?: unknown }).answer;
-  return typeof answer === "string" ? answer : "";
-}
-
-function ToolRow({ part }: { readonly part: ToolPart }): JSX.Element {
-  const [open, setOpen] = useState(false);
+function ToolActivityRow({
+  part,
+}: {
+  readonly part: ToolPart;
+}): JSX.Element | null {
   const toolName = part.type.slice("tool-".length);
-  const state = (part as { state: string }).state;
-  const isDone =
-    state === "output-available" || state === "output-error";
-  const ok = state === "output-available";
-  const channel = resolveToolChannel(toolName);
-  const input = (part as { input?: unknown }).input;
-  const output = (part as { output?: unknown }).output;
-  const errorText = (part as { errorText?: string }).errorText;
-  const statusLabel = !isDone
-    ? state === "input-streaming"
-      ? "…"
-      : "running"
-    : ok
-      ? "ok"
-      : "error";
-  const statusColor = !isDone
-    ? "text-[var(--color-ink-mute)]"
-    : ok
-      ? "text-[var(--color-ink-dim)]"
-      : "text-[var(--color-sig-effect)]";
+  if (toolName === "endTurn") return null;
+  const state = (part as { readonly state: string }).state;
+  const input = (part as { readonly input?: unknown }).input;
+  const output = (part as { readonly output?: unknown }).output;
+  const errorText = (part as { readonly errorText?: string }).errorText;
+  const failed = state === "output-error" || isToolOutputFailure(output);
+  const done = state === "output-available" || state === "output-error";
+  const status = !done ? "running" : failed ? "error" : "ok";
+  const activity = describeToolActivity(toolName, input, output, errorText);
   return (
-    <details
-      open={open}
-      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
-      className="pl-5 -ml-5"
+    <motion.details
+      layout
+      initial={{ opacity: 0, x: -4 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.18, ease: "easeOut" }}
+      className="pl-1 text-[11.5px] font-mono group"
     >
-      <summary
-        className="
-          cursor-pointer list-none
-          flex items-baseline gap-2
-          text-[11.5px] font-mono leading-relaxed
-          select-none
-        "
-      >
-        <span className="text-[var(--color-ink-mute)] shrink-0">
-          {open ? "▾" : "▸"}
+      <summary className="cursor-pointer list-none flex items-center gap-2 rounded-[6px] px-1.5 py-1 hover:bg-[color-mix(in_oklch,var(--color-rule)_35%,transparent)]">
+        <motion.span
+          animate={
+            !done && !failed
+              ? { opacity: [0.45, 1, 0.45], scale: [0.9, 1.35, 0.9] }
+              : { opacity: 1, scale: 1 }
+          }
+          transition={
+            !done && !failed
+              ? { duration: 1.05, repeat: Infinity, ease: "easeInOut" }
+              : { duration: 0.14, ease: "easeOut" }
+          }
+          className={
+            failed
+              ? "h-1.5 w-1.5 rounded-full bg-[var(--color-sig-effect)]"
+              : !done
+                ? "h-1.5 w-1.5 rounded-full bg-[var(--color-violet-hot)]"
+                : "h-1.5 w-1.5 rounded-full bg-[var(--color-sig-computed)]"
+          }
+        />
+        <span className="text-[var(--color-ink-dim)]">
+          {activity.label}
         </span>
-        <span style={{ color: channel }}>{toolName}</span>
-        <span className="text-[var(--color-ink-mute)] truncate">
-          {formatInputInline(input)}
+        {activity.target !== null ? (
+          <span className="truncate text-[var(--color-ink-mute)]">
+            {activity.target}
+          </span>
+        ) : null}
+        {failed && activity.message !== null ? (
+          <span className="min-w-0 truncate text-[var(--color-sig-effect)]">
+            {truncate(activity.message, 96)}
+          </span>
+        ) : null}
+        <span
+          className={
+            failed
+              ? "ml-auto text-[var(--color-sig-effect)]"
+              : "ml-auto text-[var(--color-ink-mute)]"
+          }
+        >
+          {status}
         </span>
-        <span className="text-[var(--color-ink-mute)] shrink-0">→</span>
-        <span className={`${statusColor} shrink-0`}>{statusLabel}</span>
       </summary>
-      <pre
-        className="
-          mt-1.5 ml-5 px-2.5 py-2
-          text-[10.5px] font-mono whitespace-pre-wrap
-          text-[var(--color-ink-dim)] leading-relaxed
-          border-l border-[var(--color-rule)]
-        "
-      >
-        {formatToolDisplay(input, output, errorText)}
+      {activity.message !== null ? (
+        <div className="ml-5 mt-1 text-[11px] leading-relaxed text-[var(--color-ink-dim)]">
+          {activity.message}
+        </div>
+      ) : null}
+      <pre className="mt-1.5 ml-5 px-2 py-2 border-l border-[var(--color-rule)] text-[10.5px] text-[var(--color-ink-dim)] whitespace-pre-wrap">
+        {formatToolData(input, output, errorText)}
       </pre>
-    </details>
+    </motion.details>
   );
 }
 
-// --------------------------------------------------------------------
-// Composer
-// --------------------------------------------------------------------
+type ToolActivity = {
+  readonly label: string;
+  readonly target: string | null;
+  readonly message: string | null;
+};
 
-export function Composer({
+async function recordAgentToolResult(
+  uiCore: StudioCore | null,
+  toolName: string,
+  input: unknown,
+  result: ToolRunResult<unknown>,
+): Promise<void> {
+  if (uiCore === null) return;
+  const failureMessage = readToolResultFailureMessage(result);
+  const ok = failureMessage === null;
+  const reason = ok
+    ? `Stopped repeated successful tool call: ${toolName}`
+    : `Stopped repeated tool failure: ${toolName} - ${failureMessage}`;
+  const resultKey = truncate(
+    ok
+      ? `${toolName}:ok:${stringifySafe(input)}`
+      : `${toolName}:error:${failureMessage}:${stringifySafe(input)}`,
+    512,
+  );
+  try {
+    await uiCore.dispatchAsync(
+      uiCore.createIntent(
+        "recordAgentToolResult",
+        toolName,
+        resultKey,
+        ok,
+        reason,
+      ),
+    );
+  } catch (err) {
+    console.error("[AgentLens] recordAgentToolResult failed:", err);
+  }
+}
+
+type ModelFinishRecord = {
+  readonly finishKey: string;
+  readonly hasText: boolean;
+  readonly hasToolCalls: boolean;
+  readonly hasEndTurn: boolean;
+  readonly reasoningOnly: boolean;
+  readonly endsTurnWithoutEndTurn: boolean;
+  readonly reason: string;
+};
+
+async function recordAgentModelFinish(
+  uiCore: StudioCore | null,
+  finish: ModelFinishRecord,
+): Promise<void> {
+  if (
+    uiCore === null ||
+    finish.hasEndTurn ||
+    readLiveAgentTurnStatus(uiCore) !== "running"
+  ) {
+    return;
+  }
+  try {
+    await uiCore.dispatchAsync(
+      uiCore.createIntent(
+        "recordAgentModelFinish",
+        finish.finishKey,
+        finish.hasText,
+        finish.hasToolCalls,
+        finish.reason,
+      ),
+    );
+  } catch (err) {
+    console.error("[AgentLens] recordAgentModelFinish failed:", err);
+  }
+}
+
+function readModelFinish(
+  message: UIMessage,
+  snapshot: StudioUiSnapshot,
+): ModelFinishRecord {
+  const text = extractAssistantText(message);
+  const toolNames = readToolNames(message);
+  const hasText = text !== "";
+  const hasToolCalls = toolNames.length > 0;
+  const hasEndTurn = toolNames.includes("endTurn");
+  const finishKey = hasToolCalls
+    ? `tools:${toolNames.join(",")}`
+    : hasText
+      ? `text:${truncate(text, 160)}`
+      : "reasoning-only";
+  const reasoningOnly = isReasoningOnlyAssistantTurn(message);
+  const repeatedReasoningOnly =
+    reasoningOnly &&
+    snapshot.agentLastModelFinishKey === finishKey &&
+    snapshot.agentModelFinishRepeatCount >= 1;
+  return {
+    finishKey,
+    hasText,
+    hasToolCalls,
+    hasEndTurn,
+    reasoningOnly,
+    endsTurnWithoutEndTurn:
+      !hasEndTurn && ((hasText && !hasToolCalls) || repeatedReasoningOnly),
+    reason:
+      hasText && !hasToolCalls
+        ? "Ended after assistant text without endTurn."
+        : "Stopped repeated non-terminal assistant finish.",
+  };
+}
+
+function readToolNames(message: UIMessage): readonly string[] {
+  return message.parts
+    .filter(isToolPart)
+    .map((part) => part.type.slice("tool-".length));
+}
+
+function readToolResultFailureMessage(
+  result: ToolRunResult<unknown>,
+): string | null {
+  if (!result.ok) return result.message;
+  const output = asRecord(result.output);
+  if (output === null) return null;
+  const status = output.status;
+  if (
+    status === "unavailable" ||
+    status === "rejected" ||
+    status === "failed" ||
+    status === "blocked"
+  ) {
+    if (typeof output.summary === "string" && output.summary.trim() !== "") {
+      return output.summary;
+    }
+    if (typeof output.error === "string" && output.error.trim() !== "") {
+      return output.error;
+    }
+    return `tool returned status "${status}"`;
+  }
+  return null;
+}
+
+function readAgentToolLoopBlockReason(core: StudioCore | null): string | null {
+  if (core === null) return null;
+  const snap = asRecord(core.getSnapshot());
+  const data = asRecord(snap?.data);
+  const reason = data?.agentToolLoopBlockReason;
+  return typeof reason === "string" && reason.trim() !== "" ? reason : null;
+}
+
+function describeToolActivity(
+  toolName: string,
+  input: unknown,
+  output: unknown,
+  errorText: string | undefined,
+): ToolActivity {
+  const message = readToolMessage(output, errorText);
+  if (isToolOutputFailure(output)) {
+    return {
+      label: "Tool blocked",
+      target: toolName,
+      message,
+    };
+  }
+  const actionName = readActionName(input, output);
+  const focusTarget = readFocusTarget(output);
+  const nodeTarget = readNodeTarget(input, output);
+  switch (toolName) {
+    case "inspectToolAffordances":
+      return {
+        label: "Checked tool guards",
+        target: readToolCatalogSummary(output),
+        message,
+      };
+    case "inspectFocus":
+      return {
+        label: "Checked UI focus",
+        target: focusTarget,
+        message,
+      };
+    case "studioDispatch":
+      return {
+        label: "Updated Studio view",
+        target: actionName,
+        message,
+      };
+    case "inspectSnapshot":
+      return {
+        label: "Read current state",
+        target: null,
+        message,
+      };
+    case "inspectAvailability":
+      return {
+        label: "Checked available actions",
+        target: readAvailabilitySummary(output),
+        message,
+      };
+    case "inspectNeighbors":
+      return {
+        label: "Checked graph links",
+        target: nodeTarget,
+        message,
+      };
+    case "explainLegality":
+      return {
+        label: "Checked action guard",
+        target: actionName,
+        message,
+      };
+    case "simulateIntent":
+      return {
+        label: "Previewed action",
+        target: actionName,
+        message,
+      };
+    case "dispatch":
+      return {
+        label: "Updated runtime state",
+        target: actionName,
+        message,
+      };
+    default:
+      return {
+        label: `Ran ${toolName}`,
+        target: formatInlineInput(input),
+        message,
+      };
+  }
+}
+
+function readToolMessage(
+  output: unknown,
+  errorText: string | undefined,
+): string | null {
+  if (errorText !== undefined && errorText.trim() !== "") return errorText;
+  const raw = asRecord(output);
+  if (typeof raw?.message === "string" && raw.message.trim() !== "") {
+    return raw.message;
+  }
+  const body = asRecord(unwrapToolOutput(output));
+  if (typeof body?.summary === "string" && body.summary.trim() !== "") {
+    return body.summary;
+  }
+  if (typeof body?.error === "string" && body.error.trim() !== "") {
+    return body.error;
+  }
+  return null;
+}
+
+function readActionName(input: unknown, output: unknown): string | null {
+  const inputAction = asRecord(input)?.action;
+  if (typeof inputAction === "string" && inputAction.trim() !== "") {
+    return inputAction;
+  }
+  const outputAction = asRecord(unwrapToolOutput(output))?.action;
+  if (typeof outputAction === "string" && outputAction.trim() !== "") {
+    return outputAction;
+  }
+  return null;
+}
+
+function readFocusTarget(output: unknown): string | null {
+  const focus = asRecord(unwrapToolOutput(output))?.focusedNodeId;
+  return typeof focus === "string" && focus.trim() !== "" ? focus : null;
+}
+
+function readNodeTarget(input: unknown, output: unknown): string | null {
+  const inputNode = asRecord(input)?.nodeId;
+  if (typeof inputNode === "string" && inputNode.trim() !== "") {
+    return inputNode;
+  }
+  const outputNode = asRecord(unwrapToolOutput(output))?.nodeId;
+  return typeof outputNode === "string" && outputNode.trim() !== ""
+    ? outputNode
+    : null;
+}
+
+function readAvailabilitySummary(output: unknown): string | null {
+  const actions = asRecord(unwrapToolOutput(output))?.actions;
+  if (!Array.isArray(actions)) return null;
+  const total = actions.length;
+  const available = actions.filter(
+    (entry) => asRecord(entry)?.available === true,
+  ).length;
+  return `${available}/${total} available`;
+}
+
+function readToolCatalogSummary(output: unknown): string | null {
+  const body = asRecord(unwrapToolOutput(output));
+  const availableTools = body?.availableTools;
+  const blocked = body?.unavailableToolCount;
+  if (!Array.isArray(availableTools)) return null;
+  return `${availableTools.length} available${
+    typeof blocked === "number" ? `, ${blocked} blocked` : ""
+  }`;
+}
+
+function unwrapToolOutput(output: unknown): unknown {
+  const record = asRecord(output);
+  return record !== null && "output" in record ? record.output : output;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function Composer({
   draft,
   setDraft,
+  sending,
   onSend,
   onStop,
-  sending,
-  examples,
-  onPickExample,
 }: {
   readonly draft: string;
-  readonly setDraft: (s: string) => void;
+  readonly setDraft: (value: string) => void;
+  readonly sending: boolean;
   readonly onSend: () => void;
   readonly onStop: () => void;
-  readonly sending: boolean;
-  readonly examples?: readonly string[];
-  readonly onPickExample: (text: string) => void;
 }): JSX.Element {
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (el === null) return;
-    el.style.height = "0px";
-    const max = 8 * 18 + 16;
-    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
-  }, [draft]);
-
+  const disabled = !sending && draft.trim() === "";
   return (
-    <div className="flex flex-col gap-2 px-4 pt-2 pb-3 border-t border-[var(--color-rule)]">
-      {examples !== undefined && examples.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
-          {examples.map((ex) => (
-            <button
-              key={ex}
-              type="button"
-              onClick={() => onPickExample(ex)}
-              className="
-                px-2.5 py-[5px] rounded-full
-                text-[11px] font-sans
-                border border-[var(--color-rule)]
-                bg-transparent
-                text-[var(--color-ink-mute)]
-                hover:text-[var(--color-ink)]
-                hover:border-[color-mix(in_oklch,var(--color-violet-hot)_60%,var(--color-rule))]
-                transition-colors
-              "
-            >
-              {ex}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      <div
-        className="
-          flex items-end gap-2
-          rounded-[10px]
-          border border-[var(--color-rule)]
-          bg-[color-mix(in_oklch,var(--color-void)_70%,transparent)]
-          pl-3 pr-1.5 py-1.5
-          focus-within:border-[color-mix(in_oklch,var(--color-violet-hot)_80%,var(--color-rule))]
-          transition-colors
-        "
+    <div className="px-4 pt-2 pb-3 border-t border-[var(--color-rule)]">
+      <motion.div
+        layout
+        transition={{ duration: 0.18, ease: "easeOut" }}
+        className="flex items-end gap-2 rounded-[8px] border border-[var(--color-rule)] bg-[color-mix(in_oklch,var(--color-void)_70%,transparent)] px-3 py-2"
       >
         <textarea
-          ref={textareaRef}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="Speak with the runtime…"
-          rows={1}
-          className="
-            flex-1 resize-none bg-transparent
-            text-[13px] font-sans leading-[1.45]
-            text-[var(--color-ink)]
-            placeholder:text-[var(--color-ink-mute)]
-            focus:outline-none
-            min-h-[22px] max-h-[160px]
-            py-[3px]
-          "
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
+          onChange={(event) => setDraft(event.target.value)}
+          rows={2}
+          placeholder="Ask the runtime..."
+          className="flex-1 resize-none bg-transparent text-[13px] text-[var(--color-ink)] placeholder:text-[var(--color-ink-mute)] focus:outline-none"
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
               if (sending) onStop();
               else if (draft.trim() !== "") onSend();
             }
           }}
         />
-        <div className="flex items-center self-end">
-          {sending ? (
-            <button
-              type="button"
-              onClick={onStop}
-              className="
-                w-7 h-7 rounded-full flex items-center justify-center
-                bg-[var(--color-sig-effect)] text-[var(--color-void)]
-                hover:brightness-110
-              "
-              aria-label="Stop"
-              title="Stop generating"
-            >
-              <span className="block w-[9px] h-[9px] rounded-[1px] bg-[var(--color-void)]" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onSend}
-              disabled={draft.trim() === ""}
-              className="
-                w-7 h-7 rounded-full flex items-center justify-center
-                bg-[var(--color-violet-hot)] text-[var(--color-void)]
-                disabled:bg-transparent
-                disabled:text-[var(--color-ink-mute)]
-                disabled:cursor-not-allowed
-                hover:brightness-110
-              "
-              aria-label="Send"
-              title="Send · ⏎"
-            >
-              <span className="text-[14px] leading-none font-bold">↑</span>
-            </button>
-          )}
-        </div>
-      </div>
+        <motion.button
+          type="button"
+          onClick={sending ? onStop : onSend}
+          disabled={disabled}
+          whileHover={disabled ? undefined : { scale: 1.04 }}
+          whileTap={disabled ? undefined : { scale: 0.96 }}
+          transition={{ duration: 0.12, ease: "easeOut" }}
+          className="h-8 min-w-14 rounded-[6px] px-3 text-[12px] font-mono bg-[var(--color-violet-hot)] text-[var(--color-void)] disabled:bg-transparent disabled:text-[var(--color-ink-mute)]"
+        >
+          {sending ? "stop" : "send"}
+        </motion.button>
+      </motion.div>
     </div>
   );
 }
 
-// --------------------------------------------------------------------
-// Helpers: tool rendering
-// --------------------------------------------------------------------
-
-/**
- * Map tool names to Studio's signal-channel palette so the transcript
- * reads as a runtime op log, not a generic function call trace.
- */
-function resolveToolChannel(name: string): string {
-  if (
-    name === "dispatch" ||
-    name === "studioDispatch" ||
-    name === "seedMock" ||
-    name === "createProposal"
-  ) {
-    return "var(--color-sig-action)";
-  }
-  if (
-    name.startsWith("inspect") ||
-    name === "generateMock" ||
-    name === "readDeclaration" ||
-    name === "findInSource" ||
-    name === "locateSource"
-  ) {
-    return "var(--color-sig-computed)";
-  }
-  if (name === "explainLegality") {
-    return "var(--color-sig-effect)";
-  }
-  return "var(--color-ink)";
-}
-
-function formatInputInline(input: unknown): string {
-  if (input === undefined || input === null) return "{}";
-  if (typeof input !== "object") return truncate(String(input), 56);
-  const entries = Object.entries(input as Record<string, unknown>);
-  if (entries.length === 0) return "{}";
-  const rendered = entries
-    .map(([k, v]) => `${k}: ${formatInlineValue(v)}`)
-    .join(", ");
-  return `{ ${truncate(rendered, 56)} }`;
-}
-
-function formatInlineValue(v: unknown): string {
-  if (typeof v === "string") return `"${truncate(v, 20)}"`;
-  if (v === null) return "null";
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  if (Array.isArray(v)) return `[${v.length}]`;
-  if (typeof v === "object") return "{…}";
-  return String(v);
-}
-
-function formatToolDisplay(
-  input: unknown,
-  output: unknown,
-  errorText: string | undefined,
-): string {
-  const parts: string[] = [];
-  if (input !== undefined && Object.keys(input as object ?? {}).length > 0) {
-    parts.push("// input\n" + stringifySafe(input));
-  }
-  if (errorText !== undefined && errorText !== "") {
-    parts.push("// error\n" + errorText);
-  } else if (output !== undefined) {
-    parts.push("// output\n" + stringifySafe(output));
-  }
-  return parts.join("\n\n") || "(no data)";
-}
-
-function stringifySafe(v: unknown): string {
-  try {
-    return JSON.stringify(v, null, 2);
-  } catch {
-    return String(v);
-  }
-}
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
-}
-
-// --------------------------------------------------------------------
-// Helpers: message → derived data
-// --------------------------------------------------------------------
-
-export function extractUserText(m: UIMessage): string {
-  return m.parts
-    .map((p) => (p.type === "text" ? p.text : ""))
+export function extractUserText(message: UIMessage): string {
+  return message.parts
+    .map((part) => (part.type === "text" ? part.text : ""))
     .join("")
     .trim();
 }
 
-export function extractAssistantText(m: UIMessage): string {
-  return m.parts
-    .map((p) =>
-      p.type === "text"
-        ? p.text
-        : p.type === "tool-answerAndTurnEnd"
-          ? readStreamingAnswer(p)
-          : "",
-    )
+export function extractAssistantText(message: UIMessage): string {
+  return message.parts
+    .map((part) => (part.type === "text" ? part.text : ""))
     .join("")
     .trim();
 }
 
-export function findMostRecentUserText(
-  messages: readonly UIMessage[],
-): string | null {
+function findMostRecentUserText(messages: readonly UIMessage[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]!;
-    if (m.role === "user") {
-      const txt = extractUserText(m);
-      return txt === "" ? null : txt;
-    }
+    const message = messages[i]!;
+    if (message.role !== "user") continue;
+    const text = extractUserText(message);
+    return text === "" ? null : text;
   }
   return null;
 }
 
-export function readLastMessageUserText(
-  messages: readonly UIMessage[],
-): string | null {
-  const last = messages[messages.length - 1];
-  if (last === undefined || last.role !== "user") return null;
-  const text = extractUserText(last);
-  return text === "" ? null : text;
-}
-
-export function looksLikeSourceChangeRequest(text: string): boolean {
-  const normalized = text.toLowerCase();
-  const sourceCues = [
-    "mel",
-    "source",
-    "schema",
-    "domain",
-    "action",
-    "computed",
-    "guard",
-    "feature",
-    "기능",
-    "액션",
-    "도메인",
-    "스키마",
-    "소스",
-    "가드",
-  ];
-  const changeCues = [
-    "add",
-    "create",
-    "implement",
-    "change",
-    "modify",
-    "update",
-    "remove",
-    "delete",
-    "clear",
-    "만들",
-    "추가",
-    "구현",
-    "수정",
-    "변경",
-    "삭제",
-    "제거",
-    "일괄",
-  ];
+function isReasoningOnlyAssistantTurn(message: UIMessage): boolean {
   return (
-    sourceCues.some((cue) => normalized.includes(cue)) &&
-    changeCues.some((cue) => normalized.includes(cue))
+    extractAssistantText(message) === "" &&
+    message.parts.some((part) => part.type === "reasoning") &&
+    !message.parts.some(isToolPart)
   );
 }
 
-export function isReasoningOnlyAssistantTurn(message: UIMessage): boolean {
-  const hasText = extractAssistantText(message) !== "";
-  const hasTool = message.parts.some(isToolPart);
-  const hasReasoning = message.parts.some((part) => part.type === "reasoning");
-  return hasReasoning && !hasText && !hasTool;
+function formatInlineInput(input: unknown): string {
+  if (input === null || input === undefined) return "{}";
+  if (typeof input !== "object") return truncate(String(input), 48);
+  const entries = Object.entries(input as Record<string, unknown>);
+  if (entries.length === 0) return "{}";
+  return truncate(
+    `{ ${entries.map(([key, value]) => `${key}: ${formatScalar(value)}`).join(", ")} }`,
+    64,
+  );
 }
 
-export function messagesToConversationTurns(
-  messages: readonly UIMessage[],
-): readonly FullConversationTurn[] {
-  const turns: FullConversationTurn[] = [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]!;
-    if (m.role !== "assistant") continue;
-    // Find the preceding user message for this turn.
-    let userText = "";
-    let userId: string | null = null;
-    for (let j = i - 1; j >= 0; j--) {
-      const u = messages[j]!;
-      if (u.role === "user") {
-        userText = extractUserText(u);
-        userId = u.id;
-        break;
-      }
-    }
-    if (userId === null) continue;
-    const toolCalls = m.parts.filter(isToolPart).map((p) => {
-      const name = p.type.slice("tool-".length);
-      const input = (p as { input?: unknown }).input;
-      const state = (p as { state: string }).state;
-      return {
-        name,
-        argumentsJson: stringifySafe(input),
-        ok: state === "output-available",
-      };
-    });
-    let assistantText = "";
-    let reasoning = "";
-    for (const part of m.parts) {
-      if (part.type === "text") assistantText += part.text;
-      if (part.type === "tool-answerAndTurnEnd") {
-        assistantText += readStreamingAnswer(part);
-      }
-      if (part.type === "reasoning") reasoning += part.text;
-    }
-    turns.push({
-      turnId: userId,
-      userPrompt: userText,
-      assistantText,
-      reasoning,
-      toolCalls,
-      endedAt: null,
-      stoppedAtCap: false,
-    });
+function formatScalar(value: unknown): string {
+  if (typeof value === "string") return `"${truncate(value, 18)}"`;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `[${value.length}]`;
+  if (typeof value === "object") return "{...}";
+  return String(value);
+}
+
+function formatToolData(
+  input: unknown,
+  output: unknown,
+  errorText: string | undefined,
+): string {
+  const chunks: string[] = [];
+  if (input !== undefined) chunks.push(`input\n${stringifySafe(input)}`);
+  if (errorText !== undefined && errorText !== "") {
+    chunks.push(`error\n${errorText}`);
+  } else if (output !== undefined) {
+    chunks.push(`output\n${stringifySafe(output)}`);
   }
-  return turns;
+  return chunks.join("\n\n") || "(no data)";
 }
 
-// --------------------------------------------------------------------
-// Tool contexts — user + studio domain
-// --------------------------------------------------------------------
+function isToolOutputFailure(output: unknown): boolean {
+  const top = asRecord(output);
+  if (top?.ok === false) return true;
+  const body = asRecord(unwrapToolOutput(output));
+  const status = body?.status;
+  return (
+    status === "unavailable" ||
+    status === "rejected" ||
+    status === "failed" ||
+    status === "blocked"
+  );
+}
+
+function stringifySafe(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max - 3)}...` : value;
+}
+
+type SyncAgentToolContextInput = {
+  readonly core: StudioCore;
+  readonly uiCore: StudioCore | null;
+  readonly uiSnapshot: StudioUiSnapshot;
+  readonly melSource: string;
+};
+
+async function syncAgentToolContext({
+  core,
+  uiCore,
+  uiSnapshot,
+  melSource,
+}: SyncAgentToolContextInput): Promise<void> {
+  if (uiCore === null) return;
+  const focusedActionName = readFocusedActionName(uiSnapshot);
+  const userModuleReady = safeHasModule(core);
+  const melSourceNonEmpty = melSource.trim() !== "";
+  const focusedActionAvailable =
+    focusedActionName !== null && safeIsActionAvailable(core, focusedActionName);
+  if (
+    uiSnapshot.agentUserModuleReady === userModuleReady &&
+    uiSnapshot.agentMelSourceNonEmpty === melSourceNonEmpty &&
+    uiSnapshot.agentFocusedActionName === focusedActionName &&
+    uiSnapshot.agentFocusedActionAvailable === focusedActionAvailable
+  ) {
+    return;
+  }
+  try {
+    await uiCore.dispatchAsync(
+      uiCore.createIntent(
+        "syncAgentToolContext",
+        userModuleReady,
+        melSourceNonEmpty,
+        focusedActionName,
+        focusedActionAvailable,
+      ),
+    );
+  } catch (err) {
+    console.error("[AgentLens] syncAgentToolContext failed:", err);
+  }
+}
+
+async function cancelAgentTurnAfterSendFailure(uiCore: StudioCore): Promise<void> {
+  try {
+    await uiCore.dispatchAsync(
+      uiCore.createIntent(
+        "cancelAgentTurn",
+        "Live agent turn failed before the request was sent.",
+      ),
+    );
+  } catch (err) {
+    console.error("[AgentLens] cancelAgentTurn after send failure failed:", err);
+  }
+}
+
+function readAgentTurnProjection(
+  uiCore: StudioCore | null,
+  fallback: StudioUiSnapshot,
+): AgentTurnProjection {
+  const data = readCoreSnapshotData(uiCore);
+  const mode = data?.agentTurnMode;
+  const status = data?.agentTurnStatus;
+  return {
+    id: readNullableString(data?.agentTurnId) ?? fallback.agentTurnId,
+    mode: mode === "live" ? mode : fallback.agentTurnMode,
+    status:
+      status === "running" || status === "ended"
+        ? status
+        : fallback.agentTurnStatus,
+    prompt: readNullableString(data?.agentTurnPrompt) ?? fallback.agentTurnPrompt,
+    conclusion:
+      readNullableString(data?.agentTurnConclusion) ??
+      fallback.agentTurnConclusion,
+    resendCount:
+      typeof data?.agentTurnResendCount === "number"
+        ? data.agentTurnResendCount
+        : fallback.agentTurnResendCount,
+  };
+}
+
+function readCoreSnapshotData(
+  core: StudioCore | null,
+): Record<string, unknown> | null {
+  if (core === null) return null;
+  try {
+    return asRecord(asRecord(core.getSnapshot())?.data);
+  } catch {
+    return null;
+  }
+}
+
+function readNullableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function readDispatchFailureMessage(result: DispatchResultLike): string {
+  return (
+    result.rejection?.reason ??
+    result.error?.message ??
+    result.kind ??
+    "unknown runtime rejection"
+  );
+}
+
+function readFocusedActionName(snapshot: StudioUiSnapshot): string | null {
+  if (
+    snapshot.focusedNodeKind !== "action" ||
+    snapshot.focusedNodeId === null ||
+    snapshot.focusedNodeId.trim() === ""
+  ) {
+    return null;
+  }
+  const prefix = "action:";
+  return snapshot.focusedNodeId.startsWith(prefix)
+    ? snapshot.focusedNodeId.slice(prefix.length)
+    : snapshot.focusedNodeId;
+}
+
+function safeHasModule(core: StudioCore): boolean {
+  try {
+    return core.getModule() !== null;
+  } catch {
+    return false;
+  }
+}
+
+function safeIsActionAvailable(core: StudioCore, actionName: string): boolean {
+  try {
+    return core.isActionAvailable(actionName);
+  } catch {
+    return false;
+  }
+}
 
 export function buildUserToolContext(
   core: StudioCore,
@@ -1347,17 +1311,12 @@ export function buildUserToolContext(
     LegalityContext["explainIntent"]
   >;
   type CoreWhyNot = (intent: unknown) => ReturnType<LegalityContext["whyNot"]>;
-  const listActionNames = (): readonly string[] => {
-    const mod = core.getModule();
-    const actions = mod?.schema.actions;
-    return actions !== undefined ? Object.keys(actions) : [];
-  };
   return {
     isActionAvailable: (name) => core.isActionAvailable(name),
     createIntent: (action, ...args) => core.createIntent(action, ...args),
     explainIntent: core.explainIntent as unknown as CoreExplain,
     whyNot: core.whyNot as unknown as CoreWhyNot,
-    listActionNames,
+    listActionNames: () => listActionNames(core),
     dispatchAsync: (intent) =>
       core.dispatchAsync(
         intent as Parameters<typeof core.dispatchAsync>[0],
@@ -1373,12 +1332,42 @@ export function buildStudioToolContext(core: StudioCore): StudioDispatchContext 
       core.dispatchAsync(
         intent as Parameters<typeof core.dispatchAsync>[0],
       ) as unknown as Promise<DispatchResultLike>,
-    listActionNames: () => {
-      const mod = core.getModule();
-      const actions = mod?.schema.actions;
-      return actions !== undefined ? Object.keys(actions) : [];
-    },
+    listActionNames: () => listActionNames(core),
   };
+}
+
+function buildToolAdmissionRuntime(
+  core: StudioCore | null,
+): ToolAdmissionRuntime | null {
+  if (core === null) return null;
+  type CoreExplain = NonNullable<ToolAdmissionRuntime["explainIntent"]>;
+  type CoreWhyNot = NonNullable<ToolAdmissionRuntime["whyNot"]>;
+  return {
+    isActionAvailable: (name) => core.isActionAvailable(name),
+    createIntent: (action, ...args) => core.createIntent(action, ...args),
+    dispatchAsync: (intent) =>
+      core.dispatchAsync(
+        intent as Parameters<typeof core.dispatchAsync>[0],
+      ) as unknown as Promise<DispatchResultLike>,
+    explainIntent: core.explainIntent as unknown as CoreExplain,
+    whyNot: core.whyNot as unknown as CoreWhyNot,
+  };
+}
+
+function nullStudioContext(): StudioDispatchContext {
+  return {
+    isActionAvailable: () => false,
+    createIntent: () => {
+      throw new Error("Studio UI runtime is not ready.");
+    },
+    dispatchAsync: async () => ({ kind: "failed" }),
+    listActionNames: () => [],
+  };
+}
+
+function listActionNames(core: StudioCore): readonly string[] {
+  const actions = core.getModule()?.schema.actions;
+  return actions !== undefined ? Object.keys(actions) : [];
 }
 
 export function safeGetSource(adapter: EditorAdapter): string {

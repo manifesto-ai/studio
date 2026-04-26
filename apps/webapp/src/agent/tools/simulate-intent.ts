@@ -1,4 +1,5 @@
 import type { AgentTool, ToolRunResult } from "./types.js";
+import { normalizeActionName } from "./action-name.js";
 
 export type SimulateIntentContext = {
   readonly createIntent: (action: string, ...args: unknown[]) => unknown;
@@ -78,7 +79,8 @@ const JSON_SCHEMA: Record<string, unknown> = {
   properties: {
     action: {
       type: "string",
-      description: "Action name exactly as declared in the MEL module.",
+      description:
+        "Action name exactly as declared in the MEL module. Graph node ids like `action:restoreTask` are also accepted and normalized.",
     },
     args: {
       type: "array",
@@ -121,7 +123,14 @@ export async function runSimulateIntent(
       message: "`simulateIntent` requires { action: string, args?: unknown[] }.",
     };
   }
-  const action = input.action.trim();
+  const action = normalizeActionName(input.action);
+  if (action === "") {
+    return {
+      ok: false,
+      kind: "invalid_input",
+      message: "`simulateIntent` requires a non-empty action name.",
+    };
+  }
   const args = Array.isArray(input.args) ? input.args : [];
   const known = ctx.listActionNames?.();
   if (known !== undefined && !known.includes(action)) {

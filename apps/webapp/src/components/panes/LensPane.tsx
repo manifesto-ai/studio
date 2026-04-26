@@ -19,7 +19,6 @@ import {
   type SnapshotFocus,
 } from "@manifesto-ai/studio-react";
 import { AgentLens } from "@/agent/ui/AgentLens";
-import { SagaLens } from "@/agent/ui/SagaLens";
 import { MockDataPalette } from "@/mock/MockDataPalette";
 // Marker is defined in studio-core (adapter-interface) and not
 // re-exported by studio-react; pull it from the authoritative source.
@@ -42,8 +41,7 @@ export type LensId =
   | "plan"
   | "history"
   | "diagnostics"
-  | "agent"
-  | "saga";
+  | "agent";
 
 type LensMeta = {
   readonly id: LensId;
@@ -95,13 +93,6 @@ const LENSES: readonly LensMeta[] = [
     hint: "Ask the agent — deterministic tools + local LLM",
     Icon: Sparkles,
     channel: "computed",
-  },
-  {
-    id: "saga",
-    label: "Saga",
-    hint: "Durable agent turns — only ends when the model calls concludeSaga",
-    Icon: Sparkles,
-    channel: "determ",
   },
 ];
 
@@ -275,7 +266,6 @@ export function LensPane({
                 <DiagnosticsPanel onSelect={onRevealMarker} />
               ) : null}
               {value === "agent" ? <AgentLens /> : null}
-              {value === "saga" ? <SagaLens /> : null}
             </motion.div>
           </AnimatePresence>
         </PanelBody>
