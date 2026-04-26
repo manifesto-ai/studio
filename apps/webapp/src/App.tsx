@@ -237,6 +237,7 @@ function AppShell(): JSX.Element {
        * ownership has moved out of that component; it now expects
        * `uiViewMode` and dispatch callbacks from whoever hosts it. */}
       <StudioUiProvider>
+        <ProjectRuntimeSync />
         <StudioProviderHost core={core} adapter={adapter}>
           <ViewportProvider>
             <FocusSync editor={editor} />
@@ -292,6 +293,23 @@ function AppShell(): JSX.Element {
       </StudioUiProvider>
     </div>
   );
+}
+
+function ProjectRuntimeSync(): null {
+  const ui = useStudioUi();
+  const { activeProject } = useProjects();
+
+  useEffect(() => {
+    if (!ui.ready) return;
+    if (activeProject === null) return;
+    if (ui.snapshot.activeProjectName === activeProject.name) return;
+    ui.switchProject(activeProject.name);
+  }, [
+    activeProject,
+    ui,
+  ]);
+
+  return null;
 }
 
 /**

@@ -178,24 +178,22 @@ describe("commitWorkspace", () => {
       summary: "proposal builds cleanly",
     }));
     const setProposal = vi.fn();
-    const concludeAgentTurn = vi.fn(async () => {});
     const ctx: CommitWorkspaceContext = {
       getWorkspace: () => ws,
       getOriginalSource: () => FIXTURE,
       verify,
       setProposal,
-      concludeAgentTurn,
     };
-    return { ctx, verify, setProposal, concludeAgentTurn };
+    return { ctx, verify, setProposal };
   }
 
-  it("commits a clean workspace into a verified proposal and ends the turn", async () => {
+  it("commits a clean workspace into a verified proposal", async () => {
     const ws = bootWorkspace();
     await createAddStateFieldTool().run(
       { name: "lastTouched", type: "number", defaultValue: 0 },
       makeCtx(ws),
     );
-    const { ctx, setProposal, concludeAgentTurn } = makeCommitCtx(ws);
+    const { ctx, setProposal } = makeCommitCtx(ws);
 
     const result = await createCommitWorkspaceTool().run(
       { title: "Add lastTouched", rationale: "track recency" },
@@ -204,10 +202,8 @@ describe("commitWorkspace", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.output.committed).toBe(true);
-    expect(result.output.turnEnded).toBe(true);
     expect(result.output.status).toBe("verified");
     expect(setProposal).toHaveBeenCalledTimes(1);
-    expect(concludeAgentTurn).toHaveBeenCalledTimes(1);
   });
 
   it("rejects commit when workspace is broken", async () => {
@@ -220,7 +216,7 @@ describe("commitWorkspace", () => {
       },
       makeCtx(ws),
     );
-    const { ctx, setProposal, concludeAgentTurn } = makeCommitCtx(ws);
+    const { ctx, setProposal } = makeCommitCtx(ws);
     const result = await createCommitWorkspaceTool().run(
       { title: "broken" },
       ctx,
@@ -229,7 +225,6 @@ describe("commitWorkspace", () => {
     if (result.ok) return;
     expect(result.kind).toBe("runtime_error");
     expect(setProposal).not.toHaveBeenCalled();
-    expect(concludeAgentTurn).not.toHaveBeenCalled();
   });
 
   it("rejects commit when stack is empty", async () => {

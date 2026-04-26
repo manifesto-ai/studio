@@ -69,41 +69,18 @@ export type StudioUiSnapshot = {
   readonly simulationActionName: string | null;
   readonly scrubEnvelopeId: string | null;
   readonly activeProjectName: string | null;
-  /** Last finalized user/agent turn. Stored single-entry — full
-   *  transcript is a React concern. See studio.mel recordAgentTurn. */
-  readonly lastUserPrompt: string | null;
-  readonly lastAgentAnswer: string | null;
-  readonly agentTurnCount: number;
-  /** Manifesto-owned active LLM turn. `null` / `"ended"` means no
-   *  active turn. `"running"` means the harness should keep
-   *  re-invoking the LLM until endTurn concludes it. */
-  readonly agentTurnId: string | null;
-  readonly agentTurnMode: "live" | null;
-  readonly agentTurnStatus: "running" | "ended" | null;
-  readonly agentTurnPrompt: string | null;
-  readonly agentTurnConclusion: string | null;
-  readonly agentTurnResendCount: number;
-  readonly agentLastToolResultName: string | null;
-  readonly agentLastToolFailureKey: string | null;
-  readonly agentLastToolFailureReason: string | null;
-  readonly agentToolFailureRepeatCount: number;
-  readonly agentLastToolSuccessKey: string | null;
-  readonly agentToolSuccessRepeatCount: number;
-  readonly agentToolLoopBlockReason: string | null;
-  readonly agentLastModelFinishKey: string | null;
-  readonly agentModelFinishRepeatCount: number;
   readonly agentUserModuleReady: boolean;
-  readonly agentMelSourceNonEmpty: boolean;
-  readonly agentFocusedActionName: string | null;
-  readonly agentFocusedActionAvailable: boolean;
+  readonly agentCurrentSchemaHash: string | null;
+  readonly agentObservedSchemaHash: string | null;
+  readonly agentObservedFocusNodeId: string | null;
   readonly agentLastAdmittedToolName: string | null;
   /** Computed projections. */
   readonly hasFocus: boolean;
   readonly isLive: boolean;
   readonly isSimulating: boolean;
   readonly isScrubbing: boolean;
-  readonly agentToolLoopBlocked: boolean;
-  readonly agentHasFocusedAction: boolean;
+  readonly agentSchemaFresh: boolean;
+  readonly agentFocusFresh: boolean;
 };
 
 const EMPTY_SNAPSHOT: StudioUiSnapshot = {
@@ -115,35 +92,17 @@ const EMPTY_SNAPSHOT: StudioUiSnapshot = {
   simulationActionName: null,
   scrubEnvelopeId: null,
   activeProjectName: null,
-  lastUserPrompt: null,
-  lastAgentAnswer: null,
-  agentTurnCount: 0,
-  agentTurnId: null,
-  agentTurnMode: null,
-  agentTurnStatus: null,
-  agentTurnPrompt: null,
-  agentTurnConclusion: null,
-  agentTurnResendCount: 0,
-  agentLastToolResultName: null,
-  agentLastToolFailureKey: null,
-  agentLastToolFailureReason: null,
-  agentToolFailureRepeatCount: 0,
-  agentLastToolSuccessKey: null,
-  agentToolSuccessRepeatCount: 0,
-  agentToolLoopBlockReason: null,
-  agentLastModelFinishKey: null,
-  agentModelFinishRepeatCount: 0,
   agentUserModuleReady: false,
-  agentMelSourceNonEmpty: false,
-  agentFocusedActionName: null,
-  agentFocusedActionAvailable: false,
+  agentCurrentSchemaHash: null,
+  agentObservedSchemaHash: null,
+  agentObservedFocusNodeId: null,
   agentLastAdmittedToolName: null,
   hasFocus: false,
   isLive: true,
   isSimulating: false,
   isScrubbing: false,
-  agentToolLoopBlocked: false,
-  agentHasFocusedAction: false,
+  agentSchemaFresh: false,
+  agentFocusFresh: true,
 };
 
 type StudioUiContextValue = {
@@ -175,21 +134,10 @@ type StudioUiContextValue = {
   readonly scrubTo: (envelopeId: string) => void;
   readonly resetScrub: () => void;
   readonly switchProject: (name: string) => void;
-  readonly recordAgentTurn: (prompt: string, answer: string) => void;
   readonly syncAgentToolContext: (
     userModuleReady: boolean,
-    melSourceNonEmpty: boolean,
-    focusedActionName: string | null,
-    focusedActionAvailable: boolean,
+    schemaHash: string | null,
   ) => void;
-  readonly beginAgentTurn: (
-    id: string,
-    mode: NonNullable<StudioUiSnapshot["agentTurnMode"]>,
-    prompt: string,
-  ) => void;
-  readonly concludeAgentTurn: (answer: string) => void;
-  readonly cancelAgentTurn: (reason: string) => void;
-  readonly incrementAgentTurnResend: () => void;
   // ── Low-level dispatch seam (for tests + programmatic callers) ──
   // Typed helpers above cover every known studio.mel action. These
   // lower-level seams are kept for callers that need Promise-shaped
@@ -350,27 +298,8 @@ export function StudioUiProvider({
       scrubTo: (envelopeId) => dispatch("scrubTo", [envelopeId]),
       resetScrub: () => dispatch("resetScrub", []),
       switchProject: (name) => dispatch("switchProject", [name]),
-      recordAgentTurn: (prompt, answer) =>
-        dispatch("recordAgentTurn", [prompt, answer]),
-      syncAgentToolContext: (
-        userModuleReady,
-        melSourceNonEmpty,
-        focusedActionName,
-        focusedActionAvailable,
-      ) =>
-        dispatch("syncAgentToolContext", [
-          userModuleReady,
-          melSourceNonEmpty,
-          focusedActionName,
-          focusedActionAvailable,
-        ]),
-      beginAgentTurn: (id, mode, prompt) =>
-        dispatch("beginAgentTurn", [id, mode, prompt]),
-      concludeAgentTurn: (answer) =>
-        dispatch("concludeAgentTurn", [answer]),
-      cancelAgentTurn: (reason) => dispatch("cancelAgentTurn", [reason]),
-      incrementAgentTurnResend: () =>
-        dispatch("incrementAgentTurnResend", []),
+      syncAgentToolContext: (userModuleReady, schemaHash) =>
+        dispatch("syncAgentToolContext", [userModuleReady, schemaHash]),
       createIntent: createIntentFn,
       dispatchAsync: dispatchIntent,
     }),
@@ -407,48 +336,17 @@ function readSnapshot(core: StudioCore): StudioUiSnapshot {
     simulationActionName: asStringOrNull(data.simulationActionName),
     scrubEnvelopeId: asStringOrNull(data.scrubEnvelopeId),
     activeProjectName: asStringOrNull(data.activeProjectName),
-    lastUserPrompt: asStringOrNull(data.lastUserPrompt),
-    lastAgentAnswer: asStringOrNull(data.lastAgentAnswer),
-    agentTurnCount:
-      typeof data.agentTurnCount === "number" ? data.agentTurnCount : 0,
-    agentTurnId: asStringOrNull(data.agentTurnId),
-    agentTurnMode: asAgentTurnMode(data.agentTurnMode),
-    agentTurnStatus: asAgentTurnStatus(data.agentTurnStatus),
-    agentTurnPrompt: asStringOrNull(data.agentTurnPrompt),
-    agentTurnConclusion: asStringOrNull(data.agentTurnConclusion),
-    agentTurnResendCount:
-      typeof data.agentTurnResendCount === "number"
-        ? data.agentTurnResendCount
-        : 0,
-    agentLastToolResultName: asStringOrNull(data.agentLastToolResultName),
-    agentLastToolFailureKey: asStringOrNull(data.agentLastToolFailureKey),
-    agentLastToolFailureReason: asStringOrNull(data.agentLastToolFailureReason),
-    agentToolFailureRepeatCount:
-      typeof data.agentToolFailureRepeatCount === "number"
-        ? data.agentToolFailureRepeatCount
-        : 0,
-    agentLastToolSuccessKey: asStringOrNull(data.agentLastToolSuccessKey),
-    agentToolSuccessRepeatCount:
-      typeof data.agentToolSuccessRepeatCount === "number"
-        ? data.agentToolSuccessRepeatCount
-        : 0,
-    agentToolLoopBlockReason: asStringOrNull(data.agentToolLoopBlockReason),
-    agentLastModelFinishKey: asStringOrNull(data.agentLastModelFinishKey),
-    agentModelFinishRepeatCount:
-      typeof data.agentModelFinishRepeatCount === "number"
-        ? data.agentModelFinishRepeatCount
-        : 0,
     agentUserModuleReady: data.agentUserModuleReady === true,
-    agentMelSourceNonEmpty: data.agentMelSourceNonEmpty === true,
-    agentFocusedActionName: asStringOrNull(data.agentFocusedActionName),
-    agentFocusedActionAvailable: data.agentFocusedActionAvailable === true,
+    agentCurrentSchemaHash: asStringOrNull(data.agentCurrentSchemaHash),
+    agentObservedSchemaHash: asStringOrNull(data.agentObservedSchemaHash),
+    agentObservedFocusNodeId: asStringOrNull(data.agentObservedFocusNodeId),
     agentLastAdmittedToolName: asStringOrNull(data.agentLastAdmittedToolName),
     hasFocus: Boolean(computed.hasFocus),
     isLive: computed.isLive !== false,
     isSimulating: Boolean(computed.isSimulating),
     isScrubbing: Boolean(computed.isScrubbing),
-    agentToolLoopBlocked: Boolean(computed.agentToolLoopBlocked),
-    agentHasFocusedAction: Boolean(computed.agentHasFocusedAction),
+    agentSchemaFresh: Boolean(computed.agentSchemaFresh),
+    agentFocusFresh: computed.agentFocusFresh !== false,
   };
 }
 
@@ -488,12 +386,4 @@ function asLensId(v: unknown): StudioUiSnapshot["activeLens"] | null {
 
 function asViewMode(v: unknown): StudioUiSnapshot["viewMode"] | null {
   return v === "live" || v === "simulate" || v === "scrub" ? v : null;
-}
-
-function asAgentTurnStatus(v: unknown): StudioUiSnapshot["agentTurnStatus"] {
-  return v === "running" || v === "ended" ? v : null;
-}
-
-function asAgentTurnMode(v: unknown): StudioUiSnapshot["agentTurnMode"] {
-  return v === "live" ? v : null;
 }

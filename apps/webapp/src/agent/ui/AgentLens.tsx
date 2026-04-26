@@ -1,17 +1,17 @@
 /**
- * AgentLens - minimal live Manifesto tool loop.
+ * AgentLens - live Manifesto agent surface.
  *
  * This lens is intentionally thin:
- *   1. Begin a live agent turn in studio.mel.
- *   2. Build a static identity prompt.
- *   3. Expose only currently-available runtime tools.
- *   4. Execute model-selected tools after the same guard recheck.
- *   5. Keep looping until the model calls endTurn.
+ *   1. Build a static identity prompt.
+ *   2. Expose only currently-admitted runtime tools.
+ *   3. Execute model-selected tools after the same guard recheck.
+ *   4. Let the AI SDK handle tool-result continuation.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithToolCalls,
   type UIDataTypes,
   type UIMessage,
   type UIMessagePart,
@@ -19,7 +19,7 @@ import {
 } from "ai";
 import { AnimatePresence, motion } from "motion/react";
 import { useStudio } from "@manifesto-ai/studio-react";
-import type { EditorAdapter, StudioCore } from "@manifesto-ai/studio-core";
+import type { StudioCore } from "@manifesto-ai/studio-core";
 import {
   useStudioUi,
   type StudioUiSnapshot,
@@ -27,7 +27,6 @@ import {
 import {
   bindTool,
   createToolRegistry,
-  type ToolRunResult,
 } from "../tools/types.js";
 import {
   admitToolCall,
@@ -53,8 +52,11 @@ import {
 import {
   createInspectFocusTool,
   type InspectFocusContext,
-  type InspectFocusOutput,
 } from "../tools/inspect-focus.js";
+import {
+  createInspectSchemaTool,
+  type InspectSchemaContext,
+} from "../tools/inspect-schema.js";
 import {
   createInspectSnapshotTool,
   type InspectSnapshotContext,
@@ -64,6 +66,15 @@ import {
   type InspectNeighborsContext,
 } from "../tools/inspect-neighbors.js";
 import {
+  createInspectLineageTool,
+  type FullLineageEntry,
+  type InspectLineageContext,
+} from "../tools/inspect-lineage.js";
+import {
+  createInspectConversationTool,
+  type InspectConversationContext,
+} from "../tools/inspect-conversation.js";
+import {
   createInspectAvailabilityTool,
   type InspectAvailabilityContext,
 } from "../tools/inspect-availability.js";
@@ -72,27 +83,40 @@ import {
   type SimulateIntentContext,
 } from "../tools/simulate-intent.js";
 import {
-  createEndTurnTool,
-  type EndTurnContext,
-} from "../tools/end-turn.js";
-import { readStudioAgentContext } from "../session/agent-context.js";
-import { buildRecentTurnsFromMessages } from "../session/recent-turns.js";
+  createGenerateMockTool,
+  type GenerateMockContext,
+} from "../tools/generate-mock.js";
 import {
-  buildLiveAgentSystemPrompt,
-  newAgentTurnId,
-  readLiveAgentTurnMode,
-  readLiveAgentTurnStatus,
-  type AgentTurnProjection,
-} from "../session/agent-turn-state.js";
+  createSeedMockTool,
+  type SeedMockContext,
+  type SeedMockDispatchResult,
+} from "../tools/seed-mock.js";
+import {
+  buildAgentSystemPrompt,
+  readStudioAgentContext,
+  type TurnStartSnapshot,
+} from "../session/agent-context.js";
+import {
+  digestSchema,
+  digestSnapshot,
+  formatSchemaDigestMarkdown,
+} from "../digest/manifesto-digest.js";
+import { buildActiveTurnMessages } from "../session/active-turn-messages.js";
+import { buildRecentTurnsFromMessages } from "../session/recent-turns.js";
 import {
   buildToolSchemaMap,
   executeToolLocally,
 } from "../adapters/ai-sdk-tools.js";
 import { MarkdownBody } from "./MarkdownBody.js";
-import { summarizeActionInput } from "../session/action-input-summary.js";
+import {
+  projectAction,
+  projectEntity,
+  projectFocus,
+  type ManifestoProjectionInput,
+} from "@/projections/manifesto-projections";
 
 export function AgentLens(): JSX.Element {
-  const { core, adapter } = useStudio();
+  const { core } = useStudio();
   const ui = useStudioUi();
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
@@ -103,79 +127,57 @@ export function AgentLens(): JSX.Element {
   const uiRef = useRef(ui);
   uiRef.current = ui;
 
-  const optimisticTurnRunningRef = useRef(false);
-  useEffect(() => {
-    optimisticTurnRunningRef.current = ui.snapshot.agentTurnStatus === "running";
-  }, [ui.snapshot.agentTurnStatus]);
-
-  const readMelSource = useCallback(
-    (): string => (adapter !== null ? safeGetSource(adapter) : ""),
-    [adapter],
-  );
+  const messagesRef = useRef<readonly UIMessage[]>([]);
 
   const toolImplementations = useMemo<readonly ToolImplementation[]>(() => {
     const userCtx = buildUserToolContext(core);
     const inspectFocusCtx: InspectFocusContext = {
-      getFocus: (): InspectFocusOutput => {
-        const s = uiSnapshotRef.current;
-        return {
-          focusedNodeId: s.focusedNodeId,
-          focusedNodeKind: s.focusedNodeKind,
-          focusedNodeOrigin: s.focusedNodeOrigin,
-          activeLens: s.activeLens,
-          viewMode: s.viewMode,
-          simulationActionName: s.simulationActionName,
-          scrubEnvelopeId: s.scrubEnvelopeId,
-          activeProjectName: s.activeProjectName,
-          lastUserPrompt: s.lastUserPrompt,
-          lastAgentAnswer: s.lastAgentAnswer,
-          agentTurnCount: s.agentTurnCount,
-          agentLastToolResultName: s.agentLastToolResultName,
-          agentLastToolFailureKey: s.agentLastToolFailureKey,
-          agentLastToolFailureReason: s.agentLastToolFailureReason,
-          agentToolFailureRepeatCount: s.agentToolFailureRepeatCount,
-          agentLastToolSuccessKey: s.agentLastToolSuccessKey,
-          agentToolSuccessRepeatCount: s.agentToolSuccessRepeatCount,
-          agentToolLoopBlocked: s.agentToolLoopBlocked,
-          agentToolLoopBlockReason: s.agentToolLoopBlockReason,
-          agentLastModelFinishKey: s.agentLastModelFinishKey,
-          agentModelFinishRepeatCount: s.agentModelFinishRepeatCount,
-          agentUserModuleReady: s.agentUserModuleReady,
-          agentMelSourceNonEmpty: s.agentMelSourceNonEmpty,
-          agentFocusedActionName: s.agentFocusedActionName,
-          agentFocusedActionAvailable: s.agentFocusedActionAvailable,
-          agentLastAdmittedToolName: s.agentLastAdmittedToolName,
-        };
-      },
+      getFocus: () =>
+        projectFocus(
+          buildManifestoProjectionInput(core, uiSnapshotRef.current),
+        ),
+    };
+    const inspectSchemaCtx: InspectSchemaContext = {
+      getModule: () => core.getModule(),
     };
     const inspectSnapshotCtx: InspectSnapshotContext = {
       getSnapshot: () => core.getSnapshot(),
     };
     const inspectNeighborsCtx: InspectNeighborsContext = {
+      getRelations: (nodeId) => {
+        const projected = projectEntity(
+          nodeId,
+          buildManifestoProjectionInput(core, uiSnapshotRef.current),
+        );
+        return projected.status === "ok" ? projected.relations : null;
+      },
       getEdges: () => core.getModule()?.graph?.edges ?? [],
       hasNode: (nodeId) =>
         core.getModule()?.graph?.nodes?.some((n) => n.id === nodeId) ?? false,
+    };
+    const inspectLineageCtx: InspectLineageContext = {
+      getLineage: () => readLineageEntries(core),
+    };
+    const inspectConversationCtx: InspectConversationContext = {
+      getMessages: () => messagesRef.current,
     };
     const inspectAvailabilityCtx: InspectAvailabilityContext = {
       listActionNames: () => listActionNames(core),
       isActionAvailable: (name) => core.isActionAvailable(name),
       describeAction: (name) => {
-        const module = core.getModule();
-        const spec = module?.schema.actions?.[name] as
-          | {
-              readonly description?: string;
-              readonly params?: readonly string[];
-              readonly dispatchable?: unknown;
-            }
-          | undefined;
-        if (spec === undefined) return null;
-        const input = summarizeActionInput(spec, module?.schema);
+        const projected = projectAction(
+          name,
+          buildManifestoProjectionInput(core, uiSnapshotRef.current),
+        );
+        if (projected.status !== "ok" || projected.action === null) {
+          return null;
+        }
         return {
-          paramNames: spec.params ?? [],
-          paramHints: input.paramHints,
-          inputHint: input.inputHint,
-          hasDispatchableGate: spec.dispatchable !== undefined,
-          description: spec.description,
+          paramNames: projected.action.params,
+          paramHints: projected.action.paramHints,
+          inputHint: projected.action.inputHint,
+          hasDispatchableGate: projected.action.hasDispatchableGate,
+          description: projected.action.description ?? undefined,
         };
       },
     };
@@ -189,15 +191,16 @@ export function AgentLens(): JSX.Element {
         core.simulate(intent as Parameters<typeof core.simulate>[0]) as never,
       listActionNames: () => listActionNames(core),
     };
-    const endTurnCtx: EndTurnContext = {
-      isTurnRunning: () =>
-        readLiveAgentTurnStatus(uiRef.current.core) === "running",
-      concludeAgentTurn: async (summary) => {
-        const currentUi = uiRef.current;
-        if (currentUi.core === null) return;
-        const intent = currentUi.createIntent("concludeAgentTurn", summary);
-        await currentUi.dispatchAsync(intent);
-      },
+    const generateMockCtx: GenerateMockContext = {
+      getModule: () => core.getModule(),
+    };
+    const seedMockCtx: SeedMockContext = {
+      getModule: () => core.getModule(),
+      createIntent: (action, ...args) => core.createIntent(action, ...args),
+      dispatchAsync: (intent) =>
+        core.dispatchAsync(
+          intent as Parameters<typeof core.dispatchAsync>[0],
+        ) as unknown as Promise<SeedMockDispatchResult>,
     };
 
     const tools: ToolImplementation[] = [
@@ -207,56 +210,62 @@ export function AgentLens(): JSX.Element {
           getRuntime: () => buildToolAdmissionRuntime(uiRef.current.core),
           getDomainActionNames: () => listActionNames(core),
         }),
-        admissionAction: "requestTool",
-        admissionArgs: ["inspectToolAffordances"],
+        admissionAction: "admitInspectToolAffordances",
       },
       {
         tool: bindTool(createInspectFocusTool(), inspectFocusCtx),
-        admissionAction: "requestTool",
-        admissionArgs: ["inspectFocus"],
+        admissionAction: "admitInspectFocus",
+      },
+      {
+        tool: bindTool(createInspectSchemaTool(), inspectSchemaCtx),
+        admissionAction: "admitInspectSchema",
       },
       {
         tool: bindTool(
           createStudioDispatchTool(),
           ui.core !== null ? buildStudioToolContext(ui.core) : nullStudioContext(),
         ),
-        admissionAction: "requestTool",
-        admissionArgs: ["studioDispatch"],
+        admissionAction: "admitStudioDispatch",
       },
       {
         tool: bindTool(createInspectSnapshotTool(), inspectSnapshotCtx),
-        admissionAction: "requestTool",
-        admissionArgs: ["inspectSnapshot"],
+        admissionAction: "admitInspectSnapshot",
       },
       {
         tool: bindTool(createInspectAvailabilityTool(), inspectAvailabilityCtx),
-        admissionAction: "requestTool",
-        admissionArgs: ["inspectAvailability"],
+        admissionAction: "admitInspectAvailability",
       },
       {
         tool: bindTool(createInspectNeighborsTool(), inspectNeighborsCtx),
-        admissionAction: "requestTool",
-        admissionArgs: ["inspectNeighbors"],
+        admissionAction: "admitInspectNeighbors",
+      },
+      {
+        tool: bindTool(createInspectLineageTool(), inspectLineageCtx),
+        admissionAction: "admitInspectLineage",
+      },
+      {
+        tool: bindTool(createInspectConversationTool(), inspectConversationCtx),
+        admissionAction: "admitInspectConversation",
       },
       {
         tool: bindTool(createLegalityTool(), userCtx),
-        admissionAction: "requestTool",
-        admissionArgs: ["explainLegality"],
+        admissionAction: "admitExplainLegality",
       },
       {
         tool: bindTool(createSimulateIntentTool(), simulateIntentCtx),
-        admissionAction: "requestTool",
-        admissionArgs: ["simulateIntent"],
+        admissionAction: "admitSimulateIntent",
+      },
+      {
+        tool: bindTool(createGenerateMockTool(), generateMockCtx),
+        admissionAction: "admitGenerateMock",
+      },
+      {
+        tool: bindTool(createSeedMockTool(), seedMockCtx),
+        admissionAction: "admitSeedMock",
       },
       {
         tool: bindTool(createDispatchTool(), userCtx),
-        admissionAction: "requestTool",
-        admissionArgs: ["dispatch"],
-      },
-      {
-        tool: bindTool(createEndTurnTool(), endTurnCtx),
-        admissionAction: "requestTool",
-        admissionArgs: ["endTurn"],
+        admissionAction: "admitDispatch",
       },
     ];
     return tools;
@@ -267,33 +276,37 @@ export function AgentLens(): JSX.Element {
     transport: new DefaultChatTransport({
       api: "/api/agent/chat",
       prepareSendMessagesRequest: async ({ messages, id }) => {
-        const melSource = readMelSource();
+        const fullMessages = messages as UIMessage[];
+        messagesRef.current = fullMessages;
         const snap = uiSnapshotRef.current;
         await syncAgentToolContext({
           core,
           uiCore: uiRef.current.core,
           uiSnapshot: snap,
-          melSource,
         });
-        const turn = readAgentTurnProjection(uiRef.current.core, snap);
         const admissionRuntime = buildToolAdmissionRuntime(uiRef.current.core);
         const availableRegistry = createAdmittedToolRegistry(
           toolImplementations,
           admissionRuntime,
         );
-        const agentContext = readStudioAgentContext(
-          core,
-          melSource,
-          buildRecentTurnsFromMessages(messages as UIMessage[]),
-        );
-        const system = buildLiveAgentSystemPrompt({
-          agentContext,
-          turn,
+        const transportMessages = buildActiveTurnMessages(fullMessages);
+        const agentContext = readStudioAgentContext({
+          studioMelDigest: readStudioMelDigest(uiRef.current.core),
+          recentTurns: buildRecentTurnsFromMessages(fullMessages),
+          runtimeSignals: {
+            selectedNodeChanged: !snap.agentFocusFresh,
+            currentFocusedNodeId: snap.focusedNodeId,
+            currentFocusedNodeKind: snap.focusedNodeKind,
+          },
+          turnStartSnapshot: isInitialUserTurnRequest(transportMessages)
+            ? readTurnStartSnapshot(core, snap)
+            : null,
         });
+        const system = buildAgentSystemPrompt(agentContext);
         return {
           body: {
             id,
-            messages,
+            messages: transportMessages,
             system,
             tools: buildToolSchemaMap(availableRegistry),
             maxSteps: 10,
@@ -308,7 +321,6 @@ export function AgentLens(): JSX.Element {
         core,
         uiCore: uiRef.current.core,
         uiSnapshot: uiSnapshotRef.current,
-        melSource: readMelSource(),
       });
       const admissionRuntime = buildToolAdmissionRuntime(uiRef.current.core);
       const toolImplementation = toolImplementations.find(
@@ -316,12 +328,12 @@ export function AgentLens(): JSX.Element {
       );
       const admissionResult =
         toolImplementation === undefined
-            ? rejectUnavailableTool(
-                toolImplementations,
-                toolCall.toolName,
-                admissionRuntime,
-                { domainActionNames: listActionNames(core) },
-              )
+          ? rejectUnavailableTool(
+              toolImplementations,
+              toolCall.toolName,
+              admissionRuntime,
+              { domainActionNames: listActionNames(core) },
+            )
           : await admitToolCall(
               toolImplementation,
               admissionRuntime,
@@ -335,16 +347,11 @@ export function AgentLens(): JSX.Element {
               toolCall.toolName,
               toolCall.input,
             );
-      await recordAgentToolResult(
-        uiRef.current.core,
-        toolCall.toolName,
-        toolCall.input,
-        result,
-      );
-      const blockReason = readAgentToolLoopBlockReason(uiRef.current.core);
-      if (blockReason !== null) {
-        optimisticTurnRunningRef.current = false;
-        setNotice(blockReason);
+      if (toolCall.toolName === "inspectSchema" && result.ok) {
+        await markAgentSchemaObserved(uiRef.current.core, result.output);
+      }
+      if (toolCall.toolName === "inspectFocus" && result.ok) {
+        await markAgentFocusObserved(uiRef.current.core, result.output);
       }
       chat.addToolResult({
         tool: toolCall.toolName,
@@ -352,105 +359,44 @@ export function AgentLens(): JSX.Element {
         output: result as never,
       });
     },
-    sendAutomaticallyWhen: () =>
-      optimisticTurnRunningRef.current &&
-      readLiveAgentTurnStatus(uiRef.current.core) === "running" &&
-      readLiveAgentTurnMode(uiRef.current.core) === "live",
-    onFinish: ({ message }) => {
-      const finish = readModelFinish(message, uiSnapshotRef.current);
-      if (finish.endsTurnWithoutEndTurn) {
-        optimisticTurnRunningRef.current = false;
-      }
-      void recordAgentModelFinish(uiRef.current.core, finish).then(() => {
-        const blockReason = readAgentToolLoopBlockReason(uiRef.current.core);
-        if (blockReason !== null) {
-          optimisticTurnRunningRef.current = false;
-          setNotice(blockReason);
-          return;
-        }
-        setNotice(
-          finish.reasoningOnly
-            ? "The model returned reasoning only. Retrying inside the active turn."
-            : null,
-        );
-      });
-
-      const prompt = findMostRecentUserText(chat.messages);
-      if (prompt !== null) {
-        const answer = extractAssistantText(message);
-        ui.recordAgentTurn(prompt, answer === "" ? "(tool-only turn)" : answer);
-      }
-    },
+    sendAutomaticallyWhen: ({ messages }) =>
+      lastAssistantMessageIsCompleteWithToolCalls({ messages }),
   });
+  messagesRef.current = chat.messages;
 
   const sending = chat.status === "streaming" || chat.status === "submitted";
 
   const onSend = useCallback(() => {
     const prompt = draft.trim();
     if (prompt === "") return;
-    const uiCore = ui.core;
-    if (uiCore === null) {
+    if (ui.core === null) {
       setNotice("Studio runtime is still starting. Try again shortly.");
-      return;
-    }
-    if (
-      uiSnapshotRef.current.agentTurnStatus === "running" ||
-      readLiveAgentTurnStatus(uiCore) === "running"
-    ) {
-      setNotice("An agent turn is already running.");
       return;
     }
     setNotice(null);
     setDraft("");
-    optimisticTurnRunningRef.current = true;
-    const turnId = newAgentTurnId("live");
     void (async () => {
-      let turnStarted = false;
       try {
-        const result = await uiCore.dispatchAsync(
-          uiCore.createIntent("beginAgentTurn", turnId, "live", prompt),
-        );
-        if (result.kind !== "completed") {
-          optimisticTurnRunningRef.current = false;
-          setDraft(prompt);
-          setNotice(
-            `Could not start agent turn: ${readDispatchFailureMessage(result)}`,
-          );
-          return;
-        }
-        turnStarted = true;
         await syncAgentToolContext({
           core,
-          uiCore,
+          uiCore: ui.core,
           uiSnapshot: uiSnapshotRef.current,
-          melSource: readMelSource(),
         });
         await chat.sendMessage({ text: prompt });
       } catch (err) {
-        optimisticTurnRunningRef.current = false;
-        if (turnStarted) {
-          await cancelAgentTurnAfterSendFailure(uiCore);
-        }
         setDraft(prompt);
         setNotice(
-          `Could not start agent turn: ${
+          `Could not send message: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
       }
     })();
-  }, [chat, core, draft, readMelSource, ui.core]);
+  }, [chat, core, draft, ui.core]);
 
   const onStop = useCallback(() => {
     void chat.stop();
-    if (
-      uiSnapshotRef.current.agentTurnStatus === "running" &&
-      uiSnapshotRef.current.agentTurnMode === "live"
-    ) {
-      optimisticTurnRunningRef.current = false;
-      ui.cancelAgentTurn("Live agent turn stopped by user.");
-    }
-  }, [chat, ui]);
+  }, [chat]);
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -496,7 +442,7 @@ function StatusBar({
           : "ready";
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-rule)] text-[10.5px] font-mono">
-      <span className="text-[var(--color-ink-dim)]">agent loop</span>
+      <span className="text-[var(--color-ink-dim)]">agent</span>
       <span className="text-[var(--color-ink-mute)]">/ {label}</span>
       <button
         type="button"
@@ -649,7 +595,6 @@ function ToolActivityRow({
   readonly part: ToolPart;
 }): JSX.Element | null {
   const toolName = part.type.slice("tool-".length);
-  if (toolName === "endTurn") return null;
   const state = (part as { readonly state: string }).state;
   const input = (part as { readonly input?: unknown }).input;
   const output = (part as { readonly output?: unknown }).output;
@@ -727,147 +672,6 @@ type ToolActivity = {
   readonly message: string | null;
 };
 
-async function recordAgentToolResult(
-  uiCore: StudioCore | null,
-  toolName: string,
-  input: unknown,
-  result: ToolRunResult<unknown>,
-): Promise<void> {
-  if (uiCore === null) return;
-  const failureMessage = readToolResultFailureMessage(result);
-  const ok = failureMessage === null;
-  const reason = ok
-    ? `Stopped repeated successful tool call: ${toolName}`
-    : `Stopped repeated tool failure: ${toolName} - ${failureMessage}`;
-  const resultKey = truncate(
-    ok
-      ? `${toolName}:ok:${stringifySafe(input)}`
-      : `${toolName}:error:${failureMessage}:${stringifySafe(input)}`,
-    512,
-  );
-  try {
-    await uiCore.dispatchAsync(
-      uiCore.createIntent(
-        "recordAgentToolResult",
-        toolName,
-        resultKey,
-        ok,
-        reason,
-      ),
-    );
-  } catch (err) {
-    console.error("[AgentLens] recordAgentToolResult failed:", err);
-  }
-}
-
-type ModelFinishRecord = {
-  readonly finishKey: string;
-  readonly hasText: boolean;
-  readonly hasToolCalls: boolean;
-  readonly hasEndTurn: boolean;
-  readonly reasoningOnly: boolean;
-  readonly endsTurnWithoutEndTurn: boolean;
-  readonly reason: string;
-};
-
-async function recordAgentModelFinish(
-  uiCore: StudioCore | null,
-  finish: ModelFinishRecord,
-): Promise<void> {
-  if (
-    uiCore === null ||
-    finish.hasEndTurn ||
-    readLiveAgentTurnStatus(uiCore) !== "running"
-  ) {
-    return;
-  }
-  try {
-    await uiCore.dispatchAsync(
-      uiCore.createIntent(
-        "recordAgentModelFinish",
-        finish.finishKey,
-        finish.hasText,
-        finish.hasToolCalls,
-        finish.reason,
-      ),
-    );
-  } catch (err) {
-    console.error("[AgentLens] recordAgentModelFinish failed:", err);
-  }
-}
-
-function readModelFinish(
-  message: UIMessage,
-  snapshot: StudioUiSnapshot,
-): ModelFinishRecord {
-  const text = extractAssistantText(message);
-  const toolNames = readToolNames(message);
-  const hasText = text !== "";
-  const hasToolCalls = toolNames.length > 0;
-  const hasEndTurn = toolNames.includes("endTurn");
-  const finishKey = hasToolCalls
-    ? `tools:${toolNames.join(",")}`
-    : hasText
-      ? `text:${truncate(text, 160)}`
-      : "reasoning-only";
-  const reasoningOnly = isReasoningOnlyAssistantTurn(message);
-  const repeatedReasoningOnly =
-    reasoningOnly &&
-    snapshot.agentLastModelFinishKey === finishKey &&
-    snapshot.agentModelFinishRepeatCount >= 1;
-  return {
-    finishKey,
-    hasText,
-    hasToolCalls,
-    hasEndTurn,
-    reasoningOnly,
-    endsTurnWithoutEndTurn:
-      !hasEndTurn && ((hasText && !hasToolCalls) || repeatedReasoningOnly),
-    reason:
-      hasText && !hasToolCalls
-        ? "Ended after assistant text without endTurn."
-        : "Stopped repeated non-terminal assistant finish.",
-  };
-}
-
-function readToolNames(message: UIMessage): readonly string[] {
-  return message.parts
-    .filter(isToolPart)
-    .map((part) => part.type.slice("tool-".length));
-}
-
-function readToolResultFailureMessage(
-  result: ToolRunResult<unknown>,
-): string | null {
-  if (!result.ok) return result.message;
-  const output = asRecord(result.output);
-  if (output === null) return null;
-  const status = output.status;
-  if (
-    status === "unavailable" ||
-    status === "rejected" ||
-    status === "failed" ||
-    status === "blocked"
-  ) {
-    if (typeof output.summary === "string" && output.summary.trim() !== "") {
-      return output.summary;
-    }
-    if (typeof output.error === "string" && output.error.trim() !== "") {
-      return output.error;
-    }
-    return `tool returned status "${status}"`;
-  }
-  return null;
-}
-
-function readAgentToolLoopBlockReason(core: StudioCore | null): string | null {
-  if (core === null) return null;
-  const snap = asRecord(core.getSnapshot());
-  const data = asRecord(snap?.data);
-  const reason = data?.agentToolLoopBlockReason;
-  return typeof reason === "string" && reason.trim() !== "" ? reason : null;
-}
-
 function describeToolActivity(
   toolName: string,
   input: unknown,
@@ -904,6 +708,12 @@ function describeToolActivity(
         target: actionName,
         message,
       };
+    case "inspectSchema":
+      return {
+        label: "Read schema",
+        target: readSchemaSummary(output),
+        message,
+      };
     case "inspectSnapshot":
       return {
         label: "Read current state",
@@ -922,6 +732,18 @@ function describeToolActivity(
         target: nodeTarget,
         message,
       };
+    case "inspectLineage":
+      return {
+        label: "Checked world lineage",
+        target: readLineageSummary(output),
+        message,
+      };
+    case "inspectConversation":
+      return {
+        label: "Checked conversation",
+        target: readConversationSummary(output),
+        message,
+      };
     case "explainLegality":
       return {
         label: "Checked action guard",
@@ -931,6 +753,18 @@ function describeToolActivity(
     case "simulateIntent":
       return {
         label: "Previewed action",
+        target: actionName,
+        message,
+      };
+    case "generateMock":
+      return {
+        label: "Generated mock args",
+        target: actionName,
+        message,
+      };
+    case "seedMock":
+      return {
+        label: "Seeded mock data",
         target: actionName,
         message,
       };
@@ -981,8 +815,11 @@ function readActionName(input: unknown, output: unknown): string | null {
 }
 
 function readFocusTarget(output: unknown): string | null {
-  const focus = asRecord(unwrapToolOutput(output))?.focusedNodeId;
-  return typeof focus === "string" && focus.trim() !== "" ? focus : null;
+  const body = asRecord(unwrapToolOutput(output));
+  const label = asRecord(body?.entity)?.label;
+  if (typeof label === "string" && label.trim() !== "") return label;
+  const nodeId = asRecord(body?.focus)?.nodeId;
+  return typeof nodeId === "string" && nodeId.trim() !== "" ? nodeId : null;
 }
 
 function readNodeTarget(input: unknown, output: unknown): string | null {
@@ -1014,6 +851,31 @@ function readToolCatalogSummary(output: unknown): string | null {
   return `${availableTools.length} available${
     typeof blocked === "number" ? `, ${blocked} blocked` : ""
   }`;
+}
+
+function readSchemaSummary(output: unknown): string | null {
+  const body = asRecord(unwrapToolOutput(output));
+  const schemaHash = body?.schemaHash;
+  const actions = body?.actions;
+  const actionCount = Array.isArray(actions) ? actions.length : null;
+  if (typeof schemaHash !== "string") return null;
+  return `${schemaHash.slice(0, 8)}${actionCount === null ? "" : ` · ${actionCount} actions`}`;
+}
+
+function readLineageSummary(output: unknown): string | null {
+  const body = asRecord(unwrapToolOutput(output));
+  const entries = body?.entries;
+  const totalWorlds = body?.totalWorlds;
+  if (!Array.isArray(entries)) return null;
+  return `${entries.length}/${typeof totalWorlds === "number" ? totalWorlds : "?"} worlds`;
+}
+
+function readConversationSummary(output: unknown): string | null {
+  const body = asRecord(unwrapToolOutput(output));
+  const turns = body?.turns;
+  const totalTurns = body?.totalTurns;
+  if (!Array.isArray(turns)) return null;
+  return `${turns.length}/${typeof totalTurns === "number" ? totalTurns : "?"} turns`;
 }
 
 function unwrapToolOutput(output: unknown): unknown {
@@ -1085,31 +947,6 @@ export function extractUserText(message: UIMessage): string {
     .trim();
 }
 
-export function extractAssistantText(message: UIMessage): string {
-  return message.parts
-    .map((part) => (part.type === "text" ? part.text : ""))
-    .join("")
-    .trim();
-}
-
-function findMostRecentUserText(messages: readonly UIMessage[]): string | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i]!;
-    if (message.role !== "user") continue;
-    const text = extractUserText(message);
-    return text === "" ? null : text;
-  }
-  return null;
-}
-
-function isReasoningOnlyAssistantTurn(message: UIMessage): boolean {
-  return (
-    extractAssistantText(message) === "" &&
-    message.parts.some((part) => part.type === "reasoning") &&
-    !message.parts.some(isToolPart)
-  );
-}
-
 function formatInlineInput(input: unknown): string {
   if (input === null || input === undefined) return "{}";
   if (typeof input !== "object") return truncate(String(input), 48);
@@ -1174,118 +1011,29 @@ type SyncAgentToolContextInput = {
   readonly core: StudioCore;
   readonly uiCore: StudioCore | null;
   readonly uiSnapshot: StudioUiSnapshot;
-  readonly melSource: string;
 };
 
 async function syncAgentToolContext({
   core,
   uiCore,
   uiSnapshot,
-  melSource,
 }: SyncAgentToolContextInput): Promise<void> {
   if (uiCore === null) return;
-  const focusedActionName = readFocusedActionName(uiSnapshot);
   const userModuleReady = safeHasModule(core);
-  const melSourceNonEmpty = melSource.trim() !== "";
-  const focusedActionAvailable =
-    focusedActionName !== null && safeIsActionAvailable(core, focusedActionName);
+  const schemaHash = readCurrentSchemaHash(core);
   if (
     uiSnapshot.agentUserModuleReady === userModuleReady &&
-    uiSnapshot.agentMelSourceNonEmpty === melSourceNonEmpty &&
-    uiSnapshot.agentFocusedActionName === focusedActionName &&
-    uiSnapshot.agentFocusedActionAvailable === focusedActionAvailable
+    uiSnapshot.agentCurrentSchemaHash === schemaHash
   ) {
     return;
   }
   try {
     await uiCore.dispatchAsync(
-      uiCore.createIntent(
-        "syncAgentToolContext",
-        userModuleReady,
-        melSourceNonEmpty,
-        focusedActionName,
-        focusedActionAvailable,
-      ),
+      uiCore.createIntent("syncAgentToolContext", userModuleReady, schemaHash),
     );
   } catch (err) {
     console.error("[AgentLens] syncAgentToolContext failed:", err);
   }
-}
-
-async function cancelAgentTurnAfterSendFailure(uiCore: StudioCore): Promise<void> {
-  try {
-    await uiCore.dispatchAsync(
-      uiCore.createIntent(
-        "cancelAgentTurn",
-        "Live agent turn failed before the request was sent.",
-      ),
-    );
-  } catch (err) {
-    console.error("[AgentLens] cancelAgentTurn after send failure failed:", err);
-  }
-}
-
-function readAgentTurnProjection(
-  uiCore: StudioCore | null,
-  fallback: StudioUiSnapshot,
-): AgentTurnProjection {
-  const data = readCoreSnapshotData(uiCore);
-  const mode = data?.agentTurnMode;
-  const status = data?.agentTurnStatus;
-  return {
-    id: readNullableString(data?.agentTurnId) ?? fallback.agentTurnId,
-    mode: mode === "live" ? mode : fallback.agentTurnMode,
-    status:
-      status === "running" || status === "ended"
-        ? status
-        : fallback.agentTurnStatus,
-    prompt: readNullableString(data?.agentTurnPrompt) ?? fallback.agentTurnPrompt,
-    conclusion:
-      readNullableString(data?.agentTurnConclusion) ??
-      fallback.agentTurnConclusion,
-    resendCount:
-      typeof data?.agentTurnResendCount === "number"
-        ? data.agentTurnResendCount
-        : fallback.agentTurnResendCount,
-  };
-}
-
-function readCoreSnapshotData(
-  core: StudioCore | null,
-): Record<string, unknown> | null {
-  if (core === null) return null;
-  try {
-    return asRecord(asRecord(core.getSnapshot())?.data);
-  } catch {
-    return null;
-  }
-}
-
-function readNullableString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function readDispatchFailureMessage(result: DispatchResultLike): string {
-  return (
-    result.rejection?.reason ??
-    result.error?.message ??
-    result.kind ??
-    "unknown runtime rejection"
-  );
-}
-
-function readFocusedActionName(snapshot: StudioUiSnapshot): string | null {
-  if (
-    snapshot.focusedNodeKind !== "action" ||
-    snapshot.focusedNodeId === null ||
-    snapshot.focusedNodeId.trim() === ""
-  ) {
-    return null;
-  }
-  const prefix = "action:";
-  return snapshot.focusedNodeId.startsWith(prefix)
-    ? snapshot.focusedNodeId.slice(prefix.length)
-    : snapshot.focusedNodeId;
 }
 
 function safeHasModule(core: StudioCore): boolean {
@@ -1296,11 +1044,83 @@ function safeHasModule(core: StudioCore): boolean {
   }
 }
 
-function safeIsActionAvailable(core: StudioCore, actionName: string): boolean {
+function readCurrentSchemaHash(core: StudioCore): string | null {
   try {
-    return core.isActionAvailable(actionName);
+    const hash = core.getModule()?.schema.hash;
+    return typeof hash === "string" && hash.trim() !== "" ? hash : null;
   } catch {
-    return false;
+    return null;
+  }
+}
+
+function isInitialUserTurnRequest(
+  messages: readonly UIMessage[],
+): boolean {
+  return messages.length === 1 && messages[0]?.role === "user";
+}
+
+function readTurnStartSnapshot(
+  core: StudioCore,
+  studio: StudioUiSnapshot,
+): TurnStartSnapshot {
+  const snapshot = safeRead(() => core.getSnapshot(), null);
+  const digest = digestSnapshot(snapshot);
+  const head = asRecord(safeRead(() => core.getLineage().head, null));
+  return {
+    worldId: stringifyId(head?.worldId),
+    schemaHash: readCurrentSchemaHash(core),
+    focus: {
+      nodeId: studio.focusedNodeId,
+      kind: studio.focusedNodeKind,
+    },
+    viewMode: studio.viewMode,
+    data: digest.data,
+    computed: digest.computed,
+  };
+}
+
+function readStudioMelDigest(uiCore: StudioCore | null): string | null {
+  if (uiCore === null) return null;
+  const module = safeRead(() => uiCore.getModule(), null);
+  if (module === null) return null;
+  return formatSchemaDigestMarkdown(digestSchema(module));
+}
+
+function stringifyId(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return typeof value === "string" ? value : String(value);
+}
+
+async function markAgentSchemaObserved(
+  uiCore: StudioCore | null,
+  output: unknown,
+): Promise<void> {
+  if (uiCore === null) return;
+  const schemaHash = asRecord(output)?.schemaHash;
+  if (typeof schemaHash !== "string" || schemaHash.trim() === "") return;
+  try {
+    await uiCore.dispatchAsync(
+      uiCore.createIntent("markAgentSchemaObserved", schemaHash),
+    );
+  } catch (err) {
+    console.error("[AgentLens] markAgentSchemaObserved failed:", err);
+  }
+}
+
+async function markAgentFocusObserved(
+  uiCore: StudioCore | null,
+  output: unknown,
+): Promise<void> {
+  if (uiCore === null) return;
+  const focus = asRecord(asRecord(output)?.focus);
+  const nodeId = focus?.nodeId;
+  if (typeof nodeId !== "string" || nodeId.trim() === "") return;
+  try {
+    await uiCore.dispatchAsync(
+      uiCore.createIntent("markAgentFocusObserved", nodeId),
+    );
+  } catch (err) {
+    console.error("[AgentLens] markAgentFocusObserved failed:", err);
   }
 }
 
@@ -1354,6 +1174,21 @@ function buildToolAdmissionRuntime(
   };
 }
 
+function buildManifestoProjectionInput(
+  core: StudioCore,
+  studio: StudioUiSnapshot,
+): ManifestoProjectionInput {
+  return {
+    studio,
+    module: safeRead(() => core.getModule(), null),
+    snapshot: safeRead(() => core.getSnapshot(), null),
+    lineage: safeRead(() => core.getLineage(), null),
+    diagnostics: safeRead(() => core.getDiagnostics(), []),
+    activeProjectName: studio.activeProjectName,
+    isActionAvailable: (name) => core.isActionAvailable(name),
+  };
+}
+
 function nullStudioContext(): StudioDispatchContext {
   return {
     isActionAvailable: () => false,
@@ -1365,15 +1200,40 @@ function nullStudioContext(): StudioDispatchContext {
   };
 }
 
+function safeRead<T>(read: () => T, fallback: T): T {
+  try {
+    return read();
+  } catch {
+    return fallback;
+  }
+}
+
 function listActionNames(core: StudioCore): readonly string[] {
   const actions = core.getModule()?.schema.actions;
   return actions !== undefined ? Object.keys(actions) : [];
 }
 
-export function safeGetSource(adapter: EditorAdapter): string {
-  try {
-    return adapter.getSource();
-  } catch {
-    return "";
-  }
+function readLineageEntries(core: StudioCore): readonly FullLineageEntry[] {
+  return core.getLineage().worlds.slice().reverse().map((world) => ({
+    worldId: String(world.id),
+    origin:
+      world.origin.kind === "dispatch"
+        ? {
+            kind: "dispatch",
+            intentType:
+              typeof world.origin.intentType === "string"
+                ? world.origin.intentType
+                : "(unknown)",
+          }
+        : {
+            kind: "build",
+            ...(typeof world.origin.buildId === "string"
+              ? { buildId: world.origin.buildId }
+              : {}),
+          },
+    parentWorldId: world.parentId === null ? null : String(world.parentId),
+    schemaHash: world.schemaHash,
+    changedPaths: world.changedPaths,
+    createdAt: new Date(world.recordedAt).toISOString(),
+  }));
 }

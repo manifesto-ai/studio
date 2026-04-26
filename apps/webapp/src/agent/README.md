@@ -10,7 +10,7 @@ were a package so extraction to `@manifesto-ai/studio-agent-core` /
 | Dir | Role | Future home | React allowed? |
 |---|---|---|---|
 | `tools/` | Deterministic wrappers around Studio SDK / core verbs — legality, simulate, source-map, graph, snapshot, dispatch, proposal creation. Return LLM-facing JSON. | `studio-agent-core` | ❌ |
-| `agents/` | Future sub-agents (Repair, Critic, UI Intent). Not used in the AI SDK MVP loop yet. | `studio-agent-core` | ❌ |
+| `agents/` | Future sub-agents (Repair, Critic, UI Intent). Not used by the current AgentLens surface. | `studio-agent-core` | ❌ |
 | `session/` | Prompt context, recent-turn projection, single proposal buffer, proposal verifier. | `studio-agent-core` | ❌ |
 | `adapters/` | Bridges local `AgentTool` registry to AI SDK schema/tool-result shapes. | `studio-agent-core` | ❌ |
 | `ui/` | React components for Agent lens, chat, proposal preview. | `studio-agent-react` | ✅ |
@@ -53,23 +53,79 @@ All tools execute client-side in `AgentLens` because they read/mutate the
 live Manifesto runtime in the browser. The server receives tool schemas only
 and never runs tool implementations.
 
+## Schema freshness
+
+The host syncs `{ userModuleReady, schemaHash }` into `studio.mel`. When the
+compiled schema hash changes, MEL clears the observed schema hash and blocks
+schema-dependent tools such as `dispatch`, `simulateIntent`, `generateMock`,
+`seedMock`, `inspectAvailability`, and `inspectNeighbors`.
+
+`inspectSchema` is the refresh checkpoint. After it returns the current
+`schemaHash`, AgentLens dispatches `markAgentSchemaObserved(schemaHash)`, and
+MEL admits schema-dependent tools again.
+
+## Focus freshness
+
+The host also tracks whether the selected Studio graph node has changed since
+the last `inspectFocus` result. When it has, `studio.mel` blocks focus-dependent
+domain tools and the prompt receives a coarse `selected_node_changed` signal.
+The signal deliberately omits the focused node identity and projection. It only
+tells the model that prior selected-node grounding is stale and should be
+refreshed with `inspectFocus`.
+
+## Prompt Contract
+
+The system prompt includes the Fine MEL projection of the compiled Studio
+UI/runtime/tool-admission contract. It does not include the full Studio MEL
+source, user-domain MEL source, or runtime snapshot values; those stay behind
+live inspect tools such as `inspectSchema`, `inspectSnapshot`, and
+`inspectAvailability`.
+
+On the first model request for a user turn, the prompt also includes a compact
+`Turn Start Snapshot`. It is captured before the model's first step and is not
+repeated on tool-result continuation requests. After any mutating tool result,
+the model must treat it as stale and use live inspect tools.
+
+## Long-horizon inspect tools
+
+`inspectLineage` and `inspectConversation` are the escape hatches for context
+that should not live in the system prompt. The prompt keeps only a short
+recent-turn tail; older chat context is pulled through `inspectConversation`.
+Past runtime changes are pulled through `inspectLineage`.
+
+Both default to compact projections and expose pagination cursors. Lineage is
+admitted only after the user MEL module is compiled; conversation history is
+always admitted because it is owned by the chat framework, not the user module.
+
+## Mock data tools
+
+The live AgentLens catalog includes `generateMock` and `seedMock` once the
+current MEL module is compiled and its schema has been observed through
+`inspectSchema`. Both are admitted through tool-specific `studio.mel`
+actions (`admitGenerateMock`, `admitSeedMock`), so they disappear from the
+model-facing tool schema when the user runtime is not ready or schema knowledge
+is stale.
+
+- `generateMock` previews sample argument arrays for a domain action.
+- `seedMock` generates those samples and dispatches them sequentially.
+
+## Message Transport
+
+The browser keeps the full chat transcript for rendering and
+`inspectConversation`, but the model request sends only the active turn: the
+latest user message plus any assistant/tool parts after it. Older turns enter
+the model context through the compact recent-turn prompt tail or explicit
+`inspectConversation` calls.
+
 ## MEL source edits
 
-Source-change requests use the same single-loop agent as everything else —
-there is no separate Author server agent. The model is given four source-
-aware tools:
+The current AgentLens runtime does not register source-authoring tools.
+If the user asks for a MEL edit from this surface, the model should say the
+admitted tool catalog cannot edit source instead of inventing a tool.
 
-- `inspectSourceOutline` — list every declaration with line ranges.
-- `readDeclaration` — return the exact source text for one declaration.
-- `findInSource` — grep the current MEL source.
-- `createProposal` — submit a full proposed source; the shadow verifier
-  (`session/proposal-verifier`) builds it and gates acceptance.
-
-The system prompt tells the model to outline, read the targets it intends
-to touch, and only then call `createProposal` with the complete file.
-`createProposal` does NOT edit source directly — the proposal is rendered
-by `ui/ProposalPreview` and applied only when the user clicks Accept
-(`adapter.setSource` + `adapter.requestBuild`).
+Workspace / proposal helpers still live under `tools/` and `workspace/` for
+future authoring surfaces, but they are not part of the live AgentLens tool
+catalog.
 
 ## Why no React in `tools/agents/session/`
 

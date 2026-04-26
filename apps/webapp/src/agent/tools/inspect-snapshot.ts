@@ -1,37 +1,11 @@
-/**
- * `inspectSnapshot` — read-only tool returning the user-domain
- * Manifesto snapshot as `{ data, computed }`.
- *
- * Why a tool, not a system-prompt block?
- *
- * The snapshot mutates on every successful dispatch. Baking it into
- * every system prompt means a cold cache per dispatch and a stale
- * risk if the agent reasons across multiple turns. A tool call is
- * fresh-by-construction.
- *
- * The tool returns the full `{data, computed}` pair verbatim — no
- * filtering, no truncation beyond what the caller's serializer does.
- * Orchestrator JSON-encodes the result, so very large snapshots may
- * hit the model's context budget; the caller can swap in a projected
- * slice later if that becomes a real constraint.
- */
+import { digestSnapshot, type SnapshotDigest } from "../digest/manifesto-digest.js";
 import type { AgentTool } from "./types.js";
 
 export type InspectSnapshotContext = {
-  /**
-   * Return the current snapshot shape. Callers pass
-   * `core.getSnapshot()` here. Returning `null` means no module is
-   * compiled yet — the tool converts that into an `invalid_input`
-   * result so the model doesn't hallucinate a shape.
-   */
   readonly getSnapshot: () => unknown;
 };
 
-export type InspectSnapshotOutput = {
-  readonly data: unknown;
-  readonly computed: unknown;
-  readonly system?: unknown;
-};
+export type InspectSnapshotOutput = SnapshotDigest;
 
 export function createInspectSnapshotTool(): AgentTool<
   Record<string, never>,
@@ -61,18 +35,9 @@ export function createInspectSnapshotTool(): AgentTool<
               "no snapshot available — user module has not compiled yet",
           };
         }
-        const s = snap as {
-          readonly data?: unknown;
-          readonly computed?: unknown;
-          readonly system?: unknown;
-        };
         return {
           ok: true,
-          output: {
-            data: s.data ?? null,
-            computed: s.computed ?? null,
-            system: s.system,
-          },
+          output: digestSnapshot(snap),
         };
       } catch (err) {
         return {

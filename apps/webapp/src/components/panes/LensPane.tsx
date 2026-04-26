@@ -17,6 +17,7 @@ import {
   SnapshotTree,
   type GraphNode,
   type SnapshotFocus,
+  useStudio,
 } from "@manifesto-ai/studio-react";
 import { AgentLens } from "@/agent/ui/AgentLens";
 import { MockDataPalette } from "@/mock/MockDataPalette";
@@ -27,6 +28,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useFocus } from "@/hooks/useFocus";
 import { useStudioUi } from "@/domain/StudioUiRuntime";
 import { cn } from "@/lib/cn";
+import { projectFocus } from "@/projections/manifesto-projections";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/Panel";
 import {
   Tooltip,
@@ -116,24 +118,43 @@ export function LensPane({
   // Active lens now lives in the Studio UI runtime — App no longer
   // owns this state. `openLens` dispatches against studio.mel.
   const ui = useStudioUi();
+  const studio = useStudio();
   const value = ui.snapshot.activeLens;
   const onChange = ui.openLens;
   const active = LENSES.find((l) => l.id === value) ?? LENSES[0];
 
-  // Map Focus → SnapshotFocus for the Inspect lens. GraphNode ids are
-  // `state:X` / `computed:X` / `action:X`; split on the first colon.
-  const { focus, setFocus } = useFocus();
+  // Manifesto projection is the shared grounding layer for UI + Agent.
+  // The focus field in studio.mel is only an identity pointer; entity
+  // meaning comes from the compiled MEL module + current snapshot.
+  const { setFocus } = useFocus();
+  const focusProjection = useMemo(
+    () =>
+      projectFocus({
+        studio: ui.snapshot,
+        module: studio.module,
+        snapshot: studio.snapshot,
+        lineage: studio.lineage,
+        diagnostics: studio.diagnostics,
+        activeProjectName: ui.snapshot.activeProjectName,
+        isActionAvailable: (name) => studio.core.isActionAvailable(name),
+      }),
+    [
+      ui.snapshot,
+      studio.module,
+      studio.snapshot,
+      studio.lineage,
+      studio.diagnostics,
+      studio.core,
+    ],
+  );
   const snapshotFocus: SnapshotFocus | null = useMemo(() => {
-    if (focus === null || focus.kind !== "node") return null;
-    const idx = focus.id.indexOf(":");
-    if (idx < 0) return null;
-    const kind = focus.id.slice(0, idx);
-    const name = focus.id.slice(idx + 1);
-    if (kind === "state" || kind === "computed" || kind === "action") {
-      return { kind, name };
-    }
-    return null;
-  }, [focus]);
+    const entity = focusProjection.entity;
+    if (entity === null || entity.status !== "ok") return null;
+    return {
+      kind: entity.ref.kind,
+      name: entity.ref.name,
+    };
+  }, [focusProjection]);
 
   // Pulse hint — when focus changes while the user isn't on the
   // relevant lens, briefly glow the rail button. Soft hint only; we

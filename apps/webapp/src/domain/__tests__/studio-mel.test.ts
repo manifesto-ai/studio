@@ -38,18 +38,40 @@ function readState(core: Awaited<ReturnType<typeof bootStudioRuntime>>) {
   return (snap as { readonly data?: Record<string, unknown> } | null)?.data ?? {};
 }
 
-function readComputed(core: Awaited<ReturnType<typeof bootStudioRuntime>>) {
-  const snap = core.getSnapshot();
-  return (
-    (snap as { readonly computed?: Record<string, unknown> } | null)
-      ?.computed ?? {}
-  );
-}
-
 describe("studio.mel — compiles", () => {
   it("builds cleanly with no diagnostics", async () => {
     const core = await bootStudioRuntime();
     expect(core.getModule()).not.toBeNull();
+  });
+
+  it("preserves structural @meta annotations for grounding", async () => {
+    const core = await bootStudioRuntime();
+    const entries = (
+      core.getModule() as {
+        readonly annotations?: {
+          readonly entries?: Record<
+            string,
+            readonly { readonly tag: string; readonly payload?: unknown }[]
+          >;
+        };
+      } | null
+    )?.annotations?.entries;
+
+    expect(entries?.["domain:Studio"]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tag: "comment:grounding" }),
+      ]),
+    );
+    expect(entries?.["state_field:focusedNodeId"]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tag: "comment:grounding" }),
+      ]),
+    );
+    expect(entries?.["action:admitDispatch"]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tag: "agent:invariant" }),
+      ]),
+    );
   });
 });
 
@@ -66,23 +88,12 @@ describe("studio.mel — initial state", () => {
       simulationActionName: null,
       scrubEnvelopeId: null,
       activeProjectName: null,
-      agentLastToolResultName: null,
-      agentLastToolFailureKey: null,
-      agentLastToolFailureReason: null,
-      agentToolFailureRepeatCount: 0,
-      agentLastToolSuccessKey: null,
-      agentToolSuccessRepeatCount: 0,
-      agentToolLoopBlockReason: null,
-      agentLastModelFinishKey: null,
-      agentModelFinishRepeatCount: 0,
       agentUserModuleReady: false,
-      agentMelSourceNonEmpty: false,
-      agentFocusedActionName: null,
-      agentFocusedActionAvailable: false,
+      agentCurrentSchemaHash: null,
+      agentObservedSchemaHash: null,
+      agentObservedFocusNodeId: null,
       agentLastAdmittedToolName: null,
     });
-    expect(readComputed(core).agentToolLoopBlocked).toBe(false);
-    expect(readComputed(core).agentHasFocusedAction).toBe(false);
   });
 });
 
@@ -101,6 +112,7 @@ describe("studio.mel — focus + lens transitions", () => {
       focusedNodeId: "action:toggleTodo",
       focusedNodeKind: "action",
       focusedNodeOrigin: "graph",
+      agentObservedFocusNodeId: null,
     });
   });
 
@@ -114,6 +126,7 @@ describe("studio.mel — focus + lens transitions", () => {
       focusedNodeId: null,
       focusedNodeKind: null,
       focusedNodeOrigin: null,
+      agentObservedFocusNodeId: null,
     });
   });
 
@@ -198,485 +211,249 @@ describe("studio.mel — view-mode legality gates", () => {
   });
 });
 
-describe("studio.mel — recordAgentTurn is single-entry + advances lineage", () => {
-  it("stores latest prompt/answer, increments turn counter", async () => {
-    const core = await bootStudioRuntime();
-    const a = await core.dispatchAsync(
-      core.createIntent("recordAgentTurn", "why is X blocked?", "X needs Y > 0"),
-    );
-    expect(a.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      lastUserPrompt: "why is X blocked?",
-      lastAgentAnswer: "X needs Y > 0",
-      agentTurnCount: 1,
-    });
-    const b = await core.dispatchAsync(
-      core.createIntent("recordAgentTurn", "seed 5 rows", "(tool-only · 5)"),
-    );
-    expect(b.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      lastUserPrompt: "seed 5 rows",
-      lastAgentAnswer: "(tool-only · 5)",
-      agentTurnCount: 2,
-    });
-  });
-});
-
 describe("studio.mel — agent tool admission", () => {
-  it("syncs host context and admits domain read tools only when ready", async () => {
+  it("admits UI/meta tools without an agent turn", async () => {
     const core = await bootStudioRuntime();
-    expect(core.isActionAvailable("requestTool")).toBe(false);
+    expect(core.isActionAvailable("admitInspectToolAffordances")).toBe(true);
+    expect(core.isActionAvailable("admitInspectFocus")).toBe(true);
 
-    await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-tools", "live", "inspect"),
+    const affordances = await core.dispatchAsync(
+      core.createIntent("admitInspectToolAffordances"),
     );
-    expect(core.isActionAvailable("requestTool")).toBe(true);
+    expect(affordances.kind).toBe("completed");
     const focus = await core.dispatchAsync(
-      core.createIntent("requestTool", "inspectFocus"),
+      core.createIntent("admitInspectFocus"),
     );
     expect(focus.kind).toBe("completed");
+    expect(readState(core).agentLastAdmittedToolName).toBe("inspectFocus");
+  });
+
+  it("syncs host context and admits domain read tools only when ready", async () => {
+    const core = await bootStudioRuntime();
     const blockedSnapshot = await core.dispatchAsync(
-      core.createIntent("requestTool", "inspectSnapshot"),
+      core.createIntent("admitInspectSnapshot"),
+    );
+    const blockedLineage = await core.dispatchAsync(
+      core.createIntent("admitInspectLineage"),
+    );
+    const conversation = await core.dispatchAsync(
+      core.createIntent("admitInspectConversation"),
     );
     expect(blockedSnapshot.kind).not.toBe("completed");
+    expect(blockedLineage.kind).not.toBe("completed");
+    expect(conversation.kind).toBe("completed");
 
     const sync = await core.dispatchAsync(
-      core.createIntent(
-        "syncAgentToolContext",
-        true,
-        true,
-        "submit",
-        true,
-      ),
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
     );
     expect(sync.kind).toBe("completed");
     expect(readState(core)).toMatchObject({
       agentUserModuleReady: true,
-      agentMelSourceNonEmpty: true,
-      agentFocusedActionName: "submit",
-      agentFocusedActionAvailable: true,
+      agentCurrentSchemaHash: "schema-a",
+      agentObservedSchemaHash: null,
     });
-    expect(readComputed(core).agentHasFocusedAction).toBe(true);
 
     const admitted = await core.dispatchAsync(
-      core.createIntent("requestTool", "inspectSnapshot"),
+      core.createIntent("admitInspectSnapshot"),
     );
     expect(admitted.kind).toBe("completed");
-    expect(readState(core).agentLastAdmittedToolName).toBe("inspectSnapshot");
+    const lineage = await core.dispatchAsync(
+      core.createIntent("admitInspectLineage"),
+    );
+    expect(lineage.kind).toBe("completed");
+    expect(readState(core).agentLastAdmittedToolName).toBe("inspectLineage");
   });
 
-  it("admits dispatch when the user domain is ready", async () => {
+  it("requires schema observation before schema-dependent tools", async () => {
     const core = await bootStudioRuntime();
-    await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-dispatch", "live", "submit"),
-    );
-
     const blocked = await core.dispatchAsync(
-      core.createIntent("requestTool", "dispatch"),
+      core.createIntent("admitDispatch"),
     );
     expect(blocked.kind).not.toBe("completed");
 
     await core.dispatchAsync(
-      core.createIntent(
-        "syncAgentToolContext",
-        true,
-        true,
-        null,
-        false,
-      ),
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
     );
 
+    const staleDispatch = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    const staleAvailability = await core.dispatchAsync(
+      core.createIntent("admitInspectAvailability"),
+    );
+    expect(staleDispatch.kind).not.toBe("completed");
+    expect(staleAvailability.kind).not.toBe("completed");
+
+    const schema = await core.dispatchAsync(
+      core.createIntent("admitInspectSchema"),
+    );
+    expect(schema.kind).toBe("completed");
+    const mark = await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
+    expect(mark.kind).toBe("completed");
+
     const ok = await core.dispatchAsync(
-      core.createIntent("requestTool", "dispatch"),
+      core.createIntent("admitDispatch"),
+    );
+    const availability = await core.dispatchAsync(
+      core.createIntent("admitInspectAvailability"),
     );
     expect(ok.kind).toBe("completed");
-    expect(readState(core).agentLastAdmittedToolName).toBe("dispatch");
+    expect(availability.kind).toBe("completed");
+    expect(readState(core)).toMatchObject({
+      agentObservedSchemaHash: "schema-a",
+      agentLastAdmittedToolName: "inspectAvailability",
+    });
+  });
+
+  it("requires focus observation after the focused node changes", async () => {
+    const core = await bootStudioRuntime();
+    await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
+    );
+    await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
+
+    const beforeFocus = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    expect(beforeFocus.kind).toBe("completed");
+
+    await core.dispatchAsync(
+      core.createIntent("focusNode", "state:wow", "state", "source"),
+    );
+    expect(readState(core)).toMatchObject({
+      focusedNodeId: "state:wow",
+      agentObservedFocusNodeId: null,
+    });
+
+    const blockedDispatch = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    const blockedSnapshot = await core.dispatchAsync(
+      core.createIntent("admitInspectSnapshot"),
+    );
+    expect(blockedDispatch.kind).not.toBe("completed");
+    expect(blockedSnapshot.kind).not.toBe("completed");
+
+    const inspectFocus = await core.dispatchAsync(
+      core.createIntent("admitInspectFocus"),
+    );
+    expect(inspectFocus.kind).toBe("completed");
+    const mark = await core.dispatchAsync(
+      core.createIntent("markAgentFocusObserved", "state:wow"),
+    );
+    expect(mark.kind).toBe("completed");
+
+    const afterFocus = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    expect(afterFocus.kind).toBe("completed");
+    expect(readState(core)).toMatchObject({
+      agentObservedFocusNodeId: "state:wow",
+      agentLastAdmittedToolName: "dispatch",
+    });
+  });
+
+  it("invalidates observed schema when the host reports a new schema hash", async () => {
+    const core = await bootStudioRuntime();
+    await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
+    );
+    await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
+    const before = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    expect(before.kind).toBe("completed");
+
+    await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-b"),
+    );
+    expect(readState(core)).toMatchObject({
+      agentCurrentSchemaHash: "schema-b",
+      agentObservedSchemaHash: null,
+    });
+    const stale = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    expect(stale.kind).not.toBe("completed");
+    const wrongMark = await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
+    expect(wrongMark.kind).not.toBe("completed");
+
+    await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-b"),
+    );
+    const after = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    expect(after.kind).toBe("completed");
+  });
+
+  it("admits mock tools when the user domain is ready", async () => {
+    const core = await bootStudioRuntime();
+    const blockedGenerate = await core.dispatchAsync(
+      core.createIntent("admitGenerateMock"),
+    );
+    const blockedSeed = await core.dispatchAsync(
+      core.createIntent("admitSeedMock"),
+    );
+    expect(blockedGenerate.kind).not.toBe("completed");
+    expect(blockedSeed.kind).not.toBe("completed");
+
+    await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
+    );
+    const staleGenerate = await core.dispatchAsync(
+      core.createIntent("admitGenerateMock"),
+    );
+    expect(staleGenerate.kind).not.toBe("completed");
+    await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
+
+    const generate = await core.dispatchAsync(
+      core.createIntent("admitGenerateMock"),
+    );
+    expect(generate.kind).toBe("completed");
+    const seed = await core.dispatchAsync(
+      core.createIntent("admitSeedMock"),
+    );
+    expect(seed.kind).toBe("completed");
+    expect(readState(core).agentLastAdmittedToolName).toBe("seedMock");
   });
 
   it("scopes simulate admission to live mode", async () => {
     const core = await bootStudioRuntime();
     await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-sim", "live", "preview"),
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
     );
     await core.dispatchAsync(
-      core.createIntent(
-        "syncAgentToolContext",
-        true,
-        true,
-        "submit",
-        true,
-      ),
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
     );
     const live = await core.dispatchAsync(
-      core.createIntent("requestTool", "simulateIntent"),
+      core.createIntent("admitSimulateIntent"),
     );
     expect(live.kind).toBe("completed");
 
     await core.dispatchAsync(core.createIntent("scrubTo", "env-1"));
     const scrubbed = await core.dispatchAsync(
-      core.createIntent("requestTool", "simulateIntent"),
+      core.createIntent("admitSimulateIntent"),
     );
     expect(scrubbed.kind).not.toBe("completed");
   });
 
-  it("keeps endTurn admission running-only", async () => {
+  it("does not expose generic requestTool or removed endTurn admission", async () => {
     const core = await bootStudioRuntime();
     expect(core.isActionAvailable("requestTool")).toBe(false);
-
-    await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-end", "live", "done"),
-    );
-    expect(core.isActionAvailable("requestTool")).toBe(true);
-    const admitted = await core.dispatchAsync(
-      core.createIntent("requestTool", "endTurn"),
-    );
-    expect(admitted.kind).toBe("completed");
-
-    await core.dispatchAsync(core.createIntent("concludeAgentTurn", "done"));
-    expect(core.isActionAvailable("requestTool")).toBe(false);
-  });
-});
-
-describe("studio.mel — agent turn lifecycle", () => {
-  it("begins with no active turn (status null, count 0)", async () => {
-    const core = await bootStudioRuntime();
-    expect(readState(core)).toMatchObject({
-      agentTurnId: null,
-      agentTurnMode: null,
-      agentTurnStatus: null,
-      agentTurnPrompt: null,
-      agentTurnConclusion: null,
-      agentTurnResendCount: 0,
-      agentLastToolResultName: null,
-      agentLastToolFailureKey: null,
-      agentLastToolFailureReason: null,
-      agentToolFailureRepeatCount: 0,
-      agentLastToolSuccessKey: null,
-      agentToolSuccessRepeatCount: 0,
-      agentToolLoopBlockReason: null,
-      agentLastModelFinishKey: null,
-      agentModelFinishRepeatCount: 0,
-      agentUserModuleReady: false,
-      agentMelSourceNonEmpty: false,
-      agentFocusedActionName: null,
-      agentFocusedActionAvailable: false,
-      agentLastAdmittedToolName: null,
-    });
-  });
-
-  it("beginAgentTurn -> running; concludeAgentTurn -> ended", async () => {
-    const core = await bootStudioRuntime();
-    const begin = await core.dispatchAsync(
-      core.createIntent(
-        "beginAgentTurn",
-        "turn-1",
-        "live",
-        "add priority field",
-      ),
-    );
-    expect(begin.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnId: "turn-1",
-      agentTurnMode: "live",
-      agentTurnStatus: "running",
-      agentTurnPrompt: "add priority field",
-      agentTurnConclusion: null,
-      agentTurnResendCount: 0,
-      agentLastAdmittedToolName: null,
-    });
-
-    const conclude = await core.dispatchAsync(
-      core.createIntent("concludeAgentTurn", "added priority field"),
-    );
-    expect(conclude.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnStatus: "ended",
-      agentTurnConclusion: "added priority field",
-    });
-  });
-
-  it("rejects a second beginAgentTurn while one is running", async () => {
-    const core = await bootStudioRuntime();
-    await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-a", "live", "first"),
-    );
-    const rejected = await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-b", "live", "second"),
-    );
-    expect(rejected.kind).not.toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnId: "turn-a",
-      agentTurnMode: "live",
-      agentTurnPrompt: "first",
-    });
-  });
-
-  it("allows a new turn after the prior one ends (resets mode, resend count + conclusion)", async () => {
-    const core = await bootStudioRuntime();
-    await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-1", "live", "p1"),
-    );
-    await core.dispatchAsync(core.createIntent("requestTool", "inspectFocus"));
-    await core.dispatchAsync(
-      core.createIntent("incrementAgentTurnResend"),
-    );
-    await core.dispatchAsync(
-      core.createIntent("concludeAgentTurn", "done"),
-    );
-    const next = await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-2", "live", "p2"),
-    );
-    expect(next.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnId: "turn-2",
-      agentTurnMode: "live",
-      agentTurnStatus: "running",
-      agentTurnPrompt: "p2",
-      agentTurnConclusion: null,
-      agentTurnResendCount: 0,
-      agentLastToolResultName: null,
-      agentLastToolFailureKey: null,
-      agentLastToolFailureReason: null,
-      agentToolFailureRepeatCount: 0,
-      agentLastToolSuccessKey: null,
-      agentToolSuccessRepeatCount: 0,
-      agentToolLoopBlockReason: null,
-      agentLastModelFinishKey: null,
-      agentModelFinishRepeatCount: 0,
-      agentLastAdmittedToolName: null,
-    });
-  });
-
-  it("records repeated tool failures inside studio.mel and ends no-progress turns", async () => {
-    const core = await bootStudioRuntime();
-    await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-tools", "live", "seed item"),
-    );
-
-    const first = await core.dispatchAsync(
-      core.createIntent(
-        "recordAgentToolResult",
-        "seedMock",
-        "seedMock:unavailable",
-        false,
-        "Stopped repeated tool failure: seedMock - unavailable",
-      ),
-    );
-    expect(first.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnStatus: "running",
-      agentLastToolResultName: "seedMock",
-      agentLastToolFailureKey: "seedMock:unavailable",
-      agentLastToolFailureReason:
-        "Stopped repeated tool failure: seedMock - unavailable",
-      agentToolFailureRepeatCount: 1,
-      agentToolLoopBlockReason: null,
-    });
-    expect(readComputed(core).agentToolLoopBlocked).toBe(false);
-
-    const second = await core.dispatchAsync(
-      core.createIntent(
-        "recordAgentToolResult",
-        "seedMock",
-        "seedMock:unavailable",
-        false,
-        "Stopped repeated tool failure: seedMock - unavailable",
-      ),
-    );
-    expect(second.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnStatus: "ended",
-      agentTurnConclusion:
-        "Stopped repeated tool failure: seedMock - unavailable",
-      agentToolFailureRepeatCount: 2,
-      agentToolLoopBlockReason:
-        "Stopped repeated tool failure: seedMock - unavailable",
-    });
-    expect(readComputed(core).agentToolLoopBlocked).toBe(true);
-  });
-
-  it("resets the tool failure streak after a successful tool result", async () => {
-    const core = await bootStudioRuntime();
-    await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-reset", "live", "inspect"),
-    );
-    await core.dispatchAsync(
-      core.createIntent(
-        "recordAgentToolResult",
-        "dispatch",
-        "dispatch:blocked",
-        false,
-        "dispatch blocked",
-      ),
-    );
-    const success = await core.dispatchAsync(
-      core.createIntent(
-        "recordAgentToolResult",
-        "inspectSnapshot",
-        "inspectSnapshot:ok:{}",
-        true,
-        "Stopped repeated successful tool call: inspectSnapshot",
-      ),
-    );
-
-    expect(success.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnStatus: "running",
-      agentLastToolResultName: "inspectSnapshot",
-      agentLastToolFailureKey: null,
-      agentLastToolFailureReason: null,
-      agentToolFailureRepeatCount: 0,
-      agentLastToolSuccessKey: "inspectSnapshot:ok:{}",
-      agentToolSuccessRepeatCount: 1,
-      agentToolLoopBlockReason: null,
-      agentLastModelFinishKey: null,
-      agentModelFinishRepeatCount: 0,
-    });
-  });
-
-  it("ends a turn after the same successful tool repeats without terminal progress", async () => {
-    const core = await bootStudioRuntime();
-    await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-repeat-success", "live", "inspect"),
-    );
-    await core.dispatchAsync(
-      core.createIntent(
-        "recordAgentToolResult",
-        "inspectToolAffordances",
-        "inspectToolAffordances:ok:{}",
-        true,
-        "Stopped repeated successful tool call: inspectToolAffordances",
-      ),
-    );
-    const repeated = await core.dispatchAsync(
-      core.createIntent(
-        "recordAgentToolResult",
-        "inspectToolAffordances",
-        "inspectToolAffordances:ok:{}",
-        true,
-        "Stopped repeated successful tool call: inspectToolAffordances",
-      ),
-    );
-
-    expect(repeated.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnStatus: "ended",
-      agentTurnConclusion:
-        "Stopped repeated successful tool call: inspectToolAffordances",
-      agentToolSuccessRepeatCount: 2,
-      agentToolLoopBlockReason:
-        "Stopped repeated successful tool call: inspectToolAffordances",
-    });
-    expect(readComputed(core).agentToolLoopBlocked).toBe(true);
-  });
-
-  it("ends a turn when the assistant emits text but forgets endTurn", async () => {
-    const core = await bootStudioRuntime();
-    await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-text", "live", "answer"),
-    );
-    const finish = await core.dispatchAsync(
-      core.createIntent(
-        "recordAgentModelFinish",
-        "text:done",
-        true,
-        false,
-        "Ended after assistant text without endTurn.",
-      ),
-    );
-
-    expect(finish.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnStatus: "ended",
-      agentTurnConclusion: "Ended after assistant text without endTurn.",
-      agentLastModelFinishKey: "text:done",
-      agentModelFinishRepeatCount: 1,
-    });
-  });
-
-  it("ends a turn after repeated reasoning-only model finishes", async () => {
-    const core = await bootStudioRuntime();
-    await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-reasoning", "live", "answer"),
-    );
-    const first = await core.dispatchAsync(
-      core.createIntent(
-        "recordAgentModelFinish",
-        "reasoning-only",
-        false,
-        false,
-        "Stopped repeated non-terminal assistant finish.",
-      ),
-    );
-    expect(first.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnStatus: "running",
-      agentTurnResendCount: 1,
-      agentModelFinishRepeatCount: 1,
-      agentToolLoopBlockReason: null,
-    });
-
-    const second = await core.dispatchAsync(
-      core.createIntent(
-        "recordAgentModelFinish",
-        "reasoning-only",
-        false,
-        false,
-        "Stopped repeated non-terminal assistant finish.",
-      ),
-    );
-    expect(second.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnStatus: "ended",
-      agentTurnConclusion: "Stopped repeated non-terminal assistant finish.",
-      agentTurnResendCount: 2,
-      agentModelFinishRepeatCount: 2,
-      agentToolLoopBlockReason: "Stopped repeated non-terminal assistant finish.",
-    });
-    expect(readComputed(core).agentToolLoopBlocked).toBe(true);
-  });
-
-  it("rejects concludeAgentTurn when no turn is running", async () => {
-    const core = await bootStudioRuntime();
-    const rejected = await core.dispatchAsync(
-      core.createIntent("concludeAgentTurn", "orphan"),
-    );
-    expect(rejected.kind).not.toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnStatus: null,
-      agentTurnConclusion: null,
-    });
-  });
-
-  it("incrementAgentTurnResend bumps the counter monotonically while running", async () => {
-    const core = await bootStudioRuntime();
-    await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-x", "live", "pk"),
-    );
-    for (let i = 0; i < 3; i++) {
-      const r = await core.dispatchAsync(
-        core.createIntent("incrementAgentTurnResend"),
-      );
-      expect(r.kind).toBe("completed");
-    }
-    expect(readState(core)).toMatchObject({
-      agentTurnResendCount: 3,
-    });
-  });
-
-  it("cancelAgentTurn ends a running turn with the given reason", async () => {
-    const core = await bootStudioRuntime();
-    await core.dispatchAsync(
-      core.createIntent("beginAgentTurn", "turn-cancel", "live", "pk"),
-    );
-    const cancelled = await core.dispatchAsync(
-      core.createIntent("cancelAgentTurn", "stopped by user"),
-    );
-    expect(cancelled.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      agentTurnStatus: "ended",
-      agentTurnConclusion: "stopped by user",
-    });
+    expect(core.isActionAvailable("admitEndTurn")).toBe(false);
+    expect(core.getModule()?.schema.actions).not.toHaveProperty("requestTool");
+    expect(core.getModule()?.schema.actions).not.toHaveProperty("admitEndTurn");
   });
 });
 
@@ -693,6 +470,7 @@ describe("studio.mel — switchProject resets dependent state", () => {
       focusedNodeId: null,
       focusedNodeKind: null,
       focusedNodeOrigin: null,
+      agentObservedFocusNodeId: null,
       viewMode: "live",
       simulationActionName: null,
       scrubEnvelopeId: null,

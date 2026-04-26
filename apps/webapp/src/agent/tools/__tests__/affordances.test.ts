@@ -4,7 +4,6 @@ import {
   buildToolAffordanceReport,
   createAdmittedToolRegistry,
   createInspectToolAffordancesTool,
-  explainAdmissionAvailability,
   rejectUnavailableTool,
   type DispatchResultLike,
   type ToolAdmissionRuntime,
@@ -15,22 +14,29 @@ import { bindTool, type BoundAgentTool } from "../types.js";
 const ALL_TOOLS: readonly ToolImplementation[] = [
   toolImplementation("inspectToolAffordances"),
   toolImplementation("inspectFocus"),
+  toolImplementation("inspectSchema"),
   toolImplementation("inspectSnapshot"),
   toolImplementation("inspectAvailability"),
+  toolImplementation("inspectLineage"),
+  toolImplementation("inspectConversation"),
   toolImplementation("studioDispatch"),
   toolImplementation("dispatch"),
   toolImplementation("simulateIntent"),
-  toolImplementation("endTurn"),
+  toolImplementation("generateMock"),
+  toolImplementation("seedMock"),
 ];
+const ALL_ADMISSION_ACTIONS = ALL_TOOLS.map((entry) => entry.admissionAction);
 
 describe("Manifesto tool admission", () => {
   it("builds the exposed registry from studio.mel admission actions", () => {
-    const runtime = fakeRuntime(["requestTool"], {
+    const runtime = fakeRuntime(ALL_ADMISSION_ACTIONS, {
       admittedTools: [
         "inspectToolAffordances",
         "inspectFocus",
+        "inspectSchema",
         "studioDispatch",
-        "endTurn",
+        "inspectConversation",
+        "generateMock",
       ],
     });
 
@@ -39,15 +45,17 @@ describe("Manifesto tool admission", () => {
     expect(registry.list().map((entry) => entry.name)).toEqual([
       "inspectToolAffordances",
       "inspectFocus",
+      "inspectSchema",
+      "inspectConversation",
       "studioDispatch",
-      "endTurn",
+      "generateMock",
     ]);
   });
 
   it("dispatches the MEL admission action before running a tool", async () => {
     const calls: Array<{ readonly action: string; readonly args: unknown[] }> =
       [];
-    const runtime = fakeRuntime(["requestTool"], {
+    const runtime = fakeRuntime(ALL_ADMISSION_ACTIONS, {
       dispatch: (action, args) => {
         calls.push({ action, args: [...args] });
         return { kind: "completed" };
@@ -64,11 +72,11 @@ describe("Manifesto tool admission", () => {
     });
 
     expect(result).toEqual({ ok: true, output: { admitted: true } });
-    expect(calls).toEqual([{ action: "requestTool", args: ["dispatch"] }]);
+    expect(calls).toEqual([{ action: "admitDispatch", args: [] }]);
   });
 
   it("returns the runtime rejection when admission fails", async () => {
-    const runtime = fakeRuntime(["requestTool"], {
+    const runtime = fakeRuntime(ALL_ADMISSION_ACTIONS, {
       admittedTools: [],
       dispatch: () => ({
         kind: "rejected",
@@ -93,10 +101,10 @@ describe("Manifesto tool admission", () => {
   });
 
   it("explains blocked tools from Manifesto legality diagnostics", () => {
-    const runtime = fakeRuntime(["requestTool"], {
+    const runtime = fakeRuntime(ALL_ADMISSION_ACTIONS, {
       admittedTools: ["inspectFocus"],
       reasons: {
-        "requestTool:dispatch": 'focused action "submit" is not available',
+        admitDispatch: 'focused action "submit" is not available',
       },
     });
 
@@ -113,32 +121,77 @@ describe("Manifesto tool admission", () => {
     expect(report.recoveryTools).toEqual(["inspectFocus"]);
   });
 
-  it("explains unknown or removed tools with recovery tools", () => {
+  it("explains unavailable mock tools with recovery tools", () => {
     const result = rejectUnavailableTool(
       ALL_TOOLS,
       "seedMock",
-      fakeRuntime(["requestTool"], {
-        admittedTools: ["inspectToolAffordances", "endTurn"],
+      fakeRuntime(ALL_ADMISSION_ACTIONS, {
+        admittedTools: ["inspectToolAffordances"],
+        reasons: {
+          admitSeedMock: "user module is not ready",
+        },
       }),
     );
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.message).toContain('"seedMock" is unavailable');
-    expect(result.message).toContain("mock-data generation was removed");
+    expect(result.message).toContain("not ready");
     expect(result.detail).toMatchObject({
       requestedTool: "seedMock",
       requestedToolAvailable: false,
-      requestedToolReason:
-        "mock-data generation was removed from the current AgentLens runtime; inspect available domain actions and use dispatch with explicit action arguments instead",
     });
+  });
+
+  it("points stale schema blocks to inspectSchema", () => {
+    const report = buildToolAffordanceReport(
+      ALL_TOOLS,
+      fakeRuntime(ALL_ADMISSION_ACTIONS, {
+        admittedTools: [
+          "inspectToolAffordances",
+          "inspectSchema",
+          "inspectSnapshot",
+        ],
+        reasons: {
+          admitDispatch: "schema changed; inspectSchema required",
+        },
+      }),
+      { toolName: "dispatch" },
+    );
+
+    expect(report.requestedToolAvailable).toBe(false);
+    expect(report.requestedToolReason).toContain("schema knowledge is stale");
+    expect(report.requestedToolReason).toContain("inspectSchema required");
+    expect(report.recoveryTools[0]).toBe("inspectSchema");
+  });
+
+  it("points stale focus blocks to inspectFocus before domain tools", () => {
+    const report = buildToolAffordanceReport(
+      ALL_TOOLS,
+      fakeRuntime(ALL_ADMISSION_ACTIONS, {
+        admittedTools: [
+          "inspectToolAffordances",
+          "inspectFocus",
+          "inspectSchema",
+        ],
+        reasons: {
+          admitDispatch: "dispatchable guard evaluated to false",
+        },
+      }),
+      { toolName: "dispatch" },
+    );
+
+    expect(report.requestedToolAvailable).toBe(false);
+    expect(report.requestedToolReason).toContain("focused node changed");
+    expect(report.requestedToolReason).toContain("inspectFocus");
+    expect(report.recoveryTools[0]).toBe("inspectFocus");
   });
 
   it("points domain action tool mistakes to dispatch", () => {
     const result = rejectUnavailableTool(
       ALL_TOOLS,
       "addTodo",
-      fakeRuntime(["requestTool"], {
+      fakeRuntime(ALL_ADMISSION_ACTIONS, {
         admittedTools: [
           "inspectToolAffordances",
           "dispatch",
@@ -170,10 +223,10 @@ describe("Manifesto tool admission", () => {
   });
 
   it("reports the live tool catalog through the inspect tool", async () => {
-    const runtime = fakeRuntime(["requestTool"], {
+    const runtime = fakeRuntime(ALL_ADMISSION_ACTIONS, {
       admittedTools: ["inspectToolAffordances"],
       reasons: {
-        "requestTool:dispatch": "no focused domain action",
+        admitDispatch: "no focused domain action",
       },
     });
     const tool = bindTool(createInspectToolAffordancesTool(), {
@@ -201,7 +254,7 @@ describe("Manifesto tool admission", () => {
   });
 
   it("reports domain action hints through the inspect tool", async () => {
-    const runtime = fakeRuntime(["requestTool"], {
+    const runtime = fakeRuntime(ALL_ADMISSION_ACTIONS, {
       admittedTools: [
         "inspectToolAffordances",
         "dispatch",
@@ -232,33 +285,11 @@ describe("Manifesto tool admission", () => {
     });
     expect(output.recoveryTools).toEqual(["dispatch", "inspectAvailability"]);
   });
-
-  it("explains the end-turn gate directly", () => {
-    const endTurnEntry = ALL_TOOLS.find(
-      (entry) => entry.tool.name === "endTurn",
-    );
-    expect(endTurnEntry).toBeDefined();
-    if (endTurnEntry === undefined) return;
-
-    const decision = explainAdmissionAvailability(
-      endTurnEntry,
-      fakeRuntime([], {
-        reasons: {
-          requestTool: "agent turn is not running",
-        },
-      }),
-    );
-
-    expect(decision).toEqual({
-      available: false,
-      reason: "available when guard blocked: agent turn is not running",
-    });
-  });
 });
 
 function toolImplementation(
   name: string,
-  admissionAction = "requestTool",
+  admissionAction = admissionActionForTool(name),
   buildAdmissionArgs?: (input: unknown) => readonly unknown[],
 ): ToolImplementation {
   const tool: BoundAgentTool = {
@@ -270,9 +301,13 @@ function toolImplementation(
   return {
     tool,
     admissionAction,
-    admissionArgs: admissionAction === "requestTool" ? [name] : [],
     buildAdmissionArgs,
   };
+}
+
+function admissionActionForTool(name: string): string {
+  const [first = "", ...rest] = name;
+  return `admit${first.toUpperCase()}${rest.join("")}`;
 }
 
 function fakeRuntime(
@@ -323,26 +358,25 @@ function isIntentAllowed(
   options: { readonly admittedTools?: readonly string[] },
 ): boolean {
   if (!availableActions.includes(action)) return false;
-  if (action !== "requestTool" || options.admittedTools === undefined) {
-    return true;
-  }
-  const tool = args[0];
-  return typeof tool === "string" && options.admittedTools.includes(tool);
+  if (options.admittedTools === undefined) return true;
+  const tool = toolNameForAdmissionAction(action);
+  return tool === null || options.admittedTools.includes(tool);
 }
 
 function readIntentReason(
   action: string,
-  args: readonly unknown[],
+  _args: readonly unknown[],
   options: { readonly reasons?: Record<string, string> },
 ): string {
-  const tool =
-    action === "requestTool" && typeof args[0] === "string" ? args[0] : null;
-  const key = tool === null ? action : `${action}:${tool}`;
   return (
-    options.reasons?.[key] ??
     options.reasons?.[action] ??
-    `admission action "${key}" is not available`
+    `admission action "${action}" is not available`
   );
+}
+
+function toolNameForAdmissionAction(action: string): string | null {
+  const entry = ALL_TOOLS.find((tool) => tool.admissionAction === action);
+  return entry?.tool.name ?? null;
 }
 
 function readIntentAction(intent: unknown): string {

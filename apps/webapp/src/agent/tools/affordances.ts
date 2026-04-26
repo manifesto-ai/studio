@@ -2,7 +2,7 @@
  * Manifesto-native tool admission.
  *
  * Tool implementations live in TS, but availability lives in studio.mel.
- * Each implementation is paired with `requestTool(toolName)`.
+ * Each implementation is paired with a tool-specific admit* MEL action.
  * The host exposes schemas only for tools whose admission action is
  * currently available, and every actual tool call dispatches admission
  * before running the implementation.
@@ -308,12 +308,33 @@ export function buildToolAffordanceReport(
       : null;
   const requestedToolAvailable =
     requestedTool === null ? null : requestedEntry?.available ?? false;
-  const requestedToolReason =
+  let requestedToolReason =
     requestedTool === null
       ? null
       : requestedEntry?.reason ??
         legacyReason ??
         "tool is not registered in the current Manifesto runtime";
+  if (
+    requestedTool !== null &&
+    requestedToolAvailable === false &&
+    isFocusDependentTool(requestedTool) &&
+    availableTools.includes("inspectSchema") &&
+    !availableTools.includes("inspectSnapshot")
+  ) {
+    requestedToolReason =
+      "focused node changed; call inspectFocus() to refresh the current node projection before retrying" +
+      (requestedToolReason !== null ? ` (${requestedToolReason})` : "");
+  } else if (
+    requestedTool !== null &&
+    requestedToolAvailable === false &&
+    isSchemaDependentTool(requestedTool) &&
+    availableTools.includes("inspectSchema") &&
+    !availableTools.includes("inspectAvailability")
+  ) {
+    requestedToolReason =
+      "schema knowledge is stale; call inspectSchema() to refresh the current schema before retrying" +
+      (requestedToolReason !== null ? ` (${requestedToolReason})` : "");
+  }
   const unavailableTools =
     includeUnavailable || requestedEntry?.available === false
       ? unavailableEntries.slice(0, limit)
@@ -329,6 +350,7 @@ export function buildToolAffordanceReport(
       availableTools,
       requestedTool,
       domainActionHint,
+      requestedToolReason?.includes("focused node changed") === true,
     ),
     unavailableToolCount: unavailableEntries.length,
     summary: buildToolAffordanceSummary({
@@ -415,19 +437,30 @@ function chooseRecoveryTools(
   availableTools: readonly string[],
   requestedTool: string | null,
   domainActionHint: DomainActionToolHint | null,
+  focusStale: boolean,
 ): readonly string[] {
+  if (focusStale) {
+    return [
+      "inspectFocus",
+      "inspectSchema",
+      "inspectToolAffordances",
+      "inspectSnapshot",
+      "inspectAvailability",
+    ].filter((name) => availableTools.includes(name)).slice(0, 5);
+  }
   const preferred =
     domainActionHint !== null
       ? [
+          "inspectSchema",
           "dispatch",
           "simulateIntent",
           "inspectAvailability",
           "explainLegality",
           "inspectSnapshot",
-          "endTurn",
         ]
       : requestedTool === "dispatch"
         ? [
+            "inspectSchema",
             "inspectAvailability",
             "inspectFocus",
             "studioDispatch",
@@ -436,15 +469,41 @@ function chooseRecoveryTools(
           ]
         : [
             "inspectToolAffordances",
+            "inspectSchema",
             "inspectAvailability",
             "inspectFocus",
             "inspectSnapshot",
             "simulateIntent",
             "dispatch",
             "studioDispatch",
-            "endTurn",
           ];
   return preferred.filter((name) => availableTools.includes(name)).slice(0, 5);
+}
+
+function isSchemaDependentTool(toolName: string): boolean {
+  return [
+    "inspectAvailability",
+    "inspectNeighbors",
+    "explainLegality",
+    "simulateIntent",
+    "generateMock",
+    "seedMock",
+    "dispatch",
+  ].includes(toolName);
+}
+
+function isFocusDependentTool(toolName: string): boolean {
+  return [
+    "inspectSnapshot",
+    "inspectAvailability",
+    "inspectNeighbors",
+    "inspectLineage",
+    "explainLegality",
+    "simulateIntent",
+    "generateMock",
+    "seedMock",
+    "dispatch",
+  ].includes(toolName);
 }
 
 function buildDomainActionHint(
@@ -510,14 +569,12 @@ function readUnregisteredToolReason(toolName: string): string | null {
   switch (toolName) {
     case "seedMock":
     case "generateMock":
-      return "mock-data generation was removed from the current AgentLens runtime; inspect available domain actions and use dispatch with explicit action arguments instead";
+      return "mock-data tools are registered only when the current MEL module is compiled; inspect available tools and domain actions before retrying";
     case "createProposal":
     case "readDeclaration":
     case "findInSource":
     case "inspectSourceOutline":
       return "source-authoring tools are not registered in the current AgentLens runtime";
-    case "answerAndTurnEnd":
-      return "answerAndTurnEnd was replaced by assistant text plus endTurn";
     default:
       return null;
   }

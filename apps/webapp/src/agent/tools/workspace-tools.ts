@@ -43,22 +43,19 @@ import type {
 // ─────────────────────────────────────────────────────────────────────
 
 export type WorkspaceToolContext = {
-  /** Resolve the active workspace for this turn. Returns `null` when no
-   *  workspace is open (e.g. live mode, or before turn begin). */
+  /** Resolve the active workspace. Returns `null` when no workspace is open
+   *  (e.g. live runtime mode). */
   readonly getWorkspace: () => Workspace | null;
 };
 
 export type CommitWorkspaceContext = WorkspaceToolContext & {
-  /** Original source, captured at turn begin. Used to populate the
+  /** Original source captured for the workspace. Used to populate the
    *  proposal-buffer's diff baseline. */
   readonly getOriginalSource: () => string;
   /** Shadow verifier (same one createProposal uses). */
   readonly verify: (proposedSource: string) => Promise<ProposalVerification>;
   /** Stash the proposal so ProposalPreview renders it. */
   readonly setProposal: (proposal: AgentProposal) => void;
-  /** Fired AFTER the proposal lands so the caller can mark its
-   *  authoring flow complete. */
-  readonly concludeAgentTurn: (summary: string) => Promise<void>;
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -499,7 +496,7 @@ export function createInspectWorkspaceTool(): AgentTool<
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// commitWorkspace — terminal tool for source-change turns
+// commitWorkspace — finalize source-change proposals
 // ─────────────────────────────────────────────────────────────────────
 
 const COMMIT_WORKSPACE_SCHEMA: Record<string, unknown> = {
@@ -526,7 +523,6 @@ export type CommitWorkspaceOutput = {
   readonly schemaHash: string | null;
   readonly stackDepth: number;
   readonly summary: string;
-  readonly turnEnded: true;
 };
 
 export function createCommitWorkspaceTool(): AgentTool<
@@ -583,7 +579,6 @@ export async function runCommitWorkspace(
     proposal.status === "verified"
       ? `Committed ${draft.stackDepth} op(s). Proposal ready for review.`
       : `Committed ${draft.stackDepth} op(s) but verifier reported ${proposal.diagnostics.length} diagnostic(s).`;
-  await ctx.concludeAgentTurn(summary);
   return {
     ok: true,
     output: {
@@ -594,7 +589,6 @@ export async function runCommitWorkspace(
       schemaHash: proposal.schemaHash,
       stackDepth: draft.stackDepth,
       summary,
-      turnEnded: true,
     },
   };
 }

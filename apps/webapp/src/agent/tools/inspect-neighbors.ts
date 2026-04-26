@@ -22,6 +22,22 @@ import type { AgentTool } from "./types.js";
 
 export type InspectNeighborsContext = {
   /**
+   * Preferred path: return relations from the shared Manifesto entity
+   * projection so UI and Agent read the same graph meaning.
+   */
+  readonly getRelations?: (nodeId: string) => {
+    readonly incoming: readonly {
+      readonly peer: { readonly nodeId: string };
+      readonly relation: "feeds" | "mutates" | "unlocks";
+      readonly direction: "in" | "out";
+    }[];
+    readonly outgoing: readonly {
+      readonly peer: { readonly nodeId: string };
+      readonly relation: "feeds" | "mutates" | "unlocks";
+      readonly direction: "in" | "out";
+    }[];
+  } | null;
+  /**
    * Return the full edge list from the compiled module's
    * `schema-graph`. Real callers pass `core.getModule()?.graph.edges`.
    */
@@ -94,6 +110,25 @@ export function createInspectNeighborsTool(): AgentTool<
         };
       }
       try {
+        const projected = ctx.getRelations?.(input.nodeId);
+        if (projected !== undefined && projected !== null) {
+          return {
+            ok: true,
+            output: {
+              nodeId: input.nodeId,
+              incoming: projected.incoming.map((edge) => ({
+                peerId: edge.peer.nodeId,
+                relation: edge.relation,
+                direction: edge.direction,
+              })),
+              outgoing: projected.outgoing.map((edge) => ({
+                peerId: edge.peer.nodeId,
+                relation: edge.relation,
+                direction: edge.direction,
+              })),
+            },
+          };
+        }
         const incoming: Neighbor[] = [];
         const outgoing: Neighbor[] = [];
         for (const e of ctx.getEdges()) {

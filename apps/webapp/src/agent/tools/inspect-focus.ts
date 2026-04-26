@@ -20,35 +20,7 @@ export type InspectFocusContext = {
   readonly getFocus: () => InspectFocusOutput;
 };
 
-export type InspectFocusOutput = {
-  readonly focusedNodeId: string | null;
-  readonly focusedNodeKind: string | null;
-  readonly focusedNodeOrigin: string | null;
-  readonly activeLens: string;
-  readonly viewMode: string;
-  readonly simulationActionName: string | null;
-  readonly scrubEnvelopeId: string | null;
-  readonly activeProjectName: string | null;
-  /** Single-entry chat memory — what the user/agent last said. */
-  readonly lastUserPrompt: string | null;
-  readonly lastAgentAnswer: string | null;
-  readonly agentTurnCount: number;
-  readonly agentLastToolResultName?: string | null;
-  readonly agentLastToolFailureKey?: string | null;
-  readonly agentLastToolFailureReason?: string | null;
-  readonly agentToolFailureRepeatCount?: number;
-  readonly agentLastToolSuccessKey?: string | null;
-  readonly agentToolSuccessRepeatCount?: number;
-  readonly agentToolLoopBlocked?: boolean;
-  readonly agentToolLoopBlockReason?: string | null;
-  readonly agentLastModelFinishKey?: string | null;
-  readonly agentModelFinishRepeatCount?: number;
-  readonly agentUserModuleReady?: boolean;
-  readonly agentMelSourceNonEmpty?: boolean;
-  readonly agentFocusedActionName?: string | null;
-  readonly agentFocusedActionAvailable?: boolean;
-  readonly agentLastAdmittedToolName?: string | null;
-};
+export type InspectFocusOutput = unknown;
 
 export function createInspectFocusTool(): AgentTool<
   Record<string, never>,
@@ -58,11 +30,12 @@ export function createInspectFocusTool(): AgentTool<
   return {
     name: "inspectFocus",
     description:
-      "Return the currently focused graph node and the Studio UI state " +
-      "(active lens, view mode, active project). Always call this first " +
-      "when the user refers to 'this' / '이것' / '이거' / 'that' / etc., " +
-      "or when they ask about 'the current' anything. The focused node id " +
-      "is in `<kind>:<name>` format, e.g. `action:toggleTodo`.",
+      "Return the currently focused MEL entity as a Manifesto projection " +
+      "(entity kind/name/type/value/source/relations plus Studio view " +
+      "context). Always call this first when the user refers to 'this' / " +
+      "'이것' / '이거' / 'that' / etc., or when they ask about 'the current' " +
+      "anything. Do not interpret raw UI fields yourself; use the returned " +
+      "entity projection.",
     jsonSchema: {
       type: "object",
       additionalProperties: false,
