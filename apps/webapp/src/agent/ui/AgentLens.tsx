@@ -12,10 +12,7 @@ import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithToolCalls,
-  type UIDataTypes,
   type UIMessage,
-  type UIMessagePart,
-  type UITools,
 } from "ai";
 import { AnimatePresence, motion } from "motion/react";
 import { useStudio } from "@manifesto-ai/studio-react";
@@ -108,6 +105,7 @@ import {
   executeToolLocally,
 } from "../adapters/ai-sdk-tools.js";
 import { MarkdownBody } from "./MarkdownBody.js";
+import { ToolActivityRow, isToolPart } from "./ToolActivity.js";
 import {
   projectAction,
   projectEntity,
@@ -402,25 +400,48 @@ export function AgentLens(): JSX.Element {
     void chat.stop();
   }, [chat]);
 
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const handleSelectStarter = useCallback((text: string) => {
+    setDraft(text);
+    requestAnimationFrame(() => {
+      const el = composerRef.current;
+      if (el === null) return;
+      el.focus();
+      el.setSelectionRange(text.length, text.length);
+    });
+  }, []);
+
+  const agentState = sending ? "streaming" : "ready";
+
   return (
-    <div className="flex flex-col flex-1 min-h-0">
-      <StatusBar
-        status={chat.status}
-        error={chat.error}
-        canClear={chat.messages.length > 0 && !sending}
-        onClear={() => chat.setMessages([])}
-      />
-      <AnimatePresence initial={false}>
-        {notice !== null ? <Notice key="notice" message={notice} /> : null}
-      </AnimatePresence>
-      <MessageList messages={chat.messages} />
-      <Composer
-        draft={draft}
-        setDraft={setDraft}
-        sending={sending}
-        onSend={onSend}
-        onStop={onStop}
-      />
+    <div
+      className="relative flex flex-col flex-1 min-h-0 overflow-hidden"
+      data-agent-state={agentState}
+    >
+      <div className="agent-ambient" aria-hidden="true" />
+      <div className="relative z-10 flex flex-col flex-1 min-h-0">
+        <StatusBar
+          status={chat.status}
+          error={chat.error}
+          canClear={chat.messages.length > 0 && !sending}
+          onClear={() => chat.setMessages([])}
+        />
+        <AnimatePresence initial={false}>
+          {notice !== null ? <Notice key="notice" message={notice} /> : null}
+        </AnimatePresence>
+        <MessageList
+          messages={chat.messages}
+          onSelectStarter={handleSelectStarter}
+        />
+        <Composer
+          draft={draft}
+          setDraft={setDraft}
+          sending={sending}
+          onSend={onSend}
+          onStop={onStop}
+          inputRef={composerRef}
+        />
+      </div>
     </div>
   );
 }
@@ -476,8 +497,10 @@ function Notice({ message }: { readonly message: string }): JSX.Element {
 
 function MessageList({
   messages,
+  onSelectStarter,
 }: {
   readonly messages: readonly UIMessage[];
+  readonly onSelectStarter: (text: string) => void;
 }): JSX.Element {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -488,14 +511,7 @@ function MessageList({
   return (
     <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-5">
       {messages.length === 0 ? (
-        <motion.div
-          initial={{ opacity: 0, y: 4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.18, ease: "easeOut" }}
-          className="h-full min-h-[220px] flex items-center text-[13px] text-[var(--color-ink-mute)]"
-        >
-          Ask the runtime what it sees or what it can do next.
-        </motion.div>
+        <EmptyState onSelectStarter={onSelectStarter} />
       ) : (
         <ol className="flex flex-col gap-4">
           <AnimatePresence initial={false} mode="popLayout">
@@ -582,316 +598,6 @@ function AssistantMessage({
   );
 }
 
-type ToolPart = Extract<
-  UIMessagePart<UIDataTypes, UITools>,
-  { readonly type: `tool-${string}` }
->;
-
-function isToolPart(
-  part: UIMessagePart<UIDataTypes, UITools>,
-): part is ToolPart {
-  return typeof part.type === "string" && part.type.startsWith("tool-");
-}
-
-function ToolActivityRow({
-  part,
-}: {
-  readonly part: ToolPart;
-}): JSX.Element | null {
-  const toolName = part.type.slice("tool-".length);
-  const state = (part as { readonly state: string }).state;
-  const input = (part as { readonly input?: unknown }).input;
-  const output = (part as { readonly output?: unknown }).output;
-  const errorText = (part as { readonly errorText?: string }).errorText;
-  const failed = state === "output-error" || isToolOutputFailure(output);
-  const done = state === "output-available" || state === "output-error";
-  const status = !done ? "running" : failed ? "error" : "ok";
-  const activity = describeToolActivity(toolName, input, output, errorText);
-  return (
-    <motion.details
-      layout
-      initial={{ opacity: 0, x: -4 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ duration: 0.18, ease: "easeOut" }}
-      className="pl-1 text-[11.5px] font-mono group"
-    >
-      <summary className="cursor-pointer list-none flex items-center gap-2 rounded-[6px] px-1.5 py-1 hover:bg-[color-mix(in_oklch,var(--color-rule)_35%,transparent)]">
-        <motion.span
-          animate={
-            !done && !failed
-              ? { opacity: [0.45, 1, 0.45], scale: [0.9, 1.35, 0.9] }
-              : { opacity: 1, scale: 1 }
-          }
-          transition={
-            !done && !failed
-              ? { duration: 1.05, repeat: Infinity, ease: "easeInOut" }
-              : { duration: 0.14, ease: "easeOut" }
-          }
-          className={
-            failed
-              ? "h-1.5 w-1.5 rounded-full bg-[var(--color-sig-effect)]"
-              : !done
-                ? "h-1.5 w-1.5 rounded-full bg-[var(--color-violet-hot)]"
-                : "h-1.5 w-1.5 rounded-full bg-[var(--color-sig-computed)]"
-          }
-        />
-        <span className="text-[var(--color-ink-dim)]">
-          {activity.label}
-        </span>
-        {activity.target !== null ? (
-          <span className="truncate text-[var(--color-ink-mute)]">
-            {activity.target}
-          </span>
-        ) : null}
-        {failed && activity.message !== null ? (
-          <span className="min-w-0 truncate text-[var(--color-sig-effect)]">
-            {truncate(activity.message, 96)}
-          </span>
-        ) : null}
-        <span
-          className={
-            failed
-              ? "ml-auto text-[var(--color-sig-effect)]"
-              : "ml-auto text-[var(--color-ink-mute)]"
-          }
-        >
-          {status}
-        </span>
-      </summary>
-      {activity.message !== null ? (
-        <div className="ml-5 mt-1 text-[11px] leading-relaxed text-[var(--color-ink-dim)]">
-          {activity.message}
-        </div>
-      ) : null}
-      <pre className="mt-1.5 ml-5 px-2 py-2 border-l border-[var(--color-rule)] text-[10.5px] text-[var(--color-ink-dim)] whitespace-pre-wrap">
-        {formatToolData(input, output, errorText)}
-      </pre>
-    </motion.details>
-  );
-}
-
-type ToolActivity = {
-  readonly label: string;
-  readonly target: string | null;
-  readonly message: string | null;
-};
-
-function describeToolActivity(
-  toolName: string,
-  input: unknown,
-  output: unknown,
-  errorText: string | undefined,
-): ToolActivity {
-  const message = readToolMessage(output, errorText);
-  if (isToolOutputFailure(output)) {
-    return {
-      label: "Tool blocked",
-      target: toolName,
-      message,
-    };
-  }
-  const actionName = readActionName(input, output);
-  const focusTarget = readFocusTarget(output);
-  const nodeTarget = readNodeTarget(input, output);
-  switch (toolName) {
-    case "inspectToolAffordances":
-      return {
-        label: "Checked tool guards",
-        target: readToolCatalogSummary(output),
-        message,
-      };
-    case "inspectFocus":
-      return {
-        label: "Checked UI focus",
-        target: focusTarget,
-        message,
-      };
-    case "studioDispatch":
-      return {
-        label: "Updated Studio view",
-        target: actionName,
-        message,
-      };
-    case "inspectSchema":
-      return {
-        label: "Read schema",
-        target: readSchemaSummary(output),
-        message,
-      };
-    case "inspectSnapshot":
-      return {
-        label: "Read current state",
-        target: null,
-        message,
-      };
-    case "inspectAvailability":
-      return {
-        label: "Checked available actions",
-        target: readAvailabilitySummary(output),
-        message,
-      };
-    case "inspectNeighbors":
-      return {
-        label: "Checked graph links",
-        target: nodeTarget,
-        message,
-      };
-    case "inspectLineage":
-      return {
-        label: "Checked world lineage",
-        target: readLineageSummary(output),
-        message,
-      };
-    case "inspectConversation":
-      return {
-        label: "Checked conversation",
-        target: readConversationSummary(output),
-        message,
-      };
-    case "explainLegality":
-      return {
-        label: "Checked action guard",
-        target: actionName,
-        message,
-      };
-    case "simulateIntent":
-      return {
-        label: "Previewed action",
-        target: actionName,
-        message,
-      };
-    case "generateMock":
-      return {
-        label: "Generated mock args",
-        target: actionName,
-        message,
-      };
-    case "seedMock":
-      return {
-        label: "Seeded mock data",
-        target: actionName,
-        message,
-      };
-    case "dispatch":
-      return {
-        label: "Updated runtime state",
-        target: actionName,
-        message,
-      };
-    default:
-      return {
-        label: `Ran ${toolName}`,
-        target: formatInlineInput(input),
-        message,
-      };
-  }
-}
-
-function readToolMessage(
-  output: unknown,
-  errorText: string | undefined,
-): string | null {
-  if (errorText !== undefined && errorText.trim() !== "") return errorText;
-  const raw = asRecord(output);
-  if (typeof raw?.message === "string" && raw.message.trim() !== "") {
-    return raw.message;
-  }
-  const body = asRecord(unwrapToolOutput(output));
-  if (typeof body?.summary === "string" && body.summary.trim() !== "") {
-    return body.summary;
-  }
-  if (typeof body?.error === "string" && body.error.trim() !== "") {
-    return body.error;
-  }
-  return null;
-}
-
-function readActionName(input: unknown, output: unknown): string | null {
-  const inputAction = asRecord(input)?.action;
-  if (typeof inputAction === "string" && inputAction.trim() !== "") {
-    return inputAction;
-  }
-  const outputAction = asRecord(unwrapToolOutput(output))?.action;
-  if (typeof outputAction === "string" && outputAction.trim() !== "") {
-    return outputAction;
-  }
-  return null;
-}
-
-function readFocusTarget(output: unknown): string | null {
-  const body = asRecord(unwrapToolOutput(output));
-  const label = asRecord(body?.entity)?.label;
-  if (typeof label === "string" && label.trim() !== "") return label;
-  const nodeId = asRecord(body?.focus)?.nodeId;
-  return typeof nodeId === "string" && nodeId.trim() !== "" ? nodeId : null;
-}
-
-function readNodeTarget(input: unknown, output: unknown): string | null {
-  const inputNode = asRecord(input)?.nodeId;
-  if (typeof inputNode === "string" && inputNode.trim() !== "") {
-    return inputNode;
-  }
-  const outputNode = asRecord(unwrapToolOutput(output))?.nodeId;
-  return typeof outputNode === "string" && outputNode.trim() !== ""
-    ? outputNode
-    : null;
-}
-
-function readAvailabilitySummary(output: unknown): string | null {
-  const actions = asRecord(unwrapToolOutput(output))?.actions;
-  if (!Array.isArray(actions)) return null;
-  const total = actions.length;
-  const available = actions.filter(
-    (entry) => asRecord(entry)?.available === true,
-  ).length;
-  return `${available}/${total} available`;
-}
-
-function readToolCatalogSummary(output: unknown): string | null {
-  const body = asRecord(unwrapToolOutput(output));
-  const availableTools = body?.availableTools;
-  const blocked = body?.unavailableToolCount;
-  if (!Array.isArray(availableTools)) return null;
-  return `${availableTools.length} available${
-    typeof blocked === "number" ? `, ${blocked} blocked` : ""
-  }`;
-}
-
-function readSchemaSummary(output: unknown): string | null {
-  const body = asRecord(unwrapToolOutput(output));
-  const schemaHash = body?.schemaHash;
-  const actions = body?.actions;
-  const actionCount = Array.isArray(actions) ? actions.length : null;
-  if (typeof schemaHash !== "string") return null;
-  return `${schemaHash.slice(0, 8)}${actionCount === null ? "" : ` · ${actionCount} actions`}`;
-}
-
-function readLineageSummary(output: unknown): string | null {
-  const body = asRecord(unwrapToolOutput(output));
-  const entries = body?.entries;
-  const totalWorlds = body?.totalWorlds;
-  if (!Array.isArray(entries)) return null;
-  return `${entries.length}/${typeof totalWorlds === "number" ? totalWorlds : "?"} worlds`;
-}
-
-function readConversationSummary(output: unknown): string | null {
-  const body = asRecord(unwrapToolOutput(output));
-  const turns = body?.turns;
-  const totalTurns = body?.totalTurns;
-  if (!Array.isArray(turns)) return null;
-  return `${turns.length}/${typeof totalTurns === "number" ? totalTurns : "?"} turns`;
-}
-
-function unwrapToolOutput(output: unknown): unknown {
-  const record = asRecord(output);
-  return record !== null && "output" in record ? record.output : output;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : null;
-}
 
 function Composer({
   draft,
@@ -899,12 +605,14 @@ function Composer({
   sending,
   onSend,
   onStop,
+  inputRef,
 }: {
   readonly draft: string;
   readonly setDraft: (value: string) => void;
   readonly sending: boolean;
   readonly onSend: () => void;
   readonly onStop: () => void;
+  readonly inputRef: React.MutableRefObject<HTMLTextAreaElement | null>;
 }): JSX.Element {
   const disabled = !sending && draft.trim() === "";
   return (
@@ -915,6 +623,7 @@ function Composer({
         className="flex items-end gap-2 rounded-[8px] border border-[var(--color-rule)] bg-[color-mix(in_oklch,var(--color-void)_70%,transparent)] px-3 py-2"
       >
         <textarea
+          ref={inputRef}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           rows={2}
@@ -944,6 +653,147 @@ function Composer({
   );
 }
 
+type StarterTone = "state" | "computed" | "action";
+
+type Starter = {
+  readonly label: string;
+  readonly text: string;
+  readonly tone: StarterTone;
+};
+
+const STARTERS: readonly Starter[] = [
+  {
+    label: "what can I do?",
+    text: "What actions can I take right now?",
+    tone: "state",
+  },
+  {
+    label: "explain focus",
+    text: "What is currently focused, and what does it do?",
+    tone: "state",
+  },
+  {
+    label: "why blocked?",
+    text: "Why isn't the focused action dispatchable?",
+    tone: "computed",
+  },
+  {
+    label: "seed mock data",
+    text: "Seed 5 mock entries for the focused action.",
+    tone: "action",
+  },
+];
+
+const STARTER_FG: Record<StarterTone, string> = {
+  state: "var(--color-sig-state)",
+  computed: "var(--color-sig-computed)",
+  action: "var(--color-sig-action)",
+};
+
+function EmptyState({
+  onSelectStarter,
+}: {
+  readonly onSelectStarter: (text: string) => void;
+}): JSX.Element {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.3, ease: "easeOut" }}
+      className="h-full min-h-[220px] flex items-center"
+    >
+      <div className="flex gap-3 max-w-[420px]">
+        <motion.div
+          initial={{ scaleY: 0, opacity: 0 }}
+          animate={{ scaleY: 1, opacity: 1 }}
+          transition={{ duration: 0.4, ease: "easeOut" }}
+          className="w-[2px] self-stretch rounded-full bg-[var(--color-violet-hot)] origin-top"
+          style={{
+            boxShadow:
+              "0 0 8px color-mix(in oklch, var(--color-violet-hot) 60%, transparent)",
+          }}
+          aria-hidden="true"
+        />
+        <div className="flex flex-col gap-3 py-1 min-w-0">
+          <motion.div
+            initial={{ opacity: 0, x: 4 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.25, delay: 0.15, ease: "easeOut" }}
+            className="flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-wider text-[var(--color-ink-mute)]"
+          >
+            <motion.span
+              animate={{ opacity: [0.5, 1, 0.5] }}
+              transition={{
+                duration: 2.6,
+                repeat: Infinity,
+                ease: "easeInOut",
+              }}
+              className="h-1.5 w-1.5 rounded-full bg-[var(--color-violet-hot)]"
+              style={{ boxShadow: "0 0 6px var(--color-violet-hot)" }}
+            />
+            agent · ready
+          </motion.div>
+          <motion.p
+            initial={{ opacity: 0, x: 4 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.25, delay: 0.22, ease: "easeOut" }}
+            className="text-[13.5px] text-[var(--color-ink-dim)] leading-relaxed"
+          >
+            Ask the runtime what it sees,
+            <br />
+            or what it can do next.
+          </motion.p>
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {STARTERS.map((starter, i) => (
+              <StarterChip
+                key={starter.label}
+                tone={starter.tone}
+                delay={0.32 + i * 0.06}
+                onClick={() => onSelectStarter(starter.text)}
+              >
+                {starter.label}
+              </StarterChip>
+            ))}
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+function StarterChip({
+  tone,
+  delay,
+  onClick,
+  children,
+}: {
+  readonly tone: StarterTone;
+  readonly delay: number;
+  readonly onClick: () => void;
+  readonly children: React.ReactNode;
+}): JSX.Element {
+  const fg = STARTER_FG[tone];
+  return (
+    <motion.button
+      type="button"
+      onClick={onClick}
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25, delay, ease: "easeOut" }}
+      whileHover={{ scale: 1.03 }}
+      whileTap={{ scale: 0.97 }}
+      className="rounded-[var(--radius-chip)] px-2.5 py-1 font-mono text-[11.5px] cursor-pointer transition-[background] duration-150"
+      style={{
+        color: fg,
+        background: `color-mix(in oklch, ${fg} 10%, transparent)`,
+        border: `1px solid color-mix(in oklch, ${fg} 26%, transparent)`,
+      }}
+    >
+      {children}
+    </motion.button>
+  );
+}
+
 export function extractUserText(message: UIMessage): string {
   return message.parts
     .map((part) => (part.type === "text" ? part.text : ""))
@@ -951,64 +801,10 @@ export function extractUserText(message: UIMessage): string {
     .trim();
 }
 
-function formatInlineInput(input: unknown): string {
-  if (input === null || input === undefined) return "{}";
-  if (typeof input !== "object") return truncate(String(input), 48);
-  const entries = Object.entries(input as Record<string, unknown>);
-  if (entries.length === 0) return "{}";
-  return truncate(
-    `{ ${entries.map(([key, value]) => `${key}: ${formatScalar(value)}`).join(", ")} }`,
-    64,
-  );
-}
-
-function formatScalar(value: unknown): string {
-  if (typeof value === "string") return `"${truncate(value, 18)}"`;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (value === null) return "null";
-  if (Array.isArray(value)) return `[${value.length}]`;
-  if (typeof value === "object") return "{...}";
-  return String(value);
-}
-
-function formatToolData(
-  input: unknown,
-  output: unknown,
-  errorText: string | undefined,
-): string {
-  const chunks: string[] = [];
-  if (input !== undefined) chunks.push(`input\n${stringifySafe(input)}`);
-  if (errorText !== undefined && errorText !== "") {
-    chunks.push(`error\n${errorText}`);
-  } else if (output !== undefined) {
-    chunks.push(`output\n${stringifySafe(output)}`);
-  }
-  return chunks.join("\n\n") || "(no data)";
-}
-
-function isToolOutputFailure(output: unknown): boolean {
-  const top = asRecord(output);
-  if (top?.ok === false) return true;
-  const body = asRecord(unwrapToolOutput(output));
-  const status = body?.status;
-  return (
-    status === "unavailable" ||
-    status === "rejected" ||
-    status === "failed" ||
-    status === "blocked"
-  );
-}
-
-function stringifySafe(value: unknown): string {
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-function truncate(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max - 3)}...` : value;
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 type SyncAgentToolContextInput = {
