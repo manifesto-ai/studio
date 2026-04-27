@@ -17,6 +17,7 @@ const ALL_TOOLS: readonly ToolImplementation[] = [
   toolImplementation("inspectSchema"),
   toolImplementation("inspectSnapshot"),
   toolImplementation("inspectAvailability"),
+  toolImplementation("explainLegality"),
   toolImplementation("inspectLineage"),
   toolImplementation("inspectConversation"),
   toolImplementation("studioDispatch"),
@@ -207,19 +208,60 @@ describe("Manifesto tool admission", () => {
     expect(result.message).toContain(
       'dispatch({ action: "addTodo", args: [...] })',
     );
+    expect(result.message).toContain(
+      'explainLegality({ action: "addTodo", args: [...] })',
+    );
     expect(result.detail).toMatchObject({
       requestedTool: "addTodo",
       requestedToolAvailable: false,
       domainActionHint: {
         action: "addTodo",
         dispatchToolAvailable: true,
+        legalityToolAvailable: false,
         recommendedToolCall: {
           tool: "dispatch",
+          input: { action: "addTodo", args: [] },
+        },
+        legalityToolCall: {
+          tool: "explainLegality",
           input: { action: "addTodo", args: [] },
         },
       },
       recoveryTools: ["dispatch", "simulateIntent"],
     });
+  });
+
+  it("routes domain-action legality questions to explainLegality first", () => {
+    const report = buildToolAffordanceReport(
+      ALL_TOOLS,
+      fakeRuntime(ALL_ADMISSION_ACTIONS, {
+        admittedTools: [
+          "inspectToolAffordances",
+          "explainLegality",
+          "dispatch",
+          "inspectAvailability",
+        ],
+      }),
+      { toolName: "action:decrement" },
+      { domainActionNames: ["increment", "decrement"] },
+    );
+
+    expect(report.requestedToolReason).toContain(
+      'explainLegality({ action: "decrement", args: [...] })',
+    );
+    expect(report.domainActionHint).toMatchObject({
+      action: "decrement",
+      legalityToolAvailable: true,
+      legalityToolCall: {
+        tool: "explainLegality",
+        input: { action: "decrement", args: [] },
+      },
+    });
+    expect(report.recoveryTools).toEqual([
+      "explainLegality",
+      "dispatch",
+      "inspectAvailability",
+    ]);
   });
 
   it("reports the live tool catalog through the inspect tool", async () => {
@@ -257,6 +299,7 @@ describe("Manifesto tool admission", () => {
     const runtime = fakeRuntime(ALL_ADMISSION_ACTIONS, {
       admittedTools: [
         "inspectToolAffordances",
+        "explainLegality",
         "dispatch",
         "inspectAvailability",
       ],
@@ -283,7 +326,11 @@ describe("Manifesto tool admission", () => {
       action: "addTodo",
       dispatchToolAvailable: true,
     });
-    expect(output.recoveryTools).toEqual(["dispatch", "inspectAvailability"]);
+    expect(output.recoveryTools).toEqual([
+      "explainLegality",
+      "dispatch",
+      "inspectAvailability",
+    ]);
   });
 });
 

@@ -200,7 +200,7 @@ domain Studio {
   // target belonged to the previous snapshot history.
 
   @meta("comment:grounding", "Switch the bundled project and reset project-scoped focus and view mode.")
-  @meta("agent:stale_when", "All prior focus, simulation, and scrub references belong to the previous project.")
+  @meta("agent:stale_when", "All prior focus, simulation, scrub, and schema observations belong to the previous project.")
   action switchProject(name: string) {
     onceIntent {
       patch activeProjectName = name
@@ -208,6 +208,9 @@ domain Studio {
       patch focusedNodeKind = null
       patch focusedNodeOrigin = null
       patch agentObservedFocusNodeId = null
+      patch agentUserModuleReady = false
+      patch agentCurrentSchemaHash = null
+      patch agentObservedSchemaHash = null
       patch viewMode = "live"
       patch simulationActionName = null
       patch scrubEnvelopeId = null
@@ -251,8 +254,9 @@ domain Studio {
     }
   }
 
-  @meta("comment:grounding", "Admit the inspectToolAffordances tool. It reads the current Manifesto tool catalog and blocked-tool recovery hints.")
-  @meta("agent:recovery", "Use this after an unknown, unavailable, or repeatedly blocked tool call.")
+  @meta("comment:grounding", "Admit the inspectToolAffordances tool. It reads the current Manifesto agent-tool catalog, not user-domain action legality.")
+  @meta("agent:recovery", "Use this after an unknown, unavailable, or repeatedly blocked agent tool call. For user-domain action legality, use explainLegality.")
+  @meta("agent:example", "If the model tried addTodo as a tool and the host says unavailable tool, call inspectToolAffordances with toolName addTodo.")
   action admitInspectToolAffordances() {
     onceIntent {
       patch agentLastAdmittedToolName = "inspectToolAffordances"
@@ -262,6 +266,7 @@ domain Studio {
   @meta("comment:grounding", "Admit the inspectFocus tool. It reads the currently selected MEL graph node and Studio focus context.")
   @meta("agent:stale_when", "focusNode changes focus, clearFocus clears focus, or switchProject resets focus.")
   @meta("agent:recovery", "Use this before focus-dependent tools when agentFocusFresh is false.")
+  @meta("agent:example", "If the user says this node or asks about the selected card, call inspectFocus before answering.")
   action admitInspectFocus() {
     onceIntent {
       patch agentLastAdmittedToolName = "inspectFocus"
@@ -270,6 +275,7 @@ domain Studio {
 
   @meta("comment:grounding", "Admit the studioDispatch tool. It mutates Studio UI state through this Studio MEL runtime, not the user's domain.")
   @meta("agent:invariant", "Studio UI writes must target actions declared by this Studio contract.")
+  @meta("agent:example", "If the user asks to open the history lens, call studioDispatch with action openLens and id history.")
   action admitStudioDispatch() {
     onceIntent {
       patch agentLastAdmittedToolName = "studioDispatch"
@@ -279,6 +285,7 @@ domain Studio {
   @meta("comment:grounding", "Admit the inspectSchema tool. It reads the compiled user-domain schema and refreshes schema freshness.")
   @meta("agent:invariant", "Requires a compiled user module.")
   @meta("agent:recovery", "Use this when schema-dependent tools are blocked by stale schema.")
+  @meta("agent:example", "If action names or argument shapes are unclear, call inspectSchema before generating args or dispatching.")
   action admitInspectSchema()
     dispatchable when agentUserModuleReady
   {
@@ -291,6 +298,7 @@ domain Studio {
   @meta("agent:invariant", "Requires a compiled user module and fresh focus observation.")
   @meta("agent:stale_when", "Any successful user-domain dispatch can make prior snapshot values stale.")
   @meta("agent:recovery", "If focus is stale, call inspectFocus first.")
+  @meta("agent:example", "If the user asks what the current count or todo list contains, call inspectSnapshot.")
   action admitInspectSnapshot()
     dispatchable when agentUserModuleReady && agentFocusFresh
   {
@@ -302,6 +310,7 @@ domain Studio {
   @meta("comment:grounding", "Admit the inspectAvailability tool. It reads current user-domain action availability.")
   @meta("agent:invariant", "Requires fresh schema and fresh focus.")
   @meta("agent:recovery", "If blocked, call inspectSchema or inspectFocus based on freshness.")
+  @meta("agent:example", "If the user asks what actions can be used now, call inspectAvailability.")
   action admitInspectAvailability()
     dispatchable when agentSchemaFresh && agentFocusFresh
   {
@@ -313,6 +322,7 @@ domain Studio {
   @meta("comment:grounding", "Admit the inspectNeighbors tool. It reads graph edges touching a MEL node.")
   @meta("agent:invariant", "Requires fresh schema and fresh focus.")
   @meta("agent:recovery", "If blocked, call inspectSchema or inspectFocus before asking for graph neighbors.")
+  @meta("agent:example", "If the user asks what this action reads or mutates, call inspectNeighbors for the focused node.")
   action admitInspectNeighbors()
     dispatchable when agentSchemaFresh && agentFocusFresh
   {
@@ -324,6 +334,7 @@ domain Studio {
   @meta("comment:grounding", "Admit the inspectLineage tool. It reads recent world history and changed paths.")
   @meta("agent:invariant", "Requires a compiled user module and fresh focus observation.")
   @meta("agent:recovery", "If blocked by focus freshness, call inspectFocus first.")
+  @meta("agent:example", "If the user asks what changed recently or why state changed, call inspectLineage.")
   action admitInspectLineage()
     dispatchable when agentUserModuleReady && agentFocusFresh
   {
@@ -333,17 +344,19 @@ domain Studio {
   }
 
   @meta("comment:grounding", "Admit the inspectConversation tool. It reads compact conversation history held by the host.")
+  @meta("agent:example", "If the answer depends on earlier user requests not visible in the active turn, call inspectConversation.")
   action admitInspectConversation() {
     onceIntent {
       patch agentLastAdmittedToolName = "inspectConversation"
     }
   }
 
-  @meta("comment:grounding", "Admit the explainLegality tool. It explains why a specific user-domain action is blocked.")
-  @meta("agent:invariant", "Requires fresh schema and fresh focus.")
-  @meta("agent:recovery", "If blocked before use, inspect schema or focus freshness first.")
+  @meta("comment:grounding", "Admit the explainLegality tool. It explains why a specific user-domain action is blocked, unavailable, disabled, illegal, or not working.")
+  @meta("agent:invariant", "Requires a compiled schema hash and fresh focus. This tool may be used before agentSchemaFresh because it observes schema while diagnosing legality.")
+  @meta("agent:recovery", "If blocked before use, inspect focus freshness or compile the user module first.")
+  @meta("agent:example", "If focused node is action:decrement and the user asks why it is blocked, call explainLegality with action decrement and current args.")
   action admitExplainLegality()
-    dispatchable when agentSchemaFresh && agentFocusFresh
+    dispatchable when agentUserModuleReady && agentCurrentSchemaHash != null && agentFocusFresh
   {
     onceIntent {
       patch agentLastAdmittedToolName = "explainLegality"
@@ -353,6 +366,7 @@ domain Studio {
   @meta("comment:grounding", "Admit the simulateIntent tool. It previews a user-domain action without mutating live state.")
   @meta("agent:invariant", "Requires live view mode, fresh schema, and fresh focus.")
   @meta("agent:recovery", "If Studio is scrubbing or simulating, return to live mode before previewing.")
+  @meta("agent:example", "If the user asks what would happen if decrement runs, call simulateIntent with action decrement before dispatching.")
   action admitSimulateIntent()
     dispatchable when agentSchemaFresh && agentFocusFresh && viewMode == "live"
   {
@@ -364,6 +378,7 @@ domain Studio {
   @meta("comment:grounding", "Admit the generateMock tool. It generates candidate arguments for user-domain actions without dispatching.")
   @meta("agent:invariant", "Requires fresh schema and fresh focus.")
   @meta("agent:recovery", "If blocked, call inspectSchema or inspectFocus first.")
+  @meta("agent:example", "If the user asks for sample data or args for addTodo, call generateMock and inspect the candidate args without mutating state.")
   action admitGenerateMock()
     dispatchable when agentSchemaFresh && agentFocusFresh
   {
@@ -375,6 +390,7 @@ domain Studio {
   @meta("comment:grounding", "Admit the seedMock tool. It dispatches generated mock arguments into the user-domain runtime.")
   @meta("agent:invariant", "Requires fresh schema and fresh focus.")
   @meta("agent:recovery", "If blocked, call inspectSchema or inspectFocus first.")
+  @meta("agent:example", "If the user asks to put mock data into the runtime, call seedMock for the target domain action instead of only generating args.")
   action admitSeedMock()
     dispatchable when agentSchemaFresh && agentFocusFresh
   {
@@ -386,6 +402,7 @@ domain Studio {
   @meta("comment:grounding", "Admit the dispatch tool. It mutates user-domain state through the current compiled MEL action.")
   @meta("agent:invariant", "Requires fresh schema and fresh focus. Domain action names are inputs to dispatch, not tool names.")
   @meta("agent:recovery", "If blocked, call inspectSchema, inspectFocus, inspectAvailability, or explainLegality before retrying.")
+  @meta("agent:example", "If the user says increment the counter, call dispatch with action increment and args []; do not call increment as a tool.")
   action admitDispatch()
     dispatchable when agentSchemaFresh && agentFocusFresh
   {

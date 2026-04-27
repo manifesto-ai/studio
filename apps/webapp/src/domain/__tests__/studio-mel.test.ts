@@ -70,6 +70,17 @@ describe("studio.mel — compiles", () => {
     expect(entries?.["action:admitDispatch"]).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ tag: "agent:invariant" }),
+        expect.objectContaining({ tag: "agent:example" }),
+      ]),
+    );
+    expect(entries?.["action:admitGenerateMock"]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tag: "agent:example" }),
+      ]),
+    );
+    expect(entries?.["action:admitSeedMock"]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tag: "agent:example" }),
       ]),
     );
   });
@@ -281,8 +292,12 @@ describe("studio.mel — agent tool admission", () => {
     const staleAvailability = await core.dispatchAsync(
       core.createIntent("admitInspectAvailability"),
     );
+    const legality = await core.dispatchAsync(
+      core.createIntent("admitExplainLegality"),
+    );
     expect(staleDispatch.kind).not.toBe("completed");
     expect(staleAvailability.kind).not.toBe("completed");
+    expect(legality.kind).toBe("completed");
 
     const schema = await core.dispatchAsync(
       core.createIntent("admitInspectSchema"),
@@ -463,6 +478,12 @@ describe("studio.mel — switchProject resets dependent state", () => {
     await core.dispatchAsync(
       core.createIntent("focusNode", "action:x", "action", "graph"),
     );
+    await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
+    );
+    await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
     await core.dispatchAsync(core.createIntent("scrubTo", "env-1"));
     await core.dispatchAsync(core.createIntent("switchProject", "counter"));
     expect(readState(core)).toMatchObject({
@@ -471,6 +492,9 @@ describe("studio.mel — switchProject resets dependent state", () => {
       focusedNodeKind: null,
       focusedNodeOrigin: null,
       agentObservedFocusNodeId: null,
+      agentUserModuleReady: false,
+      agentCurrentSchemaHash: null,
+      agentObservedSchemaHash: null,
       viewMode: "live",
       simulationActionName: null,
       scrubEnvelopeId: null,

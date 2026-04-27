@@ -347,7 +347,11 @@ export function AgentLens(): JSX.Element {
               toolCall.toolName,
               toolCall.input,
             );
-      if (toolCall.toolName === "inspectSchema" && result.ok) {
+      if (
+        (toolCall.toolName === "inspectSchema" ||
+          toolCall.toolName === "explainLegality") &&
+        result.ok
+      ) {
         await markAgentSchemaObserved(uiRef.current.core, result.output);
       }
       if (toolCall.toolName === "inspectFocus" && result.ok) {
@@ -1136,6 +1140,7 @@ export function buildUserToolContext(
     createIntent: (action, ...args) => core.createIntent(action, ...args),
     explainIntent: core.explainIntent as unknown as CoreExplain,
     whyNot: core.whyNot as unknown as CoreWhyNot,
+    getSchemaHash: () => readCurrentSchemaHash(core),
     listActionNames: () => listActionNames(core),
     dispatchAsync: (intent) =>
       core.dispatchAsync(

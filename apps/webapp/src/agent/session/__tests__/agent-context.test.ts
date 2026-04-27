@@ -82,6 +82,12 @@ describe("buildAgentSystemPrompt", () => {
     );
 
     expect(prompt).toContain("You are Manifest Studio Agent.");
+    expect(prompt).toContain("# How To Read Fine MEL");
+    expect(prompt).toContain("use the host tool name exposed to you");
+    expect(prompt).toContain("Domain actions are inputs to `dispatch`, not tool names");
+    expect(prompt).toContain("# Manifesto Routing");
+    expect(prompt).toContain("then call `explainLegality` for that action");
+    expect(prompt).toContain("Use `inspectToolAffordances` for agent-tool catalog failures only");
     expect(prompt).toContain("# Fine MEL");
     expect(prompt).toContain("schema: Studio (hash)");
     expect(prompt).not.toContain("# Studio MEL Source");

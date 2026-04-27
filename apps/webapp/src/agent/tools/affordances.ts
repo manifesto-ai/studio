@@ -80,6 +80,14 @@ export type ToolAffordanceReport = {
 export type DomainActionToolHint = {
   readonly action: string;
   readonly dispatchToolAvailable: boolean;
+  readonly legalityToolAvailable: boolean;
+  readonly legalityToolCall: {
+    readonly tool: "explainLegality";
+    readonly input: {
+      readonly action: string;
+      readonly args: readonly unknown[];
+    };
+  };
   readonly recommendedToolCall: {
     readonly tool: "dispatch";
     readonly input: {
@@ -225,7 +233,7 @@ export function createInspectToolAffordancesTool(): AgentTool<
   return {
     name: "inspectToolAffordances",
     description:
-      "Inspect the live Manifesto tool catalog. Returns which tools are currently admitted by studio.mel, why a requested tool is blocked or unknown, and which available tools can recover the task.",
+      "Inspect the live Manifesto agent-tool catalog. Use after an agent tool is unknown, unavailable, or repeatedly failing. Do not use this to answer why a user-domain action is blocked; call `explainLegality` for that.",
     jsonSchema: {
       type: "object",
       additionalProperties: false,
@@ -452,10 +460,11 @@ function chooseRecoveryTools(
     domainActionHint !== null
       ? [
           "inspectSchema",
+          "explainLegality",
+          "inspectFocus",
           "dispatch",
           "simulateIntent",
           "inspectAvailability",
-          "explainLegality",
           "inspectSnapshot",
         ]
       : requestedTool === "dispatch"
@@ -515,12 +524,19 @@ function buildDomainActionHint(
   const action = findDomainActionName(requestedTool, domainActionNames);
   if (action === null) return null;
   const dispatchToolAvailable = availableTools.includes("dispatch");
+  const legalityToolAvailable = availableTools.includes("explainLegality");
   const message =
     `"${action}" is a domain action, not an agent tool. ` +
-    `Call dispatch({ action: "${action}", args: [...] }) instead; args must match that action's declared params.`;
+    `For a "why blocked?" legality question, call explainLegality({ action: "${action}", args: [...] }). ` +
+    `To run it, call dispatch({ action: "${action}", args: [...] }); args must match that action's declared params.`;
   return {
     action,
     dispatchToolAvailable,
+    legalityToolAvailable,
+    legalityToolCall: {
+      tool: "explainLegality",
+      input: { action, args: [] },
+    },
     recommendedToolCall: {
       tool: "dispatch",
       input: { action, args: [] },

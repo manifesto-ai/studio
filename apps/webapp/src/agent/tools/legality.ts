@@ -32,6 +32,7 @@ export type LegalityContext = {
   readonly createIntent: (action: string, ...args: unknown[]) => unknown;
   readonly explainIntent: (intent: unknown) => IntentExplanationLike;
   readonly whyNot: (intent: unknown) => readonly BlockerLike[] | null;
+  readonly getSchemaHash?: () => string | null;
   /**
    * Optional: list known action names so we can reject the call with
    * a precise "unknown action" error instead of propagating whatever
@@ -87,6 +88,7 @@ export type LegalityInput = {
  */
 export type LegalityOutput = {
   readonly action: string;
+  readonly schemaHash: string | null;
   readonly available: boolean;
   readonly inputValid: boolean;
   readonly dispatchable: boolean;
@@ -171,6 +173,7 @@ export async function runLegality(
     };
   }
   const args = Array.isArray(input.args) ? input.args : [];
+  const schemaHash = readSchemaHash(ctx);
 
   const known = ctx.listActionNames?.();
   if (known !== undefined && !known.includes(action)) {
@@ -199,6 +202,7 @@ export async function runLegality(
       ok: true,
       output: {
         action,
+        schemaHash,
         available,
         inputValid: false,
         dispatchable: false,
@@ -221,6 +225,7 @@ export async function runLegality(
   const dispatchable = explanation?.kind === "admitted";
   const output: LegalityOutput = {
     action,
+    schemaHash,
     available: explanation?.available ?? available,
     inputValid: true,
     dispatchable,
@@ -228,6 +233,11 @@ export async function runLegality(
     summary: summarise(action, available, dispatchable, blockers),
   };
   return { ok: true, output };
+}
+
+function readSchemaHash(ctx: LegalityContext): string | null {
+  const hash = ctx.getSchemaHash?.();
+  return typeof hash === "string" && hash.trim() !== "" ? hash : null;
 }
 
 function summarise(
