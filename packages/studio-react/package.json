@@ -30,7 +30,7 @@
     "react-dom": ">=18 <20"
   },
   "devDependencies": {
-    "@manifesto-ai/compiler": "^3.7.0",
+    "@manifesto-ai/compiler": "^3.9.0",
     "@manifesto-ai/studio-adapter-headless": "workspace:*",
     "@testing-library/react": "^16.1.0",
     "@types/d3-force": "^3.0.10",

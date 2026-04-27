@@ -51,6 +51,25 @@ describe("dispatch — happy path", () => {
     expect(res.output.summary).toContain("todos.items");
   });
 
+  it("normalizes graph action node ids before dispatching", async () => {
+    const intents: unknown[] = [];
+    const res = await runDispatch(
+      { action: "action:toggleTodo", args: ["t1"] },
+      makeCtx({
+        createIntent: (action, ...args) => ({ action, args }),
+        dispatchAsync: async (intent) => {
+          intents.push(intent);
+          return { kind: "completed" };
+        },
+      }),
+    );
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.output.action).toBe("toggleTodo");
+    expect(intents).toEqual([{ action: "toggleTodo", args: ["t1"] }]);
+  });
+
   it("handles the zero-changed-paths case in its summary", async () => {
     const res = await runDispatch(
       { action: "addTodo", args: [{ text: "x" }] },

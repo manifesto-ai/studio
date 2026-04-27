@@ -18,6 +18,7 @@
  * `../__tests__/import-boundaries.test.ts`.
  */
 import type { AgentTool, ToolRunResult } from "./types.js";
+import { normalizeActionName } from "./action-name.js";
 
 /**
  * The StudioCore slice this tool needs. Each caller (real core, test
@@ -31,6 +32,7 @@ export type LegalityContext = {
   readonly createIntent: (action: string, ...args: unknown[]) => unknown;
   readonly explainIntent: (intent: unknown) => IntentExplanationLike;
   readonly whyNot: (intent: unknown) => readonly BlockerLike[] | null;
+  readonly getSchemaHash?: () => string | null;
   /**
    * Optional: list known action names so we can reject the call with
    * a precise "unknown action" error instead of propagating whatever
@@ -86,6 +88,7 @@ export type LegalityInput = {
  */
 export type LegalityOutput = {
   readonly action: string;
+  readonly schemaHash: string | null;
   readonly available: boolean;
   readonly inputValid: boolean;
   readonly dispatchable: boolean;
@@ -115,7 +118,8 @@ const JSON_SCHEMA: Record<string, unknown> = {
   properties: {
     action: {
       type: "string",
-      description: "The action name exactly as declared in the MEL module.",
+      description:
+        "The action name as declared in the MEL module. Graph node ids like `action:restoreTask` are also accepted and normalized.",
     },
     args: {
       type: "array",
@@ -148,7 +152,7 @@ export async function runLegality(
     typeof input !== "object" ||
     input === null ||
     typeof input.action !== "string" ||
-    input.action === ""
+    input.action.trim() === ""
   ) {
     return {
       ok: false,
@@ -158,8 +162,18 @@ export async function runLegality(
         safeStringify(input),
     };
   }
-  const action = input.action;
+  const action = normalizeActionName(input.action);
+  if (action === "") {
+    return {
+      ok: false,
+      kind: "invalid_input",
+      message:
+        "explainLegality requires a non-empty action name — received " +
+        safeStringify(input.action),
+    };
+  }
   const args = Array.isArray(input.args) ? input.args : [];
+  const schemaHash = readSchemaHash(ctx);
 
   const known = ctx.listActionNames?.();
   if (known !== undefined && !known.includes(action)) {
@@ -188,6 +202,7 @@ export async function runLegality(
       ok: true,
       output: {
         action,
+        schemaHash,
         available,
         inputValid: false,
         dispatchable: false,
@@ -210,6 +225,7 @@ export async function runLegality(
   const dispatchable = explanation?.kind === "admitted";
   const output: LegalityOutput = {
     action,
+    schemaHash,
     available: explanation?.available ?? available,
     inputValid: true,
     dispatchable,
@@ -217,6 +233,11 @@ export async function runLegality(
     summary: summarise(action, available, dispatchable, blockers),
   };
   return { ok: true, output };
+}
+
+function readSchemaHash(ctx: LegalityContext): string | null {
+  const hash = ctx.getSchemaHash?.();
+  return typeof hash === "string" && hash.trim() !== "" ? hash : null;
 }
 
 function summarise(

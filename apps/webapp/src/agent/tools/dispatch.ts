@@ -20,6 +20,7 @@
  * the tool returns a structured failure the model can act on.
  */
 import type { AgentTool, ToolRunResult } from "./types.js";
+import { normalizeActionName } from "./action-name.js";
 
 export type DispatchContext = {
   readonly createIntent: (action: string, ...args: unknown[]) => unknown;
@@ -66,7 +67,7 @@ const JSON_SCHEMA: Record<string, unknown> = {
     action: {
       type: "string",
       description:
-        "Action name exactly as it appears in the MEL source. Must match a declared action; the runtime rejects unknown names.",
+        "Action name exactly as it appears in the MEL source. Graph node ids like `action:restoreTask` are also accepted and normalized. Must match a declared action; the runtime rejects unknown names.",
     },
     args: {
       type: "array",
@@ -99,7 +100,7 @@ export async function runDispatch(
     typeof input !== "object" ||
     input === null ||
     typeof input.action !== "string" ||
-    input.action === ""
+    input.action.trim() === ""
   ) {
     return {
       ok: false,
@@ -107,7 +108,14 @@ export async function runDispatch(
       message: "`dispatch` requires { action: string, args?: unknown[] }.",
     };
   }
-  const action = input.action;
+  const action = normalizeActionName(input.action);
+  if (action === "") {
+    return {
+      ok: false,
+      kind: "invalid_input",
+      message: "`dispatch` requires a non-empty action name.",
+    };
+  }
   const args = Array.isArray(input.args) ? input.args : [];
 
   const known = ctx.listActionNames?.();

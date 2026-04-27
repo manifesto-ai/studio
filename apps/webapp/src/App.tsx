@@ -17,7 +17,11 @@ import {
   MEL_LANGUAGE_ID,
   registerMelLanguage,
 } from "@manifesto-ai/studio-adapter-monaco";
-import { StudioHotkeys, StudioProvider } from "@manifesto-ai/studio-react";
+import {
+  StudioHotkeys,
+  StudioProvider,
+  useStudio,
+} from "@manifesto-ai/studio-react";
 import { Analytics } from "@vercel/analytics/react";
 import { StudioUiProvider, useStudioUi } from "@/domain/StudioUiRuntime";
 
@@ -237,8 +241,11 @@ function AppShell(): JSX.Element {
        * ownership has moved out of that component; it now expects
        * `uiViewMode` and dispatch callbacks from whoever hosts it. */}
       <StudioUiProvider>
+        <ProjectRuntimeSync />
         <StudioProviderHost core={core} adapter={adapter}>
-          <ViewportProvider>
+          <>
+            <AgentRuntimeContextSync />
+            <ViewportProvider>
             <FocusSync editor={editor} />
             <TimeScrubProvider>
               <StudioHotkeys />
@@ -287,11 +294,52 @@ function AppShell(): JSX.Element {
               <NowLine />
               <SnapshotRipple />
             </TimeScrubProvider>
-          </ViewportProvider>
+            </ViewportProvider>
+          </>
         </StudioProviderHost>
       </StudioUiProvider>
     </div>
   );
+}
+
+function ProjectRuntimeSync(): null {
+  const ui = useStudioUi();
+  const { activeProject } = useProjects();
+
+  useEffect(() => {
+    if (!ui.ready) return;
+    if (activeProject === null) return;
+    if (ui.snapshot.activeProjectName === activeProject.name) return;
+    ui.switchProject(activeProject.name);
+  }, [
+    activeProject,
+    ui,
+  ]);
+
+  return null;
+}
+
+function AgentRuntimeContextSync(): null {
+  const ui = useStudioUi();
+  const studio = useStudio();
+  const schemaHash = studio.module?.schema.hash ?? null;
+  const userModuleReady = studio.module !== null;
+  const uiRef = useRef(ui);
+  uiRef.current = ui;
+
+  useEffect(() => {
+    const currentUi = uiRef.current;
+    if (!currentUi.ready) return;
+    if (
+      currentUi.snapshot.agentUserModuleReady === userModuleReady &&
+      currentUi.snapshot.agentCurrentSchemaHash === schemaHash
+    ) {
+      return;
+    }
+    currentUi.syncAgentToolContext(userModuleReady, schemaHash);
+  }, [schemaHash, studio.version, ui.ready, userModuleReady]);
+
+  return null;
 }
 
 /**

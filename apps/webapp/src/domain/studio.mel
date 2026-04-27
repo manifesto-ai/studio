@@ -12,9 +12,14 @@
 //     debounced cursor stream, dispatch logs) — those live in React /
 //     XState as side effects of the transitions declared here.
 
+@meta("comment:grounding", "Studio UI contract. This is not the user's domain; it declares semantic UI transitions and agent tool admission gates.")
+@meta("agent:invariant", "MEL owns stable identity and legality. React owns ephemeral rendering, animation, logs, and chat continuation.")
 domain Studio {
+  @meta("comment:grounding", "Graph entity kind used by focus ids: action, state, or computed.")
   type FocusKind = "action" | "state" | "computed"
+  @meta("comment:grounding", "Where the current focus selection originated.")
   type FocusOrigin = "graph" | "source" | "diagnostic" | "interact" | "agent"
+  @meta("comment:grounding", "Studio side panel lens ids. Switching lenses is semantic UI state.")
   type LensId = "interact" | "snapshot" | "plan" | "history" | "diagnostics" | "agent"
   // ViewMode is the mutual-exclusion discriminator for "what view of
   // reality the Studio is currently presenting". `live` is the normal
@@ -22,6 +27,8 @@ domain Studio {
   // `scrub` is a point-in-time view of past schema state. The
   // runtime's `dispatchable when` gates below enforce that the three
   // modes never overlap.
+  @meta("comment:grounding", "Mutual-exclusion discriminator for live runtime, what-if simulation, and history scrub views.")
+  @meta("agent:invariant", "Exactly one view mode is active at a time.")
   type ViewMode = "live" | "simulate" | "scrub"
 
   state {
@@ -31,68 +38,103 @@ domain Studio {
     // webapp already uses (e.g. "action:toggleTodo"). Kind and origin
     // are kept as sibling fields so the agent can read them without
     // parsing the id.
+    @meta("comment:grounding", "Currently selected graph node encoded as <kind>:<name>, for example action:toggleTodo.")
+    @meta("agent:stale_when", "focusNode changes this value, clearFocus clears it, or switchProject resets it.")
     focusedNodeId: string | null = null
+    @meta("comment:grounding", "Parsed kind of the selected node so consumers do not parse focusedNodeId.")
     focusedNodeKind: FocusKind | null = null
+    @meta("comment:grounding", "Origin of the selected node. Useful for explaining why focus changed.")
     focusedNodeOrigin: FocusOrigin | null = null
 
     // ── Lens ───────────────────────────────────────────────────────
+    @meta("comment:grounding", "Currently open Studio lens.")
     activeLens: LensId = "interact"
 
     // ── View mode (mutual exclusion: live / simulate / scrub) ──────
+    @meta("comment:grounding", "Current runtime view mode.")
+    @meta("agent:stale_when", "enterSimulation, exitSimulation, scrubTo, resetScrub, or switchProject changes this mode.")
     viewMode: ViewMode = "live"
     // Which action is currently being what-if'd. Non-null iff
     // viewMode == "simulate". The playback trace itself lives in
     // React state (ephemeral).
+    @meta("comment:grounding", "Action currently being previewed. Non-null only while viewMode is simulate.")
     simulationActionName: string | null = null
     // Which edit-envelope the user is scrubbing to. Non-null iff
     // viewMode == "scrub". The replayed module/snapshot live in
     // React state (expensive, derivable).
+    @meta("comment:grounding", "History envelope currently being scrubbed. Non-null only while viewMode is scrub.")
     scrubEnvelopeId: string | null = null
 
     // ── Active project ─────────────────────────────────────────────
     // Which bundled project the user is editing. Project source
     // itself is owned by the Monaco editor — NOT mirrored here.
+    @meta("comment:grounding", "Bundled project currently edited in Studio.")
     activeProjectName: string | null = null
 
-    // ── Agent interaction memory (single-entry) ────────────────────
-    // We deliberately store only the LATEST turn — the full transcript
-    // lives in React state (ephemeral, cheap to lose, replayable).
-    // The value here exists so the agent can call `inspectFocus` and
-    // see what the user/it last said without needing access to a
-    // separate transcript store, AND so every interaction advances
-    // studio.mel's lineage — making the agent's timeline a first-
-    // class part of runtime history (scrubbable alongside UI state
-    // changes).
-    lastUserPrompt: string | null = null
-    lastAgentAnswer: string | null = null
-    agentTurnCount: number = 0
+    // ── Agent tool admission ───────────────────────────────────────
+    // MEL owns tool identity and legality, not the LLM turn loop. The
+    // React/AI SDK shell owns chat continuation; the runtime only gets
+    // the coarse user-domain facts needed to guard domain-dependent
+    // tools. Schema freshness is intentionally a runtime guard:
+    // if the compiled user schema changes mid-chat, writes and
+    // schema-dependent reads stay blocked until the agent explicitly
+    // re-reads the schema through inspectSchema.
+    @meta("comment:grounding", "Host-synced flag saying the user's MEL module compiled and can be inspected.")
+    agentUserModuleReady: boolean = false
+    @meta("comment:grounding", "Host-synced schema hash of the current user domain.")
+    agentCurrentSchemaHash: string | null = null
+    @meta("comment:grounding", "Schema hash the agent has explicitly observed through inspectSchema.")
+    @meta("agent:stale_when", "syncAgentToolContext reports a different schema hash.")
+    agentObservedSchemaHash: string | null = null
+    @meta("comment:grounding", "Focused node id the agent has explicitly observed through inspectFocus.")
+    @meta("agent:stale_when", "focusNode changes focus, clearFocus clears focus, or switchProject resets focus.")
+    agentObservedFocusNodeId: string | null = null
+    @meta("comment:grounding", "Last model tool admitted by the Manifesto guard.")
+    agentLastAdmittedToolName: string | null = null
   }
 
+  @meta("comment:grounding", "True when a graph node is selected.")
   computed hasFocus = focusedNodeId != null
+  @meta("comment:grounding", "True when the Studio presents the live runtime.")
   computed isLive = viewMode == "live"
+  @meta("comment:grounding", "True while previewing a what-if action.")
   computed isSimulating = viewMode == "simulate"
+  @meta("comment:grounding", "True while viewing historical schema/runtime state.")
   computed isScrubbing = viewMode == "scrub"
+  @meta("comment:grounding", "True after the agent has inspected the current user schema hash.")
+  @meta("agent:invariant", "Schema-dependent tools require this to be true.")
+  computed agentSchemaFresh =
+    agentUserModuleReady && agentCurrentSchemaHash != null && agentObservedSchemaHash == agentCurrentSchemaHash
+  @meta("comment:grounding", "True when no focus exists or the agent has inspected the current focused node.")
+  @meta("agent:invariant", "Focus-sensitive tools require this to be true so stale focus is not reused.")
+  computed agentFocusFresh =
+    focusedNodeId == null || agentObservedFocusNodeId == focusedNodeId
 
   // ── Focus actions ────────────────────────────────────────────────
-
+  @meta("comment:grounding", "Select a MEL graph node and invalidate prior agent focus observation if the node changed.")
+  @meta("agent:recovery", "After this action changes focus, call inspectFocus before using focus-dependent tools.")
   action focusNode(id: string, kind: FocusKind, origin: FocusOrigin) {
     onceIntent {
+      patch agentObservedFocusNodeId =
+        focusedNodeId == id ? agentObservedFocusNodeId : null
       patch focusedNodeId = id
       patch focusedNodeKind = kind
       patch focusedNodeOrigin = origin
     }
   }
 
+  @meta("comment:grounding", "Clear the selected node and its agent observation marker.")
   action clearFocus() {
     onceIntent {
       patch focusedNodeId = null
       patch focusedNodeKind = null
       patch focusedNodeOrigin = null
+      patch agentObservedFocusNodeId = null
     }
   }
 
   // ── Lens action ──────────────────────────────────────────────────
-
+  @meta("comment:grounding", "Open a Studio lens without changing user-domain state.")
   action openLens(id: LensId) {
     onceIntent {
       patch activeLens = id
@@ -104,7 +146,8 @@ domain Studio {
   // what-if against a scrubbed past snapshot. Exiting is only valid
   // while simulating. This is the heart of what studio.mel buys us:
   // impossible UI transitions are rejected at the runtime boundary.
-
+  @meta("comment:grounding", "Enter a what-if preview for an action from live mode.")
+  @meta("agent:invariant", "Simulation can only start from live mode.")
   action enterSimulation(actionName: string)
     dispatchable when viewMode == "live"
   {
@@ -114,6 +157,7 @@ domain Studio {
     }
   }
 
+  @meta("comment:grounding", "Exit what-if preview and return to live mode.")
   action exitSimulation()
     dispatchable when viewMode == "simulate"
   {
@@ -128,6 +172,8 @@ domain Studio {
   // (switching target). Simulation blocks entry — agent that wants
   // both must exit simulation first.
 
+  @meta("comment:grounding", "View a historical edit envelope from live or from another scrub target.")
+  @meta("agent:invariant", "Scrub cannot start while simulating.")
   action scrubTo(envelopeId: string)
     dispatchable when viewMode == "live" || viewMode == "scrub"
   {
@@ -137,6 +183,7 @@ domain Studio {
     }
   }
 
+  @meta("comment:grounding", "Exit history scrub and return to live mode.")
   action resetScrub()
     dispatchable when viewMode == "scrub"
   {
@@ -152,35 +199,215 @@ domain Studio {
   // meaningful. Mode resets to live since the old simulation/scrub
   // target belonged to the previous snapshot history.
 
+  @meta("comment:grounding", "Switch the bundled project and reset project-scoped focus and view mode.")
+  @meta("agent:stale_when", "All prior focus, simulation, scrub, and schema observations belong to the previous project.")
   action switchProject(name: string) {
     onceIntent {
       patch activeProjectName = name
       patch focusedNodeId = null
       patch focusedNodeKind = null
       patch focusedNodeOrigin = null
+      patch agentObservedFocusNodeId = null
+      patch agentUserModuleReady = false
+      patch agentCurrentSchemaHash = null
+      patch agentObservedSchemaHash = null
       patch viewMode = "live"
       patch simulationActionName = null
       patch scrubEnvelopeId = null
     }
   }
 
-  // ── Agent turn record ───────────────────────────────────────────
-  // Called by the React shell when an agent turn finalizes. Each
-  // call advances studio.mel's lineage by one world — meaning
-  // "which turn are we on" is queryable via the lineage tracker
-  // without a separate chat-history store.
-  //
-  // `answer` is the finalized assistant text (tool-call-only turns
-  // pass a short human-readable summary). We intentionally keep
-  // only the latest turn as state — the full transcript lives in
-  // React and can be long; what the runtime cares about is *the
-  // lineage of the conversation existing*, not its full content.
+  // ── Agent tool admission ────────────────────────────────────────
+  // Tool implementations live in the host, but the identity and
+  // availability of tools visible to the LLM live here. The host
+  // synchronizes only coarse user-runtime facts; every actual tool
+  // call must first dispatch its matching admit* action. This is
+  // intentionally not a turn lifecycle: no MEL state tracks resend
+  // loops, assistant finishes, or chat history.
 
-  action recordAgentTurn(prompt: string, answer: string) {
+  @meta("comment:grounding", "Host synchronizes coarse user-domain readiness and schema hash into the Studio contract.")
+  @meta("agent:invariant", "If schemaHash changes, schema-dependent tools remain blocked until inspectSchema is observed.")
+  action syncAgentToolContext(userModuleReady: boolean, schemaHash: string | null) {
     onceIntent {
-      patch lastUserPrompt = prompt
-      patch lastAgentAnswer = answer
-      patch agentTurnCount = agentTurnCount + 1
+      patch agentUserModuleReady = userModuleReady
+      patch agentCurrentSchemaHash = schemaHash
+      patch agentObservedSchemaHash =
+        userModuleReady && agentObservedSchemaHash == schemaHash ? agentObservedSchemaHash : null
+    }
+  }
+
+  @meta("comment:grounding", "Mark the current user schema as observed after inspectSchema succeeds.")
+  action markAgentSchemaObserved(schemaHash: string)
+    dispatchable when agentUserModuleReady && schemaHash == agentCurrentSchemaHash
+  {
+    onceIntent {
+      patch agentObservedSchemaHash = schemaHash
+    }
+  }
+
+  @meta("comment:grounding", "Mark the current focus as observed after inspectFocus succeeds.")
+  action markAgentFocusObserved(nodeId: string)
+    dispatchable when focusedNodeId != null && nodeId == focusedNodeId
+  {
+    onceIntent {
+      patch agentObservedFocusNodeId = nodeId
+    }
+  }
+
+  @meta("comment:grounding", "Admit the inspectToolAffordances tool. It reads the current Manifesto agent-tool catalog, not user-domain action legality.")
+  @meta("agent:recovery", "Use this after an unknown, unavailable, or repeatedly blocked agent tool call. For user-domain action legality, use explainLegality.")
+  @meta("agent:example", "If the model tried addTodo as a tool and the host says unavailable tool, call inspectToolAffordances with toolName addTodo.")
+  action admitInspectToolAffordances() {
+    onceIntent {
+      patch agentLastAdmittedToolName = "inspectToolAffordances"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the inspectFocus tool. It reads the currently selected MEL graph node and Studio focus context.")
+  @meta("agent:stale_when", "focusNode changes focus, clearFocus clears focus, or switchProject resets focus.")
+  @meta("agent:recovery", "Use this before focus-dependent tools when agentFocusFresh is false.")
+  @meta("agent:example", "If the user says this node or asks about the selected card, call inspectFocus before answering.")
+  action admitInspectFocus() {
+    onceIntent {
+      patch agentLastAdmittedToolName = "inspectFocus"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the studioDispatch tool. It mutates Studio UI state through this Studio MEL runtime, not the user's domain.")
+  @meta("agent:invariant", "Studio UI writes must target actions declared by this Studio contract.")
+  @meta("agent:example", "If the user asks to open the history lens, call studioDispatch with action openLens and id history.")
+  action admitStudioDispatch() {
+    onceIntent {
+      patch agentLastAdmittedToolName = "studioDispatch"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the inspectSchema tool. It reads the compiled user-domain schema and refreshes schema freshness.")
+  @meta("agent:invariant", "Requires a compiled user module.")
+  @meta("agent:recovery", "Use this when schema-dependent tools are blocked by stale schema.")
+  @meta("agent:example", "If action names or argument shapes are unclear, call inspectSchema before generating args or dispatching.")
+  action admitInspectSchema()
+    dispatchable when agentUserModuleReady
+  {
+    onceIntent {
+      patch agentLastAdmittedToolName = "inspectSchema"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the inspectSnapshot tool. It reads current user-domain state and computed values.")
+  @meta("agent:invariant", "Requires a compiled user module and fresh focus observation.")
+  @meta("agent:stale_when", "Any successful user-domain dispatch can make prior snapshot values stale.")
+  @meta("agent:recovery", "If focus is stale, call inspectFocus first.")
+  @meta("agent:example", "If the user asks what the current count or todo list contains, call inspectSnapshot.")
+  action admitInspectSnapshot()
+    dispatchable when agentUserModuleReady && agentFocusFresh
+  {
+    onceIntent {
+      patch agentLastAdmittedToolName = "inspectSnapshot"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the inspectAvailability tool. It reads current user-domain action availability.")
+  @meta("agent:invariant", "Requires fresh schema and fresh focus.")
+  @meta("agent:recovery", "If blocked, call inspectSchema or inspectFocus based on freshness.")
+  @meta("agent:example", "If the user asks what actions can be used now, call inspectAvailability.")
+  action admitInspectAvailability()
+    dispatchable when agentSchemaFresh && agentFocusFresh
+  {
+    onceIntent {
+      patch agentLastAdmittedToolName = "inspectAvailability"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the inspectNeighbors tool. It reads graph edges touching a MEL node.")
+  @meta("agent:invariant", "Requires fresh schema and fresh focus.")
+  @meta("agent:recovery", "If blocked, call inspectSchema or inspectFocus before asking for graph neighbors.")
+  @meta("agent:example", "If the user asks what this action reads or mutates, call inspectNeighbors for the focused node.")
+  action admitInspectNeighbors()
+    dispatchable when agentSchemaFresh && agentFocusFresh
+  {
+    onceIntent {
+      patch agentLastAdmittedToolName = "inspectNeighbors"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the inspectLineage tool. It reads recent world history and changed paths.")
+  @meta("agent:invariant", "Requires a compiled user module and fresh focus observation.")
+  @meta("agent:recovery", "If blocked by focus freshness, call inspectFocus first.")
+  @meta("agent:example", "If the user asks what changed recently or why state changed, call inspectLineage.")
+  action admitInspectLineage()
+    dispatchable when agentUserModuleReady && agentFocusFresh
+  {
+    onceIntent {
+      patch agentLastAdmittedToolName = "inspectLineage"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the inspectConversation tool. It reads compact conversation history held by the host.")
+  @meta("agent:example", "If the answer depends on earlier user requests not visible in the active turn, call inspectConversation.")
+  action admitInspectConversation() {
+    onceIntent {
+      patch agentLastAdmittedToolName = "inspectConversation"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the explainLegality tool. It explains why a specific user-domain action is blocked, unavailable, disabled, illegal, or not working.")
+  @meta("agent:invariant", "Requires a compiled schema hash and fresh focus. This tool may be used before agentSchemaFresh because it observes schema while diagnosing legality.")
+  @meta("agent:recovery", "If blocked before use, inspect focus freshness or compile the user module first.")
+  @meta("agent:example", "If focused node is action:decrement and the user asks why it is blocked, call explainLegality with action decrement and current args.")
+  action admitExplainLegality()
+    dispatchable when agentUserModuleReady && agentCurrentSchemaHash != null && agentFocusFresh
+  {
+    onceIntent {
+      patch agentLastAdmittedToolName = "explainLegality"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the simulateIntent tool. It previews a user-domain action without mutating live state.")
+  @meta("agent:invariant", "Requires live view mode, fresh schema, and fresh focus.")
+  @meta("agent:recovery", "If Studio is scrubbing or simulating, return to live mode before previewing.")
+  @meta("agent:example", "If the user asks what would happen if decrement runs, call simulateIntent with action decrement before dispatching.")
+  action admitSimulateIntent()
+    dispatchable when agentSchemaFresh && agentFocusFresh && viewMode == "live"
+  {
+    onceIntent {
+      patch agentLastAdmittedToolName = "simulateIntent"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the generateMock tool. It generates candidate arguments for user-domain actions without dispatching.")
+  @meta("agent:invariant", "Requires fresh schema and fresh focus.")
+  @meta("agent:recovery", "If blocked, call inspectSchema or inspectFocus first.")
+  @meta("agent:example", "If the user asks for sample data or args for addTodo, call generateMock and inspect the candidate args without mutating state.")
+  action admitGenerateMock()
+    dispatchable when agentSchemaFresh && agentFocusFresh
+  {
+    onceIntent {
+      patch agentLastAdmittedToolName = "generateMock"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the seedMock tool. It dispatches generated mock arguments into the user-domain runtime.")
+  @meta("agent:invariant", "Requires fresh schema and fresh focus.")
+  @meta("agent:recovery", "If blocked, call inspectSchema or inspectFocus first.")
+  @meta("agent:example", "If the user asks to put mock data into the runtime, call seedMock for the target domain action instead of only generating args.")
+  action admitSeedMock()
+    dispatchable when agentSchemaFresh && agentFocusFresh
+  {
+    onceIntent {
+      patch agentLastAdmittedToolName = "seedMock"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the dispatch tool. It mutates user-domain state through the current compiled MEL action.")
+  @meta("agent:invariant", "Requires fresh schema and fresh focus. Domain action names are inputs to dispatch, not tool names.")
+  @meta("agent:recovery", "If blocked, call inspectSchema, inspectFocus, inspectAvailability, or explainLegality before retrying.")
+  @meta("agent:example", "If the user says increment the counter, call dispatch with action increment and args []; do not call increment as a tool.")
+  action admitDispatch()
+    dispatchable when agentSchemaFresh && agentFocusFresh
+  {
+    onceIntent {
+      patch agentLastAdmittedToolName = "dispatch"
     }
   }
 }

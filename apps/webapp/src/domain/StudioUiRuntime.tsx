@@ -69,16 +69,18 @@ export type StudioUiSnapshot = {
   readonly simulationActionName: string | null;
   readonly scrubEnvelopeId: string | null;
   readonly activeProjectName: string | null;
-  /** Last finalized user/agent turn. Stored single-entry — full
-   *  transcript is a React concern. See studio.mel recordAgentTurn. */
-  readonly lastUserPrompt: string | null;
-  readonly lastAgentAnswer: string | null;
-  readonly agentTurnCount: number;
+  readonly agentUserModuleReady: boolean;
+  readonly agentCurrentSchemaHash: string | null;
+  readonly agentObservedSchemaHash: string | null;
+  readonly agentObservedFocusNodeId: string | null;
+  readonly agentLastAdmittedToolName: string | null;
   /** Computed projections. */
   readonly hasFocus: boolean;
   readonly isLive: boolean;
   readonly isSimulating: boolean;
   readonly isScrubbing: boolean;
+  readonly agentSchemaFresh: boolean;
+  readonly agentFocusFresh: boolean;
 };
 
 const EMPTY_SNAPSHOT: StudioUiSnapshot = {
@@ -90,13 +92,17 @@ const EMPTY_SNAPSHOT: StudioUiSnapshot = {
   simulationActionName: null,
   scrubEnvelopeId: null,
   activeProjectName: null,
-  lastUserPrompt: null,
-  lastAgentAnswer: null,
-  agentTurnCount: 0,
+  agentUserModuleReady: false,
+  agentCurrentSchemaHash: null,
+  agentObservedSchemaHash: null,
+  agentObservedFocusNodeId: null,
+  agentLastAdmittedToolName: null,
   hasFocus: false,
   isLive: true,
   isSimulating: false,
   isScrubbing: false,
+  agentSchemaFresh: false,
+  agentFocusFresh: true,
 };
 
 type StudioUiContextValue = {
@@ -128,7 +134,10 @@ type StudioUiContextValue = {
   readonly scrubTo: (envelopeId: string) => void;
   readonly resetScrub: () => void;
   readonly switchProject: (name: string) => void;
-  readonly recordAgentTurn: (prompt: string, answer: string) => void;
+  readonly syncAgentToolContext: (
+    userModuleReady: boolean,
+    schemaHash: string | null,
+  ) => void;
   // ── Low-level dispatch seam (for tests + programmatic callers) ──
   // Typed helpers above cover every known studio.mel action. These
   // lower-level seams are kept for callers that need Promise-shaped
@@ -289,8 +298,8 @@ export function StudioUiProvider({
       scrubTo: (envelopeId) => dispatch("scrubTo", [envelopeId]),
       resetScrub: () => dispatch("resetScrub", []),
       switchProject: (name) => dispatch("switchProject", [name]),
-      recordAgentTurn: (prompt, answer) =>
-        dispatch("recordAgentTurn", [prompt, answer]),
+      syncAgentToolContext: (userModuleReady, schemaHash) =>
+        dispatch("syncAgentToolContext", [userModuleReady, schemaHash]),
       createIntent: createIntentFn,
       dispatchAsync: dispatchIntent,
     }),
@@ -327,13 +336,17 @@ function readSnapshot(core: StudioCore): StudioUiSnapshot {
     simulationActionName: asStringOrNull(data.simulationActionName),
     scrubEnvelopeId: asStringOrNull(data.scrubEnvelopeId),
     activeProjectName: asStringOrNull(data.activeProjectName),
-    lastUserPrompt: asStringOrNull(data.lastUserPrompt),
-    lastAgentAnswer: asStringOrNull(data.lastAgentAnswer),
-    agentTurnCount: typeof data.agentTurnCount === "number" ? data.agentTurnCount : 0,
+    agentUserModuleReady: data.agentUserModuleReady === true,
+    agentCurrentSchemaHash: asStringOrNull(data.agentCurrentSchemaHash),
+    agentObservedSchemaHash: asStringOrNull(data.agentObservedSchemaHash),
+    agentObservedFocusNodeId: asStringOrNull(data.agentObservedFocusNodeId),
+    agentLastAdmittedToolName: asStringOrNull(data.agentLastAdmittedToolName),
     hasFocus: Boolean(computed.hasFocus),
     isLive: computed.isLive !== false,
     isSimulating: Boolean(computed.isSimulating),
     isScrubbing: Boolean(computed.isScrubbing),
+    agentSchemaFresh: Boolean(computed.agentSchemaFresh),
+    agentFocusFresh: computed.agentFocusFresh !== false,
   };
 }
 

@@ -1,8 +1,7 @@
 /**
- * Tests for the four introspection tools — inspectFocus,
- * inspectSnapshot, inspectNeighbors, inspectAvailability. These are
- * pure reads so the tests stub the context directly and assert the
- * JSON shape the agent will see.
+ * Tests for read-only introspection tools. These are pure reads, so
+ * the tests stub the context directly and assert the JSON shape the
+ * agent will see.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -23,28 +22,46 @@ import {
 } from "../inspect-availability.js";
 
 describe("inspectFocus", () => {
-  it("returns the current focus and ui state", async () => {
+  it("returns the current Manifesto focus projection", async () => {
     const ctx: InspectFocusContext = {
       getFocus: () => ({
-        focusedNodeId: "action:toggleTodo",
-        focusedNodeKind: "action",
-        focusedNodeOrigin: "graph",
-        activeLens: "agent",
-        viewMode: "live",
-        simulationActionName: null,
-        scrubEnvelopeId: null,
-        activeProjectName: "todo.mel",
-        lastUserPrompt: null,
-        lastAgentAnswer: null,
-        agentTurnCount: 0,
+        status: "ok",
+        studio: {
+          activeLens: "agent",
+          viewMode: "live",
+          simulationActionName: null,
+          scrubEnvelopeId: null,
+          activeProjectName: "todo.mel",
+        },
+        focus: {
+          nodeId: "action:toggleTodo",
+          kind: "action",
+          origin: "graph",
+        },
+        entity: {
+          status: "ok",
+          label: "action.toggleTodo",
+          ref: {
+            nodeId: "action:toggleTodo",
+            kind: "action",
+            name: "toggleTodo",
+          },
+        },
+        summary: "Focused action toggleTodo (available).",
       }),
     };
     const tool = createInspectFocusTool();
     const result = await tool.run({}, ctx);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.output.focusedNodeId).toBe("action:toggleTodo");
-      expect(result.output.activeLens).toBe("agent");
+      const output = result.output as {
+        readonly focusedNodeId?: unknown;
+        readonly studio?: { readonly activeLens?: unknown };
+        readonly entity?: { readonly label?: unknown };
+      };
+      expect(output.focusedNodeId).toBeUndefined();
+      expect(output.entity?.label).toBe("action.toggleTodo");
+      expect(output.studio?.activeLens).toBe("agent");
     }
   });
 
@@ -58,6 +75,106 @@ describe("inspectFocus", () => {
         },
       },
     );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.kind).toBe("runtime_error");
+  });
+});
+
+describe("inspectSchema", () => {
+  it("returns compact schema summary with action input hints", async () => {
+    const { createInspectSchemaTool } = await import("../inspect-schema.js");
+    const tool = createInspectSchemaTool();
+    const fakeModule = {
+      schema: {
+        id: "Todo",
+        hash: "schema-hash",
+        state: {
+          fields: {
+            todos: {},
+            filter: {},
+          },
+        },
+        computed: {
+          fields: {
+            openCount: {},
+          },
+        },
+        actions: {
+          addTodo: {
+            params: ["title", "priority"],
+            inputType: {
+              kind: "object",
+              fields: {
+                title: { type: { kind: "primitive", type: "string" } },
+                priority: {
+                  type: {
+                    kind: "union",
+                    types: [
+                      { kind: "literal", value: "low" },
+                      { kind: "literal", value: "med" },
+                      { kind: "literal", value: "high" },
+                    ],
+                  },
+                },
+              },
+            },
+            dispatchable: {},
+            description: "add a todo",
+          },
+        },
+      },
+      graph: {
+        nodes: [{ id: "action:addTodo" }],
+        edges: [{ from: "action:addTodo", to: "state:todos" }],
+      },
+      annotations: {
+        entries: {
+          "state_field:todos": [
+            { tag: "comment:grounding", payload: "User-visible todo list." },
+          ],
+          "action:addTodo": [
+            {
+              tag: "agent:recovery",
+              payload: "If missing priority, generate a valid priority.",
+            },
+          ],
+        },
+      },
+    } as never;
+
+    const result = await tool.run({}, { getModule: () => fakeModule });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output).toMatchObject({
+      schemaId: "Todo",
+      schemaHash: "schema-hash",
+      stateFields: ["filter", "todos"],
+      computedFields: ["openCount"],
+      graph: { nodeCount: 1, edgeCount: 1 },
+    });
+    expect(result.output.actions[0]).toMatchObject({
+      name: "addTodo",
+      paramHints: ["title: string", 'priority: "low" | "med" | "high"'],
+      hasDispatchableGate: true,
+      description: "add a todo",
+      annotations: {
+        recovery: ["If missing priority, generate a valid priority."],
+      },
+    });
+    expect(result.output.state.find((field) => field.name === "todos")).toMatchObject({
+      annotations: {
+        grounding: ["User-visible todo list."],
+      },
+    });
+    expect(result.output.summary).toContain("grounding: User-visible todo list.");
+  });
+
+  it("returns runtime_error when no module is compiled", async () => {
+    const { createInspectSchemaTool } = await import("../inspect-schema.js");
+    const tool = createInspectSchemaTool();
+    const result = await tool.run({}, { getModule: () => null });
+
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.kind).toBe("runtime_error");
   });
@@ -183,6 +300,30 @@ describe("generateMock", () => {
     expect(result.output.action).toBe("setFilter");
     expect(result.output.samples).toHaveLength(2);
     expect(result.output.paramNames).toEqual(["newFilter"]);
+  });
+
+  it("accepts graph action node ids", async () => {
+    const { createGenerateMockTool } = await import("../generate-mock.js");
+    const tool = createGenerateMockTool();
+    const fakeModule = {
+      schema: {
+        actions: {
+          setFilter: {
+            params: ["newFilter"],
+            inputType: { kind: "primitive", type: "string" },
+          },
+        },
+        types: {},
+      },
+    } as never;
+    const result = await tool.run(
+      { action: "action:setFilter", count: 1, seed: 7 },
+      { getModule: () => fakeModule },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output.action).toBe("setFilter");
   });
 });
 
@@ -321,142 +462,68 @@ describe("inspectLineage", () => {
 });
 
 describe("inspectConversation", () => {
-  const turns = [
-    {
-      turnId: "t3",
-      userPrompt: "why is this blocked?",
-      assistantText: "`toggleTodo` requires `todoCount > 0`.",
-      reasoning: "resolved focus → toggleTodo, then ran explainLegality.",
-      toolCalls: [
-        { name: "inspectFocus", argumentsJson: "{}", ok: true },
-        {
-          name: "explainLegality",
-          argumentsJson: '{"action":"toggleTodo"}',
-          ok: true,
-        },
-      ],
-      endedAt: "2026-04-24T01:00:00.000Z",
-      stoppedAtCap: false,
-    },
-    {
-      turnId: "t2",
-      userPrompt: "seed 5 tasks",
-      assistantText: "Done — 5 completed.",
-      reasoning: "",
-      toolCalls: [
-        {
-          name: "seedMock",
-          argumentsJson: '{"action":"createTask","count":5}',
-          ok: true,
-        },
-      ],
-      endedAt: "2026-04-24T00:58:00.000Z",
-      stoppedAtCap: false,
-    },
-    {
-      turnId: "t1",
-      userPrompt: "hello",
-      assistantText: "Hello. Ask the runtime about itself.",
-      reasoning: "",
-      toolCalls: [],
-      endedAt: "2026-04-24T00:57:00.000Z",
-      stoppedAtCap: false,
-    },
+  const messages = [
+    userMessage("u1", "first prompt"),
+    assistantMessage("a1", "first answer", ["inspectSnapshot"]),
+    userMessage("u2", "second prompt"),
+    assistantMessage("a2", "second answer"),
+    userMessage("u3", "third prompt"),
+    assistantMessage("a3", "third answer", ["dispatch", "inspectLineage"]),
   ];
 
-  it("returns compact projection by default", async () => {
-    const { createInspectConversationTool } = await import(
-      "../inspect-conversation.js"
-    );
-    const tool = createInspectConversationTool();
-    const result = await tool.run({}, { getTurns: () => turns });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.output.turns).toHaveLength(3);
-    for (const t of result.output.turns) {
-      expect(t).toHaveProperty("turnId");
-      expect(t).toHaveProperty("userPrompt");
-      expect(t).toHaveProperty("toolCount");
-      expect(t).toHaveProperty("hasAssistantText");
-      expect(t).not.toHaveProperty("assistantText");
-      expect(t).not.toHaveProperty("reasoning");
-      expect(t).not.toHaveProperty("toolCalls");
-    }
-    expect(result.output.turns[0]!.toolCount).toBe(2);
-    expect(result.output.turns[2]!.toolCount).toBe(0);
-  });
-
-  it("opts into heavy fields on demand with caps", async () => {
-    const { createInspectConversationTool } = await import(
-      "../inspect-conversation.js"
-    );
+  it("returns compact settled turns newest-first", async () => {
+    const { createInspectConversationTool } = await import("../inspect-conversation.js");
     const tool = createInspectConversationTool();
     const result = await tool.run(
-      { fields: ["assistantText", "toolCalls"], limit: 1 },
-      { getTurns: () => turns },
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    const first = result.output.turns[0]!;
-    expect(first.assistantText).toBe(
-      "`toggleTodo` requires `todoCount > 0`.",
-    );
-    expect(first.toolCalls).toHaveLength(2);
-    expect(first.toolCalls?.[0]?.name).toBe("inspectFocus");
-    expect(first).not.toHaveProperty("reasoning");
-  });
-
-  it("caps assistantText at the configured limit with an ellipsis", async () => {
-    const { createInspectConversationTool } = await import(
-      "../inspect-conversation.js"
-    );
-    const longText = "x".repeat(3000);
-    const tool = createInspectConversationTool();
-    const result = await tool.run(
-      { fields: ["assistantText"], limit: 1 },
-      {
-        getTurns: () => [
-          {
-            turnId: "t0",
-            userPrompt: "q",
-            assistantText: longText,
-            reasoning: "",
-            toolCalls: [],
-            endedAt: null,
-            stoppedAtCap: false,
-          },
-        ],
-      },
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    const txt = result.output.turns[0]!.assistantText!;
-    expect(txt.length).toBe(2000);
-    expect(txt.endsWith("…")).toBe(true);
-  });
-
-  it("paginates via beforeTurnId and advertises nextBeforeTurnId", async () => {
-    const { createInspectConversationTool } = await import(
-      "../inspect-conversation.js"
-    );
-    const tool = createInspectConversationTool();
-    const first = await tool.run(
       { limit: 2 },
-      { getTurns: () => turns },
+      { getMessages: () => messages },
     );
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-    expect(first.output.turns.map((t) => t.turnId)).toEqual(["t3", "t2"]);
-    expect(first.output.nextBeforeTurnId).toBe("t2");
 
-    const second = await tool.run(
-      { limit: 2, beforeTurnId: "t2" },
-      { getTurns: () => turns },
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output.turns.map((turn) => turn.turnId)).toEqual(["u3", "u2"]);
+    expect(result.output.turns[0]).toMatchObject({
+      userPrompt: "third prompt",
+      assistantExcerpt: "third answer",
+      toolCount: 2,
+    });
+    expect(result.output.turns[0]).not.toHaveProperty("toolNames");
+    expect(result.output.totalTurns).toBe(3);
+    expect(result.output.nextBeforeTurnId).toBe("u2");
+  });
+
+  it("pages, filters tool turns, and includes tool names on demand", async () => {
+    const { createInspectConversationTool } = await import("../inspect-conversation.js");
+    const tool = createInspectConversationTool();
+    const result = await tool.run(
+      { containsTool: true, includeToolNames: true, beforeTurnId: "u3" },
+      { getMessages: () => messages },
     );
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    expect(second.output.turns.map((t) => t.turnId)).toEqual(["t1"]);
-    expect(second.output.nextBeforeTurnId).toBe(null);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output.turns).toEqual([
+      {
+        turnId: "u1",
+        userPrompt: "first prompt",
+        assistantExcerpt: "first answer",
+        toolCount: 1,
+        toolNames: ["inspectSnapshot"],
+      },
+    ]);
+    expect(result.output.totalMatched).toBe(2);
+  });
+
+  it("rejects an unknown beforeTurnId as invalid_input", async () => {
+    const { createInspectConversationTool } = await import("../inspect-conversation.js");
+    const tool = createInspectConversationTool();
+    const result = await tool.run(
+      { beforeTurnId: "missing" },
+      { getMessages: () => messages },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.kind).toBe("invalid_input");
   });
 });
 
@@ -498,6 +565,28 @@ describe("seedMock", () => {
       "completed",
     ]);
     expect(dispatched).toHaveLength(3);
+  });
+
+  it("normalizes graph action node ids before seeding", async () => {
+    const { createSeedMockTool } = await import("../seed-mock.js");
+    const dispatched: unknown[] = [];
+    const tool = createSeedMockTool();
+    const result = await tool.run(
+      { action: "action:setFilter", count: 1, seed: 1 },
+      {
+        getModule: () => fakeModule,
+        createIntent: (action, ...args) => ({ type: action, input: args }),
+        dispatchAsync: async (intent) => {
+          dispatched.push(intent);
+          return { kind: "completed" };
+        },
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output.action).toBe("setFilter");
+    expect(dispatched[0]).toMatchObject({ type: "setFilter" });
   });
 
   it("captures rejection code + message so the agent can explain WHY", async () => {
@@ -629,6 +718,29 @@ describe("seedMock", () => {
   });
 });
 
+function userMessage(id: string, text: string) {
+  return {
+    id,
+    role: "user",
+    parts: [{ type: "text", text }],
+  };
+}
+
+function assistantMessage(
+  id: string,
+  text: string,
+  toolNames: readonly string[] = [],
+) {
+  return {
+    id,
+    role: "assistant",
+    parts: [
+      ...toolNames.map((name) => ({ type: `tool-${name}` })),
+      { type: "text", text },
+    ],
+  };
+}
+
 describe("inspectAvailability", () => {
   it("returns every action with its live availability flag", async () => {
     const ctx: InspectAvailabilityContext = {
@@ -653,6 +765,8 @@ describe("inspectAvailability", () => {
         name === "toggleTodo"
           ? {
               paramNames: ["id"],
+              paramHints: ["id: string"],
+              inputHint: "id: string",
               hasDispatchableGate: true,
               description: "toggle done",
             }
@@ -666,6 +780,8 @@ describe("inspectAvailability", () => {
       name: "toggleTodo",
       available: true,
       paramNames: ["id"],
+      paramHints: ["id: string"],
+      inputHint: "id: string",
       hasDispatchableGate: true,
       description: "toggle done",
     });

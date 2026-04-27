@@ -378,6 +378,79 @@
 }
 
 /* ---------------------------------------------------------------------------
+ * Agent panel ambient field — two soft violet blobs drift behind the
+ * conversation so glass surfaces above (status bar, composer, message
+ * cards) have something to refract. Brightens / accelerates while the
+ * agent is streaming so the panel "warms up" with the runtime state.
+ * ------------------------------------------------------------------------- */
+.agent-ambient {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+.agent-ambient::before,
+.agent-ambient::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(56px);
+  opacity: 0.55;
+  transition: opacity 700ms ease-out;
+  will-change: transform;
+}
+.agent-ambient::before {
+  width: 72%;
+  aspect-ratio: 1;
+  left: -18%;
+  top: -22%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in oklch, var(--color-violet-hot) 22%, transparent),
+    transparent 72%
+  );
+  animation: mf-agent-blob-a 42s ease-in-out infinite;
+}
+.agent-ambient::after {
+  width: 64%;
+  aspect-ratio: 1;
+  right: -22%;
+  bottom: -28%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in oklch, var(--color-violet) 16%, transparent),
+    transparent 72%
+  );
+  animation: mf-agent-blob-b 58s ease-in-out infinite;
+}
+[data-agent-state="streaming"] .agent-ambient::before,
+[data-agent-state="streaming"] .agent-ambient::after {
+  opacity: 0.85;
+}
+[data-agent-state="streaming"] .agent-ambient::before {
+  animation-duration: 18s;
+}
+[data-agent-state="streaming"] .agent-ambient::after {
+  animation-duration: 24s;
+}
+@keyframes mf-agent-blob-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%      { transform: translate(8%, 6%) scale(1.05); }
+  66%      { transform: translate(-4%, 10%) scale(0.98); }
+}
+@keyframes mf-agent-blob-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(-6%, -8%) scale(1.06); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-ambient::before,
+  .agent-ambient::after {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
  * Utilities
  * ------------------------------------------------------------------------- */
 @layer utilities {

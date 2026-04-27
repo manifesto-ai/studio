@@ -5,15 +5,14 @@ import { fileURLToPath, URL } from "node:url";
 import { IncomingMessage, ServerResponse } from "node:http";
 
 /**
- * Dev-only middleware: serves `/api/agent/chat` locally using the
- * same `handleAgentChat(Request)` the Vercel serverless function
- * uses in production. Keeps one source of truth for the handler
- * and means "works in dev, works in prod" is enforced by sharing
- * code, not by parallel implementations.
+ * Dev-only middleware: serves `/api/agent/*` locally using the same
+ * handlers the Vercel serverless functions use in production. Keeps
+ * one source of truth for the handler and means "works in dev, works
+ * in prod" is enforced by sharing code, not by parallel implementations.
  */
-function agentChatDevPlugin(): Plugin {
+function agentApiDevPlugin(): Plugin {
   return {
-    name: "manifesto:agent-chat-dev",
+    name: "manifesto:agent-api-dev",
     apply: "serve",
     configureServer(server) {
       server.middlewares.use(
@@ -27,6 +26,28 @@ function agentChatDevPlugin(): Plugin {
             )) as typeof import("./src/server/agent-chat-handler.js");
             const webRequest = await nodeRequestToWebRequest(req);
             const webResponse = await mod.handleAgentChat(webRequest);
+            await writeWebResponseToNode(webResponse, res);
+          } catch (err) {
+            res.statusCode = 500;
+            res.setHeader("content-type", "application/json");
+            res.end(
+              JSON.stringify({
+                error:
+                  err instanceof Error ? err.message : String(err),
+              }),
+            );
+          }
+        },
+      );
+      server.middlewares.use(
+        "/api/agent/config",
+        async (req: IncomingMessage, res: ServerResponse) => {
+          try {
+            const mod = (await server.ssrLoadModule(
+              "/src/server/agent-chat-handler.ts",
+            )) as typeof import("./src/server/agent-chat-handler.js");
+            const webRequest = await nodeRequestToWebRequest(req);
+            const webResponse = await mod.handleAgentConfig(webRequest);
             await writeWebResponseToNode(webResponse, res);
           } catch (err) {
             res.statusCode = 500;
@@ -96,24 +117,25 @@ async function writeWebResponseToNode(
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  // Mirror AI_GATEWAY_API_KEY into process.env so the shared handler
-  // (which reads process.env) sees it in dev. The prod serverless
-  // runtime gets the same var from Vercel's project settings.
-  if (
-    env.AI_GATEWAY_API_KEY !== undefined &&
-    process.env.AI_GATEWAY_API_KEY === undefined
-  ) {
-    process.env.AI_GATEWAY_API_KEY = env.AI_GATEWAY_API_KEY;
-  }
-  if (
-    env.AI_GATEWAY_MODEL !== undefined &&
-    process.env.AI_GATEWAY_MODEL === undefined
-  ) {
-    process.env.AI_GATEWAY_MODEL = env.AI_GATEWAY_MODEL;
+  // Mirror server-only agent env into process.env so the shared
+  // handler sees .env.local values in Vite dev. The prod serverless
+  // runtime gets the same vars from Vercel's project settings.
+  for (const name of [
+    "AGENT_MODEL_PROVIDER",
+    "AI_GATEWAY_API_KEY",
+    "AI_GATEWAY_MODEL",
+    "OLLAMA_BASE_URL",
+    "OLLAMA_HOST",
+    "OLLAMA_MODEL",
+    "OLLAMA_API_KEY",
+  ]) {
+    if (env[name] !== undefined && process.env[name] === undefined) {
+      process.env[name] = env[name];
+    }
   }
 
   return {
-    plugins: [react(), tailwindcss(), agentChatDevPlugin()],
+    plugins: [react(), tailwindcss(), agentApiDevPlugin()],
     resolve: {
       alias: {
         "@": fileURLToPath(new URL("./src", import.meta.url)),

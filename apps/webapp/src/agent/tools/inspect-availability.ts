@@ -27,6 +27,8 @@ export type InspectAvailabilityContext = {
    */
   readonly describeAction?: (name: string) => {
     readonly paramNames: readonly string[];
+    readonly paramHints?: readonly string[];
+    readonly inputHint?: string | null;
     readonly hasDispatchableGate: boolean;
     readonly description?: string;
   } | null;
@@ -36,6 +38,8 @@ export type ActionAvailabilityEntry = {
   readonly name: string;
   readonly available: boolean;
   readonly paramNames?: readonly string[];
+  readonly paramHints?: readonly string[];
+  readonly inputHint?: string | null;
   readonly hasDispatchableGate?: boolean;
   readonly description?: string;
 };
@@ -75,6 +79,8 @@ export function createInspectAvailabilityTool(): AgentTool<
           return {
             ...base,
             paramNames: desc.paramNames,
+            paramHints: desc.paramHints,
+            inputHint: desc.inputHint,
             hasDispatchableGate: desc.hasDispatchableGate,
             description: desc.description,
           };

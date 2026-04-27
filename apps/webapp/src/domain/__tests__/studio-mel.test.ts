@@ -43,6 +43,47 @@ describe("studio.mel — compiles", () => {
     const core = await bootStudioRuntime();
     expect(core.getModule()).not.toBeNull();
   });
+
+  it("preserves structural @meta annotations for grounding", async () => {
+    const core = await bootStudioRuntime();
+    const entries = (
+      core.getModule() as {
+        readonly annotations?: {
+          readonly entries?: Record<
+            string,
+            readonly { readonly tag: string; readonly payload?: unknown }[]
+          >;
+        };
+      } | null
+    )?.annotations?.entries;
+
+    expect(entries?.["domain:Studio"]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tag: "comment:grounding" }),
+      ]),
+    );
+    expect(entries?.["state_field:focusedNodeId"]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tag: "comment:grounding" }),
+      ]),
+    );
+    expect(entries?.["action:admitDispatch"]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tag: "agent:invariant" }),
+        expect.objectContaining({ tag: "agent:example" }),
+      ]),
+    );
+    expect(entries?.["action:admitGenerateMock"]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tag: "agent:example" }),
+      ]),
+    );
+    expect(entries?.["action:admitSeedMock"]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tag: "agent:example" }),
+      ]),
+    );
+  });
 });
 
 describe("studio.mel — initial state", () => {
@@ -58,6 +99,11 @@ describe("studio.mel — initial state", () => {
       simulationActionName: null,
       scrubEnvelopeId: null,
       activeProjectName: null,
+      agentUserModuleReady: false,
+      agentCurrentSchemaHash: null,
+      agentObservedSchemaHash: null,
+      agentObservedFocusNodeId: null,
+      agentLastAdmittedToolName: null,
     });
   });
 });
@@ -77,6 +123,7 @@ describe("studio.mel — focus + lens transitions", () => {
       focusedNodeId: "action:toggleTodo",
       focusedNodeKind: "action",
       focusedNodeOrigin: "graph",
+      agentObservedFocusNodeId: null,
     });
   });
 
@@ -90,6 +137,7 @@ describe("studio.mel — focus + lens transitions", () => {
       focusedNodeId: null,
       focusedNodeKind: null,
       focusedNodeOrigin: null,
+      agentObservedFocusNodeId: null,
     });
   });
 
@@ -174,27 +222,253 @@ describe("studio.mel — view-mode legality gates", () => {
   });
 });
 
-describe("studio.mel — recordAgentTurn is single-entry + advances lineage", () => {
-  it("stores latest prompt/answer, increments turn counter", async () => {
+describe("studio.mel — agent tool admission", () => {
+  it("admits UI/meta tools without an agent turn", async () => {
     const core = await bootStudioRuntime();
-    const a = await core.dispatchAsync(
-      core.createIntent("recordAgentTurn", "why is X blocked?", "X needs Y > 0"),
+    expect(core.isActionAvailable("admitInspectToolAffordances")).toBe(true);
+    expect(core.isActionAvailable("admitInspectFocus")).toBe(true);
+
+    const affordances = await core.dispatchAsync(
+      core.createIntent("admitInspectToolAffordances"),
     );
-    expect(a.kind).toBe("completed");
-    expect(readState(core)).toMatchObject({
-      lastUserPrompt: "why is X blocked?",
-      lastAgentAnswer: "X needs Y > 0",
-      agentTurnCount: 1,
-    });
-    const b = await core.dispatchAsync(
-      core.createIntent("recordAgentTurn", "seed 5 rows", "(tool-only · 5)"),
+    expect(affordances.kind).toBe("completed");
+    const focus = await core.dispatchAsync(
+      core.createIntent("admitInspectFocus"),
     );
-    expect(b.kind).toBe("completed");
+    expect(focus.kind).toBe("completed");
+    expect(readState(core).agentLastAdmittedToolName).toBe("inspectFocus");
+  });
+
+  it("syncs host context and admits domain read tools only when ready", async () => {
+    const core = await bootStudioRuntime();
+    const blockedSnapshot = await core.dispatchAsync(
+      core.createIntent("admitInspectSnapshot"),
+    );
+    const blockedLineage = await core.dispatchAsync(
+      core.createIntent("admitInspectLineage"),
+    );
+    const conversation = await core.dispatchAsync(
+      core.createIntent("admitInspectConversation"),
+    );
+    expect(blockedSnapshot.kind).not.toBe("completed");
+    expect(blockedLineage.kind).not.toBe("completed");
+    expect(conversation.kind).toBe("completed");
+
+    const sync = await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
+    );
+    expect(sync.kind).toBe("completed");
     expect(readState(core)).toMatchObject({
-      lastUserPrompt: "seed 5 rows",
-      lastAgentAnswer: "(tool-only · 5)",
-      agentTurnCount: 2,
+      agentUserModuleReady: true,
+      agentCurrentSchemaHash: "schema-a",
+      agentObservedSchemaHash: null,
     });
+
+    const admitted = await core.dispatchAsync(
+      core.createIntent("admitInspectSnapshot"),
+    );
+    expect(admitted.kind).toBe("completed");
+    const lineage = await core.dispatchAsync(
+      core.createIntent("admitInspectLineage"),
+    );
+    expect(lineage.kind).toBe("completed");
+    expect(readState(core).agentLastAdmittedToolName).toBe("inspectLineage");
+  });
+
+  it("requires schema observation before schema-dependent tools", async () => {
+    const core = await bootStudioRuntime();
+    const blocked = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    expect(blocked.kind).not.toBe("completed");
+
+    await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
+    );
+
+    const staleDispatch = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    const staleAvailability = await core.dispatchAsync(
+      core.createIntent("admitInspectAvailability"),
+    );
+    const legality = await core.dispatchAsync(
+      core.createIntent("admitExplainLegality"),
+    );
+    expect(staleDispatch.kind).not.toBe("completed");
+    expect(staleAvailability.kind).not.toBe("completed");
+    expect(legality.kind).toBe("completed");
+
+    const schema = await core.dispatchAsync(
+      core.createIntent("admitInspectSchema"),
+    );
+    expect(schema.kind).toBe("completed");
+    const mark = await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
+    expect(mark.kind).toBe("completed");
+
+    const ok = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    const availability = await core.dispatchAsync(
+      core.createIntent("admitInspectAvailability"),
+    );
+    expect(ok.kind).toBe("completed");
+    expect(availability.kind).toBe("completed");
+    expect(readState(core)).toMatchObject({
+      agentObservedSchemaHash: "schema-a",
+      agentLastAdmittedToolName: "inspectAvailability",
+    });
+  });
+
+  it("requires focus observation after the focused node changes", async () => {
+    const core = await bootStudioRuntime();
+    await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
+    );
+    await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
+
+    const beforeFocus = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    expect(beforeFocus.kind).toBe("completed");
+
+    await core.dispatchAsync(
+      core.createIntent("focusNode", "state:wow", "state", "source"),
+    );
+    expect(readState(core)).toMatchObject({
+      focusedNodeId: "state:wow",
+      agentObservedFocusNodeId: null,
+    });
+
+    const blockedDispatch = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    const blockedSnapshot = await core.dispatchAsync(
+      core.createIntent("admitInspectSnapshot"),
+    );
+    expect(blockedDispatch.kind).not.toBe("completed");
+    expect(blockedSnapshot.kind).not.toBe("completed");
+
+    const inspectFocus = await core.dispatchAsync(
+      core.createIntent("admitInspectFocus"),
+    );
+    expect(inspectFocus.kind).toBe("completed");
+    const mark = await core.dispatchAsync(
+      core.createIntent("markAgentFocusObserved", "state:wow"),
+    );
+    expect(mark.kind).toBe("completed");
+
+    const afterFocus = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    expect(afterFocus.kind).toBe("completed");
+    expect(readState(core)).toMatchObject({
+      agentObservedFocusNodeId: "state:wow",
+      agentLastAdmittedToolName: "dispatch",
+    });
+  });
+
+  it("invalidates observed schema when the host reports a new schema hash", async () => {
+    const core = await bootStudioRuntime();
+    await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
+    );
+    await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
+    const before = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    expect(before.kind).toBe("completed");
+
+    await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-b"),
+    );
+    expect(readState(core)).toMatchObject({
+      agentCurrentSchemaHash: "schema-b",
+      agentObservedSchemaHash: null,
+    });
+    const stale = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    expect(stale.kind).not.toBe("completed");
+    const wrongMark = await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
+    expect(wrongMark.kind).not.toBe("completed");
+
+    await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-b"),
+    );
+    const after = await core.dispatchAsync(
+      core.createIntent("admitDispatch"),
+    );
+    expect(after.kind).toBe("completed");
+  });
+
+  it("admits mock tools when the user domain is ready", async () => {
+    const core = await bootStudioRuntime();
+    const blockedGenerate = await core.dispatchAsync(
+      core.createIntent("admitGenerateMock"),
+    );
+    const blockedSeed = await core.dispatchAsync(
+      core.createIntent("admitSeedMock"),
+    );
+    expect(blockedGenerate.kind).not.toBe("completed");
+    expect(blockedSeed.kind).not.toBe("completed");
+
+    await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
+    );
+    const staleGenerate = await core.dispatchAsync(
+      core.createIntent("admitGenerateMock"),
+    );
+    expect(staleGenerate.kind).not.toBe("completed");
+    await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
+
+    const generate = await core.dispatchAsync(
+      core.createIntent("admitGenerateMock"),
+    );
+    expect(generate.kind).toBe("completed");
+    const seed = await core.dispatchAsync(
+      core.createIntent("admitSeedMock"),
+    );
+    expect(seed.kind).toBe("completed");
+    expect(readState(core).agentLastAdmittedToolName).toBe("seedMock");
+  });
+
+  it("scopes simulate admission to live mode", async () => {
+    const core = await bootStudioRuntime();
+    await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
+    );
+    await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
+    const live = await core.dispatchAsync(
+      core.createIntent("admitSimulateIntent"),
+    );
+    expect(live.kind).toBe("completed");
+
+    await core.dispatchAsync(core.createIntent("scrubTo", "env-1"));
+    const scrubbed = await core.dispatchAsync(
+      core.createIntent("admitSimulateIntent"),
+    );
+    expect(scrubbed.kind).not.toBe("completed");
+  });
+
+  it("does not expose generic requestTool or removed endTurn admission", async () => {
+    const core = await bootStudioRuntime();
+    expect(core.isActionAvailable("requestTool")).toBe(false);
+    expect(core.isActionAvailable("admitEndTurn")).toBe(false);
+    expect(core.getModule()?.schema.actions).not.toHaveProperty("requestTool");
+    expect(core.getModule()?.schema.actions).not.toHaveProperty("admitEndTurn");
   });
 });
 
@@ -204,6 +478,12 @@ describe("studio.mel — switchProject resets dependent state", () => {
     await core.dispatchAsync(
       core.createIntent("focusNode", "action:x", "action", "graph"),
     );
+    await core.dispatchAsync(
+      core.createIntent("syncAgentToolContext", true, "schema-a"),
+    );
+    await core.dispatchAsync(
+      core.createIntent("markAgentSchemaObserved", "schema-a"),
+    );
     await core.dispatchAsync(core.createIntent("scrubTo", "env-1"));
     await core.dispatchAsync(core.createIntent("switchProject", "counter"));
     expect(readState(core)).toMatchObject({
@@ -211,6 +491,10 @@ describe("studio.mel — switchProject resets dependent state", () => {
       focusedNodeId: null,
       focusedNodeKind: null,
       focusedNodeOrigin: null,
+      agentObservedFocusNodeId: null,
+      agentUserModuleReady: false,
+      agentCurrentSchemaHash: null,
+      agentObservedSchemaHash: null,
       viewMode: "live",
       simulationActionName: null,
       scrubEnvelopeId: null,

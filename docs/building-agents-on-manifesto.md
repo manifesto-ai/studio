@@ -24,7 +24,7 @@ Every pattern below follows from that one split.
 | Identity anchor ("you know this runtime from the inside") | Current snapshot data + computed values |
 | Tool catalog (names + what to call them for) | Which node is focused / active lens / view mode |
 | Grounding recipe ("inspect first for deictics") | Which actions are available right now |
-| The **MEL source** (identity, stable until edit) | Graph neighborhood of any node |
+| Compact domain summary (identity, stable until edit) | Graph neighborhood of any node |
 | Recent conversation tail (last N turns, compact) | Lineage / world history |
 
 Why the split:
@@ -45,8 +45,7 @@ Canonical structure (see
 `apps/webapp/src/agent/session/agent-context.ts`):
 
 ```
-You know this Manifesto runtime from the inside. The MEL below is
-your soul source code — lived knowledge, not reference material.
+You are operating a Manifesto runtime through a compact schema summary.
 Everything dynamic (focus, snapshot, availability, graph neighbors)
 you introspect via tools; never guess.
 
@@ -54,33 +53,39 @@ you introspect via tools; never guess.
 Inspect (dynamic state — call these first when questions touch 'this',
 'now', 'current', counts, or relations):
 - inspectFocus() — which node is focused + active lens / view mode.
+- inspectSchema() — current compiled schema; refresh after schema changes.
 - inspectSnapshot() — current state data + computed field values.
 - inspectAvailability() — list of actions with live availability.
 - inspectNeighbors(nodeId) — graph edges (feeds / mutates / unlocks).
-- inspectLineage({...}) — recent dispatch history (projection).
-- inspectConversation({...}) — search your own prior chat turns.
+- inspectLineage(...) — compact world history for past builds/dispatches.
+- inspectConversation(...) — compact older chat turns when the prompt tail is not enough.
+- inspectToolAffordances({...}) — live tool catalog admitted by studio.mel.
 - explainLegality(action) — why a specific action is blocked.
+- simulateIntent(action, args) — preview without mutating.
+- generateMock(action, count?, seed?) — preview sample args.
 Act:
 - dispatch(action, args) — user-domain writes.
+- seedMock(action, count?, seed?) — generate + dispatch sample args.
 - studioDispatch(action, args) — UI writes (focus, lens, sim, scrub).
-- seedMock({action, count, seed?}) — generate + dispatch N samples.
-- generateMock({action, count, seed?}) — preview only.
 
 # How to ground yourself
 - Deictic ('this', '이거', etc.) → inspectFocus() first.
 - State / count / value questions → inspectSnapshot().
 - Relation questions → inspectNeighbors(nodeId).
+- Past runtime changes → inspectLineage().
+- Earlier chat context → inspectConversation().
+- Stale schema / changed action shape → inspectSchema().
 - Blocked action → explainLegality.
 - Don't describe the runtime in abstract terms. Answer concretely.
 
-# Your soul (MEL)
-```mel
-<the domain module source, verbatim>
-```
+# Domain Summary
+compiled: true
+schema: Todo @ schema-hash
+state: todos, filter
+computed: openCount
+actions: addTodo(title: string, priority: "low" | "med" | "high")
 
 # Recent conversation (N most recent turns, newest first)
-Older turns are searchable via `inspectConversation(...)`.
-
 turn 3 · 2 tool
   user: why is this blocked?
   you: `toggleTodo` requires `todoCount > 0`.
@@ -113,9 +118,9 @@ turn 3 · 2 tool
 
 | Channel | Tools | Purpose |
 |---|---|---|
-| Inspect (read) | `inspectFocus`, `inspectSnapshot`, `inspectNeighbors`, `inspectAvailability`, `inspectLineage`, `inspectConversation` | Pure reads against the runtime. Safe to call speculatively. |
-| Act (write) | `dispatch`, `studioDispatch`, `seedMock` | Mutate snapshot / UI state. Run through legality gates. |
-| Diagnose | `explainLegality`, `generateMock` (preview) | Explain without mutating. |
+| Inspect (read) | `inspectToolAffordances`, `inspectFocus`, `inspectSchema`, `inspectSnapshot`, `inspectNeighbors`, `inspectLineage`, `inspectConversation`, `inspectAvailability` | Pure reads against the runtime / conversation. Safe to call speculatively. |
+| Act (write) | `dispatch`, `seedMock`, `studioDispatch` | Mutate snapshot / UI state. Run through legality gates. |
+| Diagnose | `explainLegality`, `simulateIntent`, `generateMock` | Explain or preview without mutating. |
 
 Color the UI of each channel (we use Studio's signal tokens:
 action = violet, computed = cyan, effect = orange). This is what
@@ -224,52 +229,81 @@ of them needed to.
 Swallow listener exceptions per-listener so one bad subscriber
 doesn't poison the chain.
 
-### Treating agent state as first-class Manifesto state
+### Treating tool admission as first-class Manifesto state
 
-If your runtime has a UI-state module (we have `studio.mel`), add the
-agent's single-entry memory there:
+If your runtime has a UI-state module (we have `studio.mel`), put the
+tool admission gate there, not the chat loop. The host syncs only the
+coarse facts the runtime needs, and every model-selected tool first
+dispatches that tool's dedicated admission action. Keep the actions
+separate so each tool/effect can carry its own `@meta` grounding,
+invariants, and recovery hints.
 
 ```mel
 state {
-  lastUserPrompt: string | null = null
-  lastAgentAnswer: string | null = null
-  agentTurnCount: number = 0
+  agentUserModuleReady: boolean = false
+  agentCurrentSchemaHash: string | null = null
+  agentObservedSchemaHash: string | null = null
+  agentLastAdmittedToolName: string | null = null
 }
-action recordAgentTurn(prompt: string, answer: string) {
+
+computed agentSchemaFresh =
+  agentUserModuleReady && agentCurrentSchemaHash != null && agentObservedSchemaHash == agentCurrentSchemaHash
+
+action syncAgentToolContext(userModuleReady: boolean, schemaHash: string | null) {
   onceIntent {
-    patch lastUserPrompt = prompt
-    patch lastAgentAnswer = answer
-    patch agentTurnCount = agentTurnCount + 1
+    patch agentUserModuleReady = userModuleReady
+    patch agentCurrentSchemaHash = schemaHash
+    patch agentObservedSchemaHash =
+      userModuleReady && agentObservedSchemaHash == schemaHash ? agentObservedSchemaHash : null
+  }
+}
+
+action markAgentSchemaObserved(schemaHash: string)
+  dispatchable when agentUserModuleReady && schemaHash == agentCurrentSchemaHash
+{
+  onceIntent {
+    patch agentObservedSchemaHash = schemaHash
+  }
+}
+
+@meta("comment:grounding", "Admit the inspectSchema tool. It reads the compiled user-domain schema and refreshes schema freshness.")
+@meta("agent:recovery", "Use this when schema-dependent tools are blocked by stale schema.")
+action admitInspectSchema()
+  dispatchable when agentUserModuleReady
+{
+  onceIntent {
+    patch agentLastAdmittedToolName = "inspectSchema"
+  }
+}
+
+@meta("comment:grounding", "Admit the dispatch tool. It mutates user-domain state through the current compiled MEL action.")
+@meta("agent:invariant", "Requires fresh schema. Domain action names are inputs to dispatch, not tool names.")
+@meta("agent:recovery", "If blocked, call inspectSchema or inspectAvailability before retrying.")
+action admitDispatch()
+  dispatchable when agentSchemaFresh
+{
+  onceIntent {
+    patch agentLastAdmittedToolName = "dispatch"
   }
 }
 ```
 
-Two wins:
-1. The single-entry memory is readable via `inspectFocus` with zero
-   new tool.
-2. Every turn advances studio.mel's lineage — the conversation
-   timeline becomes scrubbable with the same machinery that scrubs
-   state changes. For free.
-
-Don't store the *full* transcript here. Full history is React-side,
-ephemeral. What the runtime cares about is *that the conversation
-advanced*, not its full content.
+Do not store agent turns, resend counters, repeated tool failures, or
+chat transcript inside MEL. The chat framework owns messages and
+continuation; MEL owns legality.
 
 ### Short-horizon grounding + long-horizon search
 
-Auto-inject the last ~5 turns at the **end** of the system prompt
-(after MEL, so the stable prefix caches). Give the agent a tool for
-older turns. See
+Auto-inject the last ~5 settled turns at the **end** of the system prompt
+(after the domain summary, so the stable prefix caches). See
 `apps/webapp/src/agent/session/agent-context.ts::buildAgentSystemPrompt`.
 
 ```
 # Recent conversation (N most recent turns, newest first)
-Older turns are searchable via `inspectConversation(...)`.
 ```
 
-Cap each excerpt (~280 chars). The full transcript lives in the
-React store and is reachable via `inspectConversation({fields:
-["assistantText"]})`.
+Cap each excerpt (~280 chars). The full transcript lives in the chat
+framework, not in the Manifesto runtime.
 
 ---
 
@@ -321,15 +355,17 @@ snapshot + legality. You don't need a separate "help" system.
 
 ### Server-proxy architecture (required for production)
 
-Server-side: `/api/agent/chat` forwards to Vercel AI Gateway.
+Server-side: `/api/agent/chat` forwards to the configured AI SDK provider
+(Vercel AI Gateway or Ollama OpenAI-compatible).
 
 ```ts
 // apps/webapp/src/server/agent-chat-handler.ts
 export async function handleAgentChat(req: Request): Promise<Response> {
-  // 1. Rate-limit BEFORE any gateway call.
-  // 2. Parse request body (Zod schema).
-  // 3. streamText({ model: gateway(MODEL_ID), messages, tools, ... }).
-  // 4. return result.toUIMessageStreamResponse();
+  // 1. Resolve AGENT_MODEL_PROVIDER + model.
+  // 2. Rate-limit BEFORE any model call.
+  // 3. Parse request body (Zod schema).
+  // 4. streamText({ model, messages, tools, ... }).
+  // 5. return result.toUIMessageStreamResponse();
 }
 ```
 
@@ -367,8 +403,13 @@ See `apps/webapp/src/server/rate-limit.ts`.
 ### Environment variables (server-only — no `VITE_` prefix)
 
 ```
-AI_GATEWAY_API_KEY        # required
-AI_GATEWAY_MODEL          # optional; default google/gemma-4-26b-a4b-it
+AGENT_MODEL_PROVIDER      # optional; "gateway" or "ollama"
+AI_GATEWAY_API_KEY        # gateway; required when provider=gateway
+AI_GATEWAY_MODEL          # gateway; default google/gemma-4-26b-a4b-it
+OLLAMA_BASE_URL           # ollama; default http://localhost:11434/v1
+OLLAMA_HOST               # ollama; alias, normalized to /v1
+OLLAMA_MODEL              # ollama; default gemma4:e4b
+OLLAMA_API_KEY            # ollama; optional, only for protected proxies
 UPSTASH_REDIS_REST_URL    # required in prod, optional in dev
 UPSTASH_REDIS_REST_TOKEN  # required in prod, optional in dev
 AGENT_RATELIMIT_MAX       # optional; default 20
@@ -390,7 +431,8 @@ read tool per cross-cutting concern:
 - `inspectFocus` → reads **studio.mel** state (focus, lens).
 - `inspectSnapshot`, `inspectNeighbors`, `inspectAvailability`,
   `inspectLineage` → read **user-domain** state.
-- `inspectConversation` → reads React transcript (neither runtime).
+- `inspectConversation` → reads chat-framework message history, not MEL
+  state.
 
 Separate tool names beat a `runtime: "user" | "studio"` parameter
 — small models route more reliably on descriptive tool names than
@@ -456,14 +498,16 @@ For a new Manifesto runtime, the minimum to bolt on an agent:
    + do.
 4. **Add `subscribeAfterDispatch` at the core** if you haven't
    already. Everything else depends on this for freshness.
-5. **Auto-inject last-5 turns** at the prompt tail.
-6. **Server proxy + rate limit.** Don't ship the AI key in the
+5. **Auto-inject last-5 settled messages** at the prompt tail.
+6. **Add compact long-horizon reads** such as `inspectLineage` and
+   `inspectConversation` once short-tail grounding is not enough.
+7. **Server proxy + rate limit.** Don't ship the AI key in the
    bundle.
-7. **Pick a channel palette** so tool rows read as runtime ops.
+8. **Pick a channel palette** so tool rows read as runtime ops.
 
 That's the happy path. Everything else —
-`inspectNeighbors` / `inspectLineage` / `inspectConversation` /
-`seedMock` / mock-data generator / studio.mel memory — is
+`inspectNeighbors` / `inspectLineage` / source authoring tools /
+`inspectConversation` / additional mock-data generation — is
 additive and compounds nicely on top.
 
 ---

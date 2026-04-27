@@ -44,12 +44,49 @@ describe("explainLegality — admitted", () => {
     if (!res.ok) return;
     expect(res.output).toMatchObject({
       action: "toggleTodo",
+      schemaHash: null,
       available: true,
       inputValid: true,
       dispatchable: true,
       blockers: [],
     });
     expect(res.output.summary).toMatch(/dispatchable/i);
+  });
+
+  it("includes the observed schema hash when provided", async () => {
+    const res = await runLegality(
+      { action: "toggleTodo" },
+      makeCtx({
+        getSchemaHash: () => "schema-a",
+      }),
+    );
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.output.schemaHash).toBe("schema-a");
+  });
+
+  it("normalizes graph action node ids before checking legality", async () => {
+    const seen: string[] = [];
+    const res = await runLegality(
+      { action: "action:restoreTask", args: ["t1"] },
+      makeCtx({
+        listActionNames: () => ["restoreTask"],
+        isActionAvailable: (action) => {
+          seen.push(action);
+          return true;
+        },
+        createIntent: (action, ...args) => {
+          seen.push(action);
+          return { action, args };
+        },
+      }),
+    );
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.output.action).toBe("restoreTask");
+    expect(seen).toEqual(["restoreTask", "restoreTask"]);
   });
 });
 
