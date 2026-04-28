@@ -1,53 +1,38 @@
-// agent-session.mel — Agent conversation runtime (v0, experimental).
+// agent-session.mel — Agent conversation runtime.
 //
-// This is the third Manifesto runtime, alongside the user's domain
-// and `studio.mel`. Where studio.mel models the UI contract, this
-// models the *agent's conversation lifecycle* — every meaningful
-// transition (user message, model invocation, tool call, tool
-// result, settled response, stop, anchor) becomes a dispatch and
-// therefore a world in lineage.
+// Third Manifesto runtime alongside the user's domain and `studio.mel`.
+// Models the agent's conversation lifecycle as state + lineage so the
+// UI and the LLM agent both ground onto the same MEL substrate. Every
+// meaningful transition (user message, model invocation, tool call /
+// result, settled response, error, stop, anchor) is a dispatch and
+// a world.
 //
-// Why move turn lifecycle into MEL?
-// ---
-// Today the chat is owned by the AI SDK's `useChat`. That works,
-// but the agent's reasoning is opaque to Manifesto: lineage scrub,
-// admission gates, and replay don't apply. By recording each
-// decision moment as a world, we get:
-//   1. Lineage scrub for "what did the agent know at world #N".
-//   2. dispatchable when guards on phase transitions — illegal
-//      sequences (two tool calls in flight, model invoked while
-//      streaming, dispatch over the budget ceiling) are rejected
-//      at the runtime boundary, not by host code.
-//   3. Models-as-effects: each model invocation is a dispatch with
-//      a tier; effect handlers route to tiny/small/mid/large.
-//   4. Sliding-window anchoring as a first-class action — anchors
-//      are themselves worlds.
+// Discipline applied:
 //
-// Manifesto discipline applied:
-//   - SINGLE-ENTRY scalar state only. No arrays for accumulation;
-//     accumulation = lineage. Past tool calls / past responses are
-//     recovered via inspectLineage filters, not by reading a
-//     snapshot array.
-//   - Tool input/output as JSON strings rather than typed records,
-//     because tool I/O shapes are dynamic (depend on which tool
-//     was called); state stays scalar and the host parses on read.
-//   - Streaming tokens never enter MEL. The host's effect handler
-//     accumulates chunks in a UI-only buffer; only the settled
-//     final text is recorded via recordAssistantSettled.
+//   - SINGLE-ENTRY scalar state. No accumulator arrays — accumulation
+//     lives in lineage, recovered through `inspectLineage` filters.
+//   - Substantive content (user text, settled response, last tool
+//     outcome, anchor summary, budget) lives in MEL state because
+//     both UI rendering and agent prompt building read from it.
+//   - HEAVY tool I/O bodies (potentially-large JSON inputs / outputs)
+//     do NOT live in MEL — only callId references. Bodies live in a
+//     host-side projection keyed by callId. This avoids ballooning
+//     snapshot weight per world without giving up dual grounding.
+//   - Streaming token chunks never enter MEL. The host's effect
+//     handler accumulates chunks in a UI-only buffer; only the
+//     settled final text is recorded via recordAssistantSettled.
 
-@meta("comment:grounding", "Agent conversation runtime. Each dispatch is one decision moment; lineage is the full session history.")
-@meta("agent:invariant", "Single-entry scalar state only. Accumulation = lineage, not snapshot arrays.")
+@meta("comment:grounding", "Agent conversation runtime. UI and agent prompt both ground onto this MEL state.")
+@meta("agent:invariant", "Single-entry scalar state. Accumulation = lineage. Heavy tool I/O bodies live in host projection keyed by callId.")
 domain AgentSession {
   // ── Phase machine ────────────────────────────────────────────────
-  // The runtime tracks what it is currently waiting on. Admission
-  // gates on every transition keep the sequence honest:
-  //   idle ──recordUserTurn──> awaitingModel
-  //   settled ──recordUserTurn──> awaitingModel
-  //   stopped ──recordUserTurn──> awaitingModel
+  // Admission gates on every transition keep the sequence honest:
+  //   idle / settled / stopped ──recordUserTurn──> awaitingModel
   //   awaitingModel ──recordModelInvocation──> streaming
   //   streaming ──recordToolCall──> awaitingTool
   //   awaitingTool ──recordToolResult──> awaitingModel
   //   streaming ──recordAssistantSettled──> settled
+  //   streaming ──recordModelInvocationFailed──> settled (with error)
   //   * ──recordSessionStop──> stopped
   @meta("comment:grounding", "Discriminator for what the agent runtime is currently waiting on.")
   type SessionPhase = "idle" | "awaitingModel" | "streaming" | "awaitingTool" | "settled" | "stopped"
@@ -59,43 +44,30 @@ domain AgentSession {
   type ToolOutcome = "ok" | "blocked" | "error"
 
   state {
-    // ── Session identity ───────────────────────────────────────────
-    @meta("comment:grounding", "Stable id for the current session. Reset by resetSession.")
-    sessionId: string = ""
-
     // ── Phase ──────────────────────────────────────────────────────
     @meta("comment:grounding", "Current phase of the agent runtime.")
     phase: SessionPhase = "idle"
 
     // ── Current turn identity ──────────────────────────────────────
-    // Host-generated UUID set on recordUserTurn. All step worlds
-    // (recordModelInvocation / recordToolCall / recordToolResult /
-    // recordAssistantSettled) within this turn carry it implicitly:
-    // the snapshot at any world during turn X has currentTurnId == X.
-    // Lineage walks can group steps per turn by reading this field.
-    @meta("comment:grounding", "Host-generated id for the active or most-recently-completed turn. Steps within a turn share this id at their world's snapshot.")
+    // Host-generated UUID set on recordUserTurn. The snapshot at any
+    // world during turn X has currentTurnId == X, so lineage walks
+    // can group steps per turn and the UI can scope rendering.
+    @meta("comment:grounding", "Host-generated id for the active or most-recently-completed turn.")
     currentTurnId: string | null = null
 
     // ── User side ──────────────────────────────────────────────────
     @meta("comment:grounding", "Most recent user prompt that was settled into the runtime.")
     lastUserText: string | null = null
 
-    // ── Model side (in-flight invocation) ──────────────────────────
-    @meta("comment:grounding", "Effect handler id for the active model invocation. Non-null only while phase is streaming.")
-    pendingModelInvocationId: string | null = null
-    @meta("comment:grounding", "Tier of the active model invocation.")
-    pendingModelTier: ModelTier | null = null
-
     // ── Tool side (in-flight call) ─────────────────────────────────
-    // The model serializes tool calls in our setup (one in flight at
-    // a time), so a single set of pending fields is enough. Lineage
-    // recovers prior tool calls via intentType filter.
+    // Tool input/output BODIES live in the host projection keyed by
+    // these callIds — they could be large JSON and don't belong in
+    // every world's snapshot. Skeleton (id, name, outcome) stays
+    // here because both UI and agent prompt reference it directly.
     @meta("comment:grounding", "Tool-call id assigned by the model for the active call. Non-null only while phase is awaitingTool.")
     pendingToolCallId: string | null = null
-    @meta("comment:grounding", "Tool name for the active call.")
+    @meta("comment:grounding", "Tool name for the active call. Body lives in host projection keyed by pendingToolCallId.")
     pendingToolName: string | null = null
-    @meta("comment:grounding", "JSON-stringified input args for the active tool call. Kept as string because tool I/O shapes are dynamic.")
-    pendingToolInputJson: string | null = null
 
     // ── Most recent tool result (settled) ──────────────────────────
     @meta("comment:grounding", "Tool-call id of the most recently settled tool call.")
@@ -104,12 +76,14 @@ domain AgentSession {
     lastToolName: string | null = null
     @meta("comment:grounding", "Outcome of the most recently settled tool call.")
     lastToolOutcome: ToolOutcome | null = null
-    @meta("comment:grounding", "JSON-stringified output of the most recently settled tool call.")
-    lastToolOutputJson: string | null = null
 
     // ── Settled assistant response ─────────────────────────────────
-    @meta("comment:grounding", "Final assistant text from the most recently settled response.")
+    @meta("comment:grounding", "Final assistant text from the most recently settled response. Read by both UI and agent prompt.")
     lastResponseFinal: string | null = null
+    // Distinguished from a stopped phase so the UI can tell the user
+    // "the model errored" vs "you (or the budget) stopped this".
+    @meta("comment:grounding", "Reason string from the most recent recordModelInvocationFailed dispatch. Cleared by the next recordUserTurn.")
+    lastModelError: string | null = null
 
     // ── Budget ─────────────────────────────────────────────────────
     // Millicents (1/1000th of a USD cent) so integer arithmetic
@@ -123,16 +97,12 @@ domain AgentSession {
     @meta("comment:grounding", "Cost ceiling for the session. Zero means no ceiling. When positive, model invocations are blocked once budgetUsedMc reaches this value.")
     budgetCeilingMc: number = 0
 
-    // ── Stop signal ────────────────────────────────────────────────
-    @meta("comment:grounding", "Set true by recordSessionStop. Effect handlers should abort the in-flight model stream when they see this.")
-    stopRequested: boolean = false
-
     // ── Anchoring (sliding-window summarization) ───────────────────
     @meta("comment:grounding", "World id at the older end of the most recent anchor window.")
     lastAnchorFromWorldId: string | null = null
     @meta("comment:grounding", "World id at the newer end of the most recent anchor window.")
     lastAnchorToWorldId: string | null = null
-    @meta("comment:grounding", "Summary text produced by the most recent anchorWindow dispatch.")
+    @meta("comment:grounding", "Summary text produced by the most recent anchorWindow dispatch. Read by agent prompt for compressed long-term memory.")
     lastAnchorSummary: string | null = null
 
     // ── Counters (scalar — pure increment, never arrays) ───────────
@@ -155,31 +125,26 @@ domain AgentSession {
   computed isProcessing = phase == "awaitingModel" || phase == "streaming" || phase == "awaitingTool"
   @meta("comment:grounding", "True when the budget ceiling has been reached. Blocks new model invocations.")
   computed budgetExhausted = budgetCeilingMc > 0 && budgetUsedMc >= budgetCeilingMc
-  @meta("comment:grounding", "True when a model invocation is allowed: no stop request, no budget ceiling hit.")
-  @meta("agent:invariant", "recordModelInvocation requires this to be true.")
-  computed canInvokeModel = !stopRequested && !budgetExhausted
+  @meta("comment:grounding", "True when a model invocation is allowed: no budget ceiling hit.")
+  @meta("agent:invariant", "recordModelInvocation requires this.")
+  computed canInvokeModel = !budgetExhausted
 
   // ── Session lifecycle ──────────────────────────────────────────────
 
-  @meta("comment:grounding", "Reset the session to a fresh sessionId. Clears all in-flight and historical fields. Budget ceiling is preserved.")
-  action resetSession(newSessionId: string) {
+  @meta("comment:grounding", "Reset every conversational field to defaults. Budget ceiling is preserved.")
+  action resetSession() {
     onceIntent {
-      patch sessionId = newSessionId
       patch phase = "idle"
       patch currentTurnId = null
       patch lastUserText = null
-      patch pendingModelInvocationId = null
-      patch pendingModelTier = null
       patch pendingToolCallId = null
       patch pendingToolName = null
-      patch pendingToolInputJson = null
       patch lastToolCallId = null
       patch lastToolName = null
       patch lastToolOutcome = null
-      patch lastToolOutputJson = null
       patch lastResponseFinal = null
+      patch lastModelError = null
       patch budgetUsedMc = 0
-      patch stopRequested = false
       patch lastAnchorFromWorldId = null
       patch lastAnchorToWorldId = null
       patch lastAnchorSummary = null
@@ -198,7 +163,7 @@ domain AgentSession {
 
   // ── Phase transitions ──────────────────────────────────────────────
 
-  @meta("comment:grounding", "Record a settled user prompt. Begins a new turn. turnId is host-generated; all step worlds in the turn share it via the snapshot at their world.")
+  @meta("comment:grounding", "Record a settled user prompt. Begins a new turn.")
   @meta("agent:invariant", "Cannot start a turn while one is already in flight; idle / settled / stopped only.")
   action recordUserTurn(turnId: string, text: string)
     dispatchable when phase == "idle" || phase == "settled" || phase == "stopped"
@@ -207,64 +172,53 @@ domain AgentSession {
       patch currentTurnId = turnId
       patch lastUserText = text
       patch phase = "awaitingModel"
-      patch stopRequested = false
       patch turnCount = turnCount + 1
       // Clear the previous turn's settled fields so scrub at any
       // point shows only the active turn's pending state.
       patch lastResponseFinal = null
-      patch pendingModelInvocationId = null
-      patch pendingModelTier = null
       patch pendingToolCallId = null
       patch pendingToolName = null
-      patch pendingToolInputJson = null
       patch lastToolCallId = null
       patch lastToolName = null
       patch lastToolOutcome = null
-      patch lastToolOutputJson = null
+      patch lastModelError = null
     }
   }
 
   @meta("comment:grounding", "Record that an effect handler is now invoking a model at the given tier.")
   @meta("agent:invariant", "Only valid from awaitingModel and only when canInvokeModel is true.")
   action recordModelInvocation(invocationId: string, tier: ModelTier)
-    dispatchable when phase == "awaitingModel" && !stopRequested && (budgetCeilingMc == 0 || budgetUsedMc < budgetCeilingMc)
+    dispatchable when phase == "awaitingModel" && (budgetCeilingMc == 0 || budgetUsedMc < budgetCeilingMc)
   {
     onceIntent {
-      patch pendingModelInvocationId = invocationId
-      patch pendingModelTier = tier
       patch phase = "streaming"
       patch modelInvocationCount = modelInvocationCount + 1
     }
   }
 
-  @meta("comment:grounding", "Record that the model decided to call a tool. Streaming pauses; effect handler will execute the tool.")
-  @meta("agent:invariant", "Only valid from streaming. The model serializes tool calls so only one is pending at a time.")
-  action recordToolCall(callId: string, toolName: string, inputJson: string)
+  @meta("comment:grounding", "Record that the model decided to call a tool. Streaming pauses; effect handler will execute the tool. Input body lives in host projection keyed by callId.")
+  @meta("agent:invariant", "Only valid from streaming.")
+  action recordToolCall(callId: string, toolName: string)
     dispatchable when phase == "streaming"
   {
     onceIntent {
       patch pendingToolCallId = callId
       patch pendingToolName = toolName
-      patch pendingToolInputJson = inputJson
       patch phase = "awaitingTool"
     }
   }
 
-  @meta("comment:grounding", "Settle the in-flight tool call. Returns the runtime to awaitingModel so the effect handler can re-invoke.")
+  @meta("comment:grounding", "Settle the in-flight tool call. Output body lives in host projection. Returns the runtime to awaitingModel so the effect handler can re-invoke.")
   @meta("agent:invariant", "Only valid from awaitingTool, and the callId must match the pending one.")
-  action recordToolResult(callId: string, outcome: ToolOutcome, outputJson: string)
+  action recordToolResult(callId: string, outcome: ToolOutcome)
     dispatchable when phase == "awaitingTool" && pendingToolCallId == callId
   {
     onceIntent {
       patch lastToolCallId = callId
       patch lastToolName = pendingToolName
       patch lastToolOutcome = outcome
-      patch lastToolOutputJson = outputJson
       patch pendingToolCallId = null
       patch pendingToolName = null
-      patch pendingToolInputJson = null
-      patch pendingModelInvocationId = null
-      patch pendingModelTier = null
       patch phase = "awaitingModel"
       patch toolCallCount = toolCallCount + 1
     }
@@ -277,23 +231,28 @@ domain AgentSession {
   {
     onceIntent {
       patch lastResponseFinal = finalText
-      patch pendingModelInvocationId = null
-      patch pendingModelTier = null
       patch phase = "settled"
     }
   }
 
-  @meta("comment:grounding", "Record that the user (or budget enforcement) requested the session stop. Effect handlers should abort the in-flight stream.")
+  @meta("comment:grounding", "Record that the active model invocation failed (network, API error, etc.). Distinguished from recordSessionStop, which is intentional user/budget cancellation.")
+  @meta("agent:invariant", "Only valid from streaming. Settles the turn with an error marker so the user can submit again.")
+  action recordModelInvocationFailed(reason: string)
+    dispatchable when phase == "streaming"
+  {
+    onceIntent {
+      patch lastModelError = reason
+      patch phase = "settled"
+    }
+  }
+
+  @meta("comment:grounding", "Record that the user (or budget enforcement) requested the session stop. Effect handlers should observe phase=stopped and abort the in-flight stream.")
   @meta("agent:invariant", "Always dispatchable; the runtime is permitted to be cancelled from any phase.")
   action recordSessionStop() {
     onceIntent {
-      patch stopRequested = true
       patch phase = "stopped"
-      patch pendingModelInvocationId = null
-      patch pendingModelTier = null
       patch pendingToolCallId = null
       patch pendingToolName = null
-      patch pendingToolInputJson = null
     }
   }
 

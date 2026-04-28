@@ -48,6 +48,8 @@ export type TurnEntry = {
   readonly settledText: string | null;
   /** Whether recordSessionStop fired during this turn. */
   readonly stopped: boolean;
+  /** Reason from recordModelInvocationFailed (system error). null when no failure. */
+  readonly errorReason: string | null;
 };
 
 export type TurnStep =
@@ -73,32 +75,31 @@ export const EMPTY_CONVERSATION: ConversationProjection = { turns: [] };
  * React-facing read model derived from the AgentSession snapshot.
  * Field names mirror agent-session.mel's state and computed
  * sections so mistakes between the two surfaces are loud.
+ *
+ * Heavy tool I/O bodies (tool input / output JSON) are NOT in the
+ * snapshot — only callId references. Bodies live in the host
+ * projection (TurnStep.input / TurnStep.output), keyed by callId.
  */
 export type AgentSessionSnapshot = {
-  // Identity
-  readonly sessionId: string;
+  // Phase + turn identity
   readonly phase: SessionPhase;
   readonly currentTurnId: string | null;
   // User
   readonly lastUserText: string | null;
-  // Model side (in flight)
-  readonly pendingModelInvocationId: string | null;
-  readonly pendingModelTier: ModelTier | null;
-  // Tool side (in flight)
+  // Tool side (in flight) — skeleton only, body in host projection
   readonly pendingToolCallId: string | null;
   readonly pendingToolName: string | null;
-  readonly pendingToolInputJson: string | null;
   // Tool side (most recent settled)
   readonly lastToolCallId: string | null;
   readonly lastToolName: string | null;
   readonly lastToolOutcome: ToolOutcome | null;
-  readonly lastToolOutputJson: string | null;
   // Settled response
   readonly lastResponseFinal: string | null;
+  /** Last model invocation failure reason — distinguishes system error from user/budget stop. */
+  readonly lastModelError: string | null;
   // Budget
   readonly budgetUsedMc: number;
   readonly budgetCeilingMc: number;
-  readonly stopRequested: boolean;
   // Anchor
   readonly lastAnchorFromWorldId: string | null;
   readonly lastAnchorToWorldId: string | null;

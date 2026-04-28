@@ -50,27 +50,19 @@ function readSnapshot(core: StudioCore): AgentSessionSnapshot {
     (raw as { readonly computed?: Record<string, unknown> } | null)?.computed ??
     {};
   return {
-    sessionId: (data.sessionId as string) ?? "",
     phase: (data.phase as AgentSessionSnapshot["phase"]) ?? "idle",
     currentTurnId: (data.currentTurnId as string | null) ?? null,
     lastUserText: (data.lastUserText as string | null) ?? null,
-    pendingModelInvocationId:
-      (data.pendingModelInvocationId as string | null) ?? null,
-    pendingModelTier:
-      (data.pendingModelTier as AgentSessionSnapshot["pendingModelTier"]) ??
-      null,
     pendingToolCallId: (data.pendingToolCallId as string | null) ?? null,
     pendingToolName: (data.pendingToolName as string | null) ?? null,
-    pendingToolInputJson: (data.pendingToolInputJson as string | null) ?? null,
     lastToolCallId: (data.lastToolCallId as string | null) ?? null,
     lastToolName: (data.lastToolName as string | null) ?? null,
     lastToolOutcome:
       (data.lastToolOutcome as AgentSessionSnapshot["lastToolOutcome"]) ?? null,
-    lastToolOutputJson: (data.lastToolOutputJson as string | null) ?? null,
     lastResponseFinal: (data.lastResponseFinal as string | null) ?? null,
+    lastModelError: (data.lastModelError as string | null) ?? null,
     budgetUsedMc: (data.budgetUsedMc as number) ?? 0,
     budgetCeilingMc: (data.budgetCeilingMc as number) ?? 0,
-    stopRequested: data.stopRequested === true,
     lastAnchorFromWorldId:
       (data.lastAnchorFromWorldId as string | null) ?? null,
     lastAnchorToWorldId: (data.lastAnchorToWorldId as string | null) ?? null,
@@ -137,8 +129,6 @@ describe("agent-session-shadow — lifecycle dispatch", () => {
     expect(invocationId).toBe("id-2");
     expect(readSnapshot(core)).toMatchObject({
       phase: "streaming",
-      pendingModelInvocationId: "id-2",
-      pendingModelTier: "large",
       modelInvocationCount: 1,
     });
 
@@ -147,15 +137,15 @@ describe("agent-session-shadow — lifecycle dispatch", () => {
       phase: "awaitingTool",
       pendingToolCallId: "call-1",
       pendingToolName: "inspectFocus",
-      pendingToolInputJson: '{"ref":"node:1"}',
     });
+    // Body lives in projection, not MEL — verify it round-trips via getToolInput.
+    expect(shadow.getToolInput("call-1")).toEqual({ ref: "node:1" });
 
     await shadow.onToolResult("call-1", "ok", { focus: { id: "node:1" } });
     expect(readSnapshot(core)).toMatchObject({
       phase: "awaitingModel",
       lastToolCallId: "call-1",
       lastToolOutcome: "ok",
-      lastToolOutputJson: '{"focus":{"id":"node:1"}}',
       toolCallCount: 1,
     });
 
@@ -202,7 +192,6 @@ describe("agent-session-shadow — lifecycle dispatch", () => {
     await shadow.onSessionStop();
     expect(readSnapshot(core)).toMatchObject({
       phase: "stopped",
-      stopRequested: true,
       pendingToolCallId: null,
     });
   });
@@ -218,7 +207,7 @@ describe("agent-session-shadow — out-of-order dispatches log warnings", () => 
     // No user turn yet — phase is idle.
     await expect(
       shadow.onToolCall("c1", "t1", { foo: "bar" }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
     expect(warn).toHaveBeenCalledTimes(1);
     const [message, detail] = warn.mock.calls[0]!;
     expect(message).toContain("onToolCall not completed");
@@ -473,23 +462,18 @@ describe("agent-session-shadow — classifyToolOutcome", () => {
 
 function makeEmptySnapshot(): AgentSessionSnapshot {
   return {
-    sessionId: "",
     phase: "idle",
     currentTurnId: null,
     lastUserText: null,
-    pendingModelInvocationId: null,
-    pendingModelTier: null,
+    lastModelError: null,
     pendingToolCallId: null,
     pendingToolName: null,
-    pendingToolInputJson: null,
     lastToolCallId: null,
     lastToolName: null,
     lastToolOutcome: null,
-    lastToolOutputJson: null,
     lastResponseFinal: null,
     budgetUsedMc: 0,
     budgetCeilingMc: 0,
-    stopRequested: false,
     lastAnchorFromWorldId: null,
     lastAnchorToWorldId: null,
     lastAnchorSummary: null,

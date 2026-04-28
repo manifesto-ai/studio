@@ -54,26 +54,38 @@ export type AgentSessionShadow = {
   readonly subscribe: (listener: () => void) => () => void;
   /** Drop the projection back to empty. Does NOT touch MEL — call resetSession on the runtime separately if needed. */
   readonly clearConversation: () => void;
+  /**
+   * Look up the input body for a tool call by callId. Used by the
+   * driver during tool execution — the tool's actual input lives
+   * here, not in MEL state, because input bodies can be large JSON.
+   * Returns null if the call hasn't been recorded or has been
+   * cleared.
+   */
+  readonly getToolInput: (callId: string) => unknown;
   /** Record a user turn. Returns the generated turnId on success, null otherwise. */
   readonly onUserTurn: (text: string) => Promise<string | null>;
   /** Record a model invocation. Returns the generated invocationId on success, null otherwise. */
   readonly onModelInvocation: (tier: ModelTier) => Promise<string | null>;
-  /** Record a tool call about to be executed. */
+  /** Record a tool call about to be executed. Returns true if dispatch settled. */
   readonly onToolCall: (
     callId: string,
     toolName: string,
     input: unknown,
-  ) => Promise<void>;
-  /** Record a tool call result after execution. */
+  ) => Promise<boolean>;
+  /** Record a tool call result after execution. Returns true if dispatch settled. */
   readonly onToolResult: (
     callId: string,
     outcome: ToolOutcome,
     output: unknown,
-  ) => Promise<void>;
-  /** Record a settled assistant response. */
-  readonly onAssistantSettled: (finalText: string) => Promise<void>;
+  ) => Promise<boolean>;
+  /** Record a settled assistant response. Returns true if dispatch settled. */
+  readonly onAssistantSettled: (finalText: string) => Promise<boolean>;
+  /** Record a system-level model invocation failure (network, API error). */
+  readonly onModelInvocationFailed: (reason: string) => Promise<boolean>;
   /** Record an explicit session stop (user pressed stop / budget exhausted). */
-  readonly onSessionStop: () => Promise<void>;
+  readonly onSessionStop: () => Promise<boolean>;
+  /** Record an inference cost delta (millicents). */
+  readonly recordBudget: (deltaMc: number) => Promise<boolean>;
 };
 
 export type CreateAgentSessionShadowOptions = {
@@ -153,6 +165,21 @@ export function createAgentSessionShadow(
     clearConversation: () => {
       setConversation(EMPTY_CONVERSATION);
     },
+    getToolInput: (callId) => {
+      // Walk newest turn backwards looking for the matching call;
+      // most lookups happen on the active turn, so this is O(steps
+      // in the active turn) ≈ O(small).
+      for (let t = conversation.turns.length - 1; t >= 0; t -= 1) {
+        const turn = conversation.turns[t]!;
+        for (let i = turn.steps.length - 1; i >= 0; i -= 1) {
+          const step = turn.steps[i]!;
+          if (step.kind === "tool-call" && step.callId === callId) {
+            return step.input;
+          }
+        }
+      }
+      return null;
+    },
     onUserTurn: async (text) => {
       const turnId = generateId();
       const ok = await dispatchSafe("onUserTurn", "recordUserTurn", [
@@ -166,6 +193,7 @@ export function createAgentSessionShadow(
         steps: [],
         settledText: null,
         stopped: false,
+        errorReason: null,
       };
       setConversation({ turns: [...conversation.turns, turn] });
       return turnId;
@@ -183,12 +211,14 @@ export function createAgentSessionShadow(
       return invocationId;
     },
     onToolCall: async (callId, toolName, input) => {
+      // Bodies live in projection only — MEL takes just the
+      // skeleton (callId + name). Input is captured in the projection
+      // step so the driver can later look it up via getToolInput().
       const ok = await dispatchSafe("onToolCall", "recordToolCall", [
         callId,
         toolName,
-        stringifyForState(input),
       ]);
-      if (!ok) return;
+      if (!ok) return false;
       const step: TurnStep = {
         kind: "tool-call",
         callId,
@@ -198,15 +228,17 @@ export function createAgentSessionShadow(
         outcome: null,
       };
       setConversation(appendStepToCurrentTurn(conversation, step));
+      return true;
     },
     onToolResult: async (callId, outcome, output) => {
+      // Output body kept in projection; MEL only sees outcome.
       const ok = await dispatchSafe("onToolResult", "recordToolResult", [
         callId,
         outcome,
-        stringifyForState(output),
       ]);
-      if (!ok) return;
+      if (!ok) return false;
       setConversation(settleToolCallInCurrentTurn(conversation, callId, outcome, output));
+      return true;
     },
     onAssistantSettled: async (finalText) => {
       const ok = await dispatchSafe(
@@ -214,13 +246,31 @@ export function createAgentSessionShadow(
         "recordAssistantSettled",
         [finalText],
       );
-      if (!ok) return;
+      if (!ok) return false;
       setConversation(settleAssistantInCurrentTurn(conversation, finalText));
+      return true;
+    },
+    onModelInvocationFailed: async (reason) => {
+      const ok = await dispatchSafe(
+        "onModelInvocationFailed",
+        "recordModelInvocationFailed",
+        [reason],
+      );
+      if (!ok) return false;
+      setConversation(failCurrentTurn(conversation, reason));
+      return true;
     },
     onSessionStop: async () => {
       const ok = await dispatchSafe("onSessionStop", "recordSessionStop", []);
-      if (!ok) return;
+      if (!ok) return false;
       setConversation(stopCurrentTurn(conversation));
+      return true;
+    },
+    recordBudget: async (deltaMc) => {
+      // Cost tracking — fire-and-forget through the dispatcher seam.
+      // No projection update; budgetUsedMc lives in MEL state and is
+      // observable via the snapshot.
+      return dispatchSafe("recordBudget", "recordBudget", [deltaMc]);
     },
   };
 }
@@ -283,20 +333,15 @@ function stopCurrentTurn(conv: ConversationProjection): ConversationProjection {
   return { turns };
 }
 
-/**
- * Best-effort JSON serialization for state fields. The AgentSession
- * MEL stores tool I/O as strings because shapes are dynamic. Values
- * that can't be serialized (cycles, BigInts) fall back to the
- * String() form so the dispatch never fails just over an
- * unserializable arg.
- */
-function stringifyForState(value: unknown): string {
-  if (value === undefined) return "null";
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return JSON.stringify(String(value));
-  }
+function failCurrentTurn(
+  conv: ConversationProjection,
+  reason: string,
+): ConversationProjection {
+  if (conv.turns.length === 0) return conv;
+  const turns = conv.turns.slice();
+  const last = turns[turns.length - 1]!;
+  turns[turns.length - 1] = { ...last, errorReason: reason };
+  return { turns };
 }
 
 function defaultGenerateId(): string {

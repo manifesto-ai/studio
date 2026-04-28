@@ -60,23 +60,18 @@ export type {
 } from "@/agent/session/agent-session-types";
 
 const EMPTY_SNAPSHOT: AgentSessionSnapshot = {
-  sessionId: "",
   phase: "idle",
   currentTurnId: null,
   lastUserText: null,
-  pendingModelInvocationId: null,
-  pendingModelTier: null,
   pendingToolCallId: null,
   pendingToolName: null,
-  pendingToolInputJson: null,
   lastToolCallId: null,
   lastToolName: null,
   lastToolOutcome: null,
-  lastToolOutputJson: null,
   lastResponseFinal: null,
+  lastModelError: null,
   budgetUsedMc: 0,
   budgetCeilingMc: 0,
-  stopRequested: false,
   lastAnchorFromWorldId: null,
   lastAnchorToWorldId: null,
   lastAnchorSummary: null,
@@ -101,17 +96,10 @@ type AgentSessionContextValue = {
     invocationId: string,
     tier: ModelTier,
   ) => void;
-  readonly recordToolCall: (
-    callId: string,
-    toolName: string,
-    inputJson: string,
-  ) => void;
-  readonly recordToolResult: (
-    callId: string,
-    outcome: ToolOutcome,
-    outputJson: string,
-  ) => void;
+  readonly recordToolCall: (callId: string, toolName: string) => void;
+  readonly recordToolResult: (callId: string, outcome: ToolOutcome) => void;
   readonly recordAssistantSettled: (finalText: string) => void;
+  readonly recordModelInvocationFailed: (reason: string) => void;
   readonly recordSessionStop: () => void;
   readonly recordBudget: (deltaMc: number) => void;
   readonly setBudgetCeiling: (ceilingMc: number) => void;
@@ -120,7 +108,7 @@ type AgentSessionContextValue = {
     toWorldId: string,
     summary: string,
   ) => void;
-  readonly resetSession: (newSessionId: string) => void;
+  readonly resetSession: () => void;
   // Low-level seam for tests / programmatic callers.
   readonly createIntent: (action: string, ...args: unknown[]) => Intent;
   readonly dispatchAsync: (intent: Intent) => Promise<StudioDispatchResult>;
@@ -246,20 +234,21 @@ export function AgentSessionProvider({
         dispatch("recordUserTurn", [turnId, text]),
       recordModelInvocation: (invocationId, tier) =>
         dispatch("recordModelInvocation", [invocationId, tier]),
-      recordToolCall: (callId, toolName, inputJson) =>
-        dispatch("recordToolCall", [callId, toolName, inputJson]),
-      recordToolResult: (callId, outcome, outputJson) =>
-        dispatch("recordToolResult", [callId, outcome, outputJson]),
+      recordToolCall: (callId, toolName) =>
+        dispatch("recordToolCall", [callId, toolName]),
+      recordToolResult: (callId, outcome) =>
+        dispatch("recordToolResult", [callId, outcome]),
       recordAssistantSettled: (finalText) =>
         dispatch("recordAssistantSettled", [finalText]),
+      recordModelInvocationFailed: (reason) =>
+        dispatch("recordModelInvocationFailed", [reason]),
       recordSessionStop: () => dispatch("recordSessionStop", []),
       recordBudget: (deltaMc) => dispatch("recordBudget", [deltaMc]),
       setBudgetCeiling: (ceilingMc) =>
         dispatch("setBudgetCeiling", [ceilingMc]),
       anchorWindow: (fromWorldId, toWorldId, summary) =>
         dispatch("anchorWindow", [fromWorldId, toWorldId, summary]),
-      resetSession: (newSessionId) =>
-        dispatch("resetSession", [newSessionId]),
+      resetSession: () => dispatch("resetSession", []),
       createIntent: createIntentFn,
       dispatchAsync: dispatchIntent,
     }),
@@ -283,6 +272,23 @@ export function useAgentSession(): AgentSessionContextValue {
   return ctx;
 }
 
+export { EMPTY_SNAPSHOT as EMPTY_AGENT_SESSION_SNAPSHOT };
+
+/**
+ * Read a fresh AgentSession snapshot directly from the core. Use this
+ * instead of `useAgentSession().snapshot` whenever you're inside a
+ * subscribeAfterDispatch listener or the driver — the React-mediated
+ * snapshot is stale until the next render, which races with dispatch
+ * notifications. Calling core.getSnapshot() inline returns the
+ * just-settled state.
+ */
+export function readAgentSessionSnapshot(
+  core: StudioCore | null,
+): AgentSessionSnapshot {
+  if (core === null) return EMPTY_SNAPSHOT;
+  return readSnapshot(core);
+}
+
 function readSnapshot(core: StudioCore): AgentSessionSnapshot {
   const raw = core.getSnapshot();
   if (raw === null) return EMPTY_SNAPSHOT;
@@ -290,23 +296,18 @@ function readSnapshot(core: StudioCore): AgentSessionSnapshot {
   const computed =
     ((raw as { readonly computed?: Record<string, unknown> }).computed) ?? {};
   return {
-    sessionId: asString(data.sessionId, ""),
     phase: asPhase(data.phase) ?? "idle",
     currentTurnId: asStringOrNull(data.currentTurnId),
     lastUserText: asStringOrNull(data.lastUserText),
-    pendingModelInvocationId: asStringOrNull(data.pendingModelInvocationId),
-    pendingModelTier: asTier(data.pendingModelTier),
     pendingToolCallId: asStringOrNull(data.pendingToolCallId),
     pendingToolName: asStringOrNull(data.pendingToolName),
-    pendingToolInputJson: asStringOrNull(data.pendingToolInputJson),
     lastToolCallId: asStringOrNull(data.lastToolCallId),
     lastToolName: asStringOrNull(data.lastToolName),
     lastToolOutcome: asOutcome(data.lastToolOutcome),
-    lastToolOutputJson: asStringOrNull(data.lastToolOutputJson),
     lastResponseFinal: asStringOrNull(data.lastResponseFinal),
+    lastModelError: asStringOrNull(data.lastModelError),
     budgetUsedMc: asNumber(data.budgetUsedMc, 0),
     budgetCeilingMc: asNumber(data.budgetCeilingMc, 0),
-    stopRequested: data.stopRequested === true,
     lastAnchorFromWorldId: asStringOrNull(data.lastAnchorFromWorldId),
     lastAnchorToWorldId: asStringOrNull(data.lastAnchorToWorldId),
     lastAnchorSummary: asStringOrNull(data.lastAnchorSummary),
@@ -328,10 +329,6 @@ function asStringOrNull(v: unknown): string | null {
   return typeof v === "string" ? v : null;
 }
 
-function asString(v: unknown, fallback: string): string {
-  return typeof v === "string" ? v : fallback;
-}
-
 function asNumber(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
 }
@@ -343,12 +340,6 @@ function asPhase(v: unknown): SessionPhase | null {
     v === "awaitingTool" ||
     v === "settled" ||
     v === "stopped"
-    ? v
-    : null;
-}
-
-function asTier(v: unknown): ModelTier | null {
-  return v === "tiny" || v === "small" || v === "mid" || v === "large"
     ? v
     : null;
 }

@@ -106,23 +106,18 @@ describe("agent-session.mel — initial state", () => {
   it("matches declared defaults", async () => {
     const core = await bootAgentSessionRuntime();
     expect(readState(core)).toMatchObject({
-      sessionId: "",
       phase: "idle",
       currentTurnId: null,
       lastUserText: null,
-      pendingModelInvocationId: null,
-      pendingModelTier: null,
       pendingToolCallId: null,
       pendingToolName: null,
-      pendingToolInputJson: null,
       lastToolCallId: null,
       lastToolName: null,
       lastToolOutcome: null,
-      lastToolOutputJson: null,
       lastResponseFinal: null,
+      lastModelError: null,
       budgetUsedMc: 0,
       budgetCeilingMc: 0,
-      stopRequested: false,
       lastAnchorFromWorldId: null,
       lastAnchorToWorldId: null,
       lastAnchorSummary: null,
@@ -157,8 +152,6 @@ describe("agent-session.mel — happy-path turn lifecycle", () => {
     ).toBe("completed");
     expect(readState(core)).toMatchObject({
       phase: "streaming",
-      pendingModelInvocationId: "inv-1",
-      pendingModelTier: "large",
       modelInvocationCount: 1,
     });
     expect(
@@ -167,8 +160,6 @@ describe("agent-session.mel — happy-path turn lifecycle", () => {
     expect(readState(core)).toMatchObject({
       phase: "settled",
       lastResponseFinal: "hi there",
-      pendingModelInvocationId: null,
-      pendingModelTier: null,
     });
     expect(readComputed(core).awaitingUser).toBe(true);
   });
@@ -179,41 +170,24 @@ describe("agent-session.mel — happy-path turn lifecycle", () => {
     await dispatch(core, "recordModelInvocation", "inv-1", "large");
     expect(
       (
-        await dispatch(
-          core,
-          "recordToolCall",
-          "call-1",
-          "inspectFocus",
-          "{}",
-        )
+        await dispatch(core, "recordToolCall", "call-1", "inspectFocus")
       ).kind,
     ).toBe("completed");
     expect(readState(core)).toMatchObject({
       phase: "awaitingTool",
       pendingToolCallId: "call-1",
       pendingToolName: "inspectFocus",
-      pendingToolInputJson: "{}",
     });
     expect(
-      (
-        await dispatch(
-          core,
-          "recordToolResult",
-          "call-1",
-          "ok",
-          '{"focus":null}',
-        )
-      ).kind,
+      (await dispatch(core, "recordToolResult", "call-1", "ok")).kind,
     ).toBe("completed");
     expect(readState(core)).toMatchObject({
       phase: "awaitingModel",
       pendingToolCallId: null,
       pendingToolName: null,
-      pendingToolInputJson: null,
       lastToolCallId: "call-1",
       lastToolName: "inspectFocus",
       lastToolOutcome: "ok",
-      lastToolOutputJson: '{"focus":null}',
       toolCallCount: 1,
     });
     // Effect handler re-invokes the model after a tool result.
@@ -253,9 +227,9 @@ describe("agent-session.mel — happy-path turn lifecycle", () => {
     expect(readState(core).currentTurnId).toBe("t-42");
     await dispatch(core, "recordModelInvocation", "inv-1", "large");
     expect(readState(core).currentTurnId).toBe("t-42");
-    await dispatch(core, "recordToolCall", "call-1", "foo", "{}");
+    await dispatch(core, "recordToolCall", "call-1", "foo");
     expect(readState(core).currentTurnId).toBe("t-42");
-    await dispatch(core, "recordToolResult", "call-1", "ok", "{}");
+    await dispatch(core, "recordToolResult", "call-1", "ok");
     expect(readState(core).currentTurnId).toBe("t-42");
     await dispatch(core, "recordModelInvocation", "inv-2", "large");
     expect(readState(core).currentTurnId).toBe("t-42");
@@ -281,7 +255,7 @@ describe("agent-session.mel — legality gates", () => {
     await dispatch(core, "recordUserTurn", "t-1", "x");
     // awaitingModel, not streaming yet.
     expect(
-      (await dispatch(core, "recordToolCall", "call-1", "foo", "{}")).kind,
+      (await dispatch(core, "recordToolCall", "call-1", "foo")).kind,
     ).toBe("rejected");
   });
 
@@ -289,14 +263,14 @@ describe("agent-session.mel — legality gates", () => {
     const core = await bootAgentSessionRuntime();
     await dispatch(core, "recordUserTurn", "t-1", "x");
     await dispatch(core, "recordModelInvocation", "inv-1", "large");
-    await dispatch(core, "recordToolCall", "call-1", "foo", "{}");
+    await dispatch(core, "recordToolCall", "call-1", "foo");
     // Wrong callId.
     expect(
-      (await dispatch(core, "recordToolResult", "call-WRONG", "ok", "{}")).kind,
+      (await dispatch(core, "recordToolResult", "call-WRONG", "ok")).kind,
     ).toBe("rejected");
     // Right callId still works.
     expect(
-      (await dispatch(core, "recordToolResult", "call-1", "ok", "{}")).kind,
+      (await dispatch(core, "recordToolResult", "call-1", "ok")).kind,
     ).toBe("completed");
   });
 
@@ -382,7 +356,7 @@ describe("agent-session.mel — stop signal", () => {
         await dispatch(core, "recordModelInvocation", "inv-1", "large");
       }
       if (setupPhase === "awaitingTool") {
-        await dispatch(core, "recordToolCall", "call-1", "foo", "{}");
+        await dispatch(core, "recordToolCall", "call-1", "foo");
       }
       if (setupPhase === "settled") {
         await dispatch(core, "recordAssistantSettled", "ok");
@@ -393,26 +367,60 @@ describe("agent-session.mel — stop signal", () => {
         "completed",
       );
       expect(readState(core).phase).toBe("stopped");
-      expect(readState(core).stopRequested).toBe(true);
-      expect(readState(core).pendingModelInvocationId).toBe(null);
       expect(readState(core).pendingToolCallId).toBe(null);
     }
   });
 
-  it("blocks recordModelInvocation while stopRequested is true", async () => {
+  it("blocks recordModelInvocation after stop (phase=stopped guard)", async () => {
     const core = await bootAgentSessionRuntime();
     await dispatch(core, "recordUserTurn", "t-1", "x");
     await dispatch(core, "recordSessionStop");
-    // After stop, phase=stopped — recordModelInvocation requires awaitingModel.
+    // phase=stopped — recordModelInvocation requires awaitingModel.
     expect(
       (await dispatch(core, "recordModelInvocation", "inv-1", "large")).kind,
     ).toBe("rejected");
-    // recordUserTurn from stopped clears stopRequested.
+    // Next recordUserTurn moves us back to awaitingModel.
     await dispatch(core, "recordUserTurn", "t-1", "retry");
-    expect(readState(core).stopRequested).toBe(false);
     expect(
       (await dispatch(core, "recordModelInvocation", "inv-2", "large")).kind,
     ).toBe("completed");
+  });
+});
+
+describe("agent-session.mel — recordModelInvocationFailed", () => {
+  it("transitions streaming → settled with lastModelError set", async () => {
+    const core = await bootAgentSessionRuntime();
+    await dispatch(core, "recordUserTurn", "t-1", "x");
+    await dispatch(core, "recordModelInvocation", "inv-1", "large");
+    expect(
+      (await dispatch(core, "recordModelInvocationFailed", "API 500")).kind,
+    ).toBe("completed");
+    expect(readState(core)).toMatchObject({
+      phase: "settled",
+      lastModelError: "API 500",
+    });
+  });
+
+  it("rejects outside streaming", async () => {
+    const core = await bootAgentSessionRuntime();
+    expect(
+      (await dispatch(core, "recordModelInvocationFailed", "early")).kind,
+    ).toBe("rejected");
+    await dispatch(core, "recordUserTurn", "t-1", "x");
+    // awaitingModel — still rejected.
+    expect(
+      (await dispatch(core, "recordModelInvocationFailed", "early")).kind,
+    ).toBe("rejected");
+  });
+
+  it("recordUserTurn clears lastModelError", async () => {
+    const core = await bootAgentSessionRuntime();
+    await dispatch(core, "recordUserTurn", "t-1", "x");
+    await dispatch(core, "recordModelInvocation", "inv-1", "large");
+    await dispatch(core, "recordModelInvocationFailed", "boom");
+    expect(readState(core).lastModelError).toBe("boom");
+    await dispatch(core, "recordUserTurn", "t-2", "retry");
+    expect(readState(core).lastModelError).toBe(null);
   });
 });
 
@@ -441,14 +449,11 @@ describe("agent-session.mel — resetSession", () => {
     await dispatch(core, "setBudgetCeiling", 1000);
     await dispatch(core, "recordUserTurn", "t-1", "hello");
     await dispatch(core, "recordModelInvocation", "inv-1", "large");
-    await dispatch(core, "recordToolCall", "call-1", "foo", "{}");
-    await dispatch(core, "recordToolResult", "call-1", "ok", "{}");
+    await dispatch(core, "recordToolCall", "call-1", "foo");
+    await dispatch(core, "recordToolResult", "call-1", "ok");
     await dispatch(core, "recordBudget", 250);
-    expect((await dispatch(core, "resetSession", "session-2")).kind).toBe(
-      "completed",
-    );
+    expect((await dispatch(core, "resetSession")).kind).toBe("completed");
     expect(readState(core)).toMatchObject({
-      sessionId: "session-2",
       phase: "idle",
       lastUserText: null,
       lastResponseFinal: null,
@@ -469,8 +474,8 @@ describe("agent-session.mel — scalar discipline", () => {
     // Walk a non-trivial sequence and assert no field becomes an array.
     await dispatch(core, "recordUserTurn", "t-1", "x");
     await dispatch(core, "recordModelInvocation", "inv-1", "large");
-    await dispatch(core, "recordToolCall", "call-1", "foo", "{}");
-    await dispatch(core, "recordToolResult", "call-1", "ok", "{}");
+    await dispatch(core, "recordToolCall", "call-1", "foo");
+    await dispatch(core, "recordToolResult", "call-1", "ok");
     await dispatch(core, "recordModelInvocation", "inv-2", "large");
     await dispatch(core, "recordAssistantSettled", "settled");
     const state = readState(core);
