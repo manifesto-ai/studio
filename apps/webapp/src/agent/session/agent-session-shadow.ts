@@ -89,8 +89,25 @@ export type AgentSessionShadow = {
 };
 
 export type CreateAgentSessionShadowOptions = {
-  /** Override the id generator. Defaults to crypto.randomUUID with a fallback. */
+  /**
+   * Override BOTH turn-id and invocation-id generation. Kept for
+   * backward compatibility with tests that supplied a single counter.
+   * Prefer `generateTurnId` / `generateInvocationId` for finer control.
+   */
   readonly generateId?: () => string;
+  /**
+   * Generate a turn id when recordUserTurn fires. Defaults to a
+   * sequential `t-N` pattern using the runtime's current turnCount,
+   * so the agent sees agent-friendly ids in prompts and tool args
+   * instead of raw UUIDs.
+   */
+  readonly generateTurnId?: () => string;
+  /**
+   * Generate an invocation id when recordModelInvocation fires.
+   * Defaults to a UUID — invocation ids are internal book-keeping
+   * and not surfaced to the agent, so randomness is safe.
+   */
+  readonly generateInvocationId?: () => string;
   /** Override the warn sink. Defaults to console.warn. */
   readonly warn?: (message: string, detail?: unknown) => void;
 };
@@ -99,7 +116,14 @@ export function createAgentSessionShadow(
   runtime: AgentSessionShadowRuntime,
   options: CreateAgentSessionShadowOptions = {},
 ): AgentSessionShadow {
-  const generateId = options.generateId ?? defaultGenerateId;
+  const generateTurnId =
+    options.generateTurnId ??
+    options.generateId ??
+    (() => `t-${runtime.snapshot.turnCount + 1}`);
+  const generateInvocationId =
+    options.generateInvocationId ??
+    options.generateId ??
+    defaultGenerateId;
   const warn = options.warn ?? defaultWarn;
 
   // Projection state. Replaced (not mutated) on every change so React
@@ -181,7 +205,7 @@ export function createAgentSessionShadow(
       return null;
     },
     onUserTurn: async (text) => {
-      const turnId = generateId();
+      const turnId = generateTurnId();
       const ok = await dispatchSafe("onUserTurn", "recordUserTurn", [
         turnId,
         text,
@@ -199,7 +223,7 @@ export function createAgentSessionShadow(
       return turnId;
     },
     onModelInvocation: async (tier) => {
-      const invocationId = generateId();
+      const invocationId = generateInvocationId();
       const ok = await dispatchSafe(
         "onModelInvocation",
         "recordModelInvocation",

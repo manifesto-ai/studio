@@ -115,7 +115,12 @@ export function createAgentSessionAnchorEffect(
     runtime,
     conversation,
     getLatestWorldId,
-    generateAnchorId = defaultGenerateAnchorId,
+    // Default to a sequential `a-N` id (using the current
+    // anchorCount) so the agent's prompts and search results show
+    // human-friendly references like "a-3" instead of UUIDs. Pass an
+    // override (`crypto.randomUUID()`-style) only when cross-session
+    // collision is a concern.
+    generateAnchorId = () => `a-${runtime.snapshot.anchorCount + 1}`,
     dispatcher,
     summarizer,
     policy,
@@ -262,9 +267,3 @@ function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 3)}...` : s;
 }
 
-function defaultGenerateAnchorId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `anchor-${crypto.randomUUID()}`;
-  }
-  return `anchor-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 11)}`;
-}

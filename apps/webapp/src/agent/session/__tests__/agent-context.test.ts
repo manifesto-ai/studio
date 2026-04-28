@@ -149,7 +149,7 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain('"todoCount": 1');
   });
 
-  it("emits recent turns newest-first", () => {
+  it("emits a single-turn continuity hint and points at inspectConversation for older context", () => {
     const prompt = buildAgentSystemPrompt(
       readStudioAgentContext({
         recentTurns: [
@@ -159,6 +159,24 @@ describe("buildAgentSystemPrompt", () => {
             assistantExcerpt: "clearDone is guarded.",
             toolCount: 2,
           },
+        ],
+      }),
+    );
+
+    expect(prompt).toContain("# Conversation continuity");
+    expect(prompt).toContain("id=t3");
+    expect(prompt).toContain("user: why is this blocked?");
+    expect(prompt).toContain("you: clearDone is guarded.");
+    // Active-retrieval guidance — agent must know it can search.
+    expect(prompt).toContain("inspectConversation");
+    expect(prompt).toContain("query");
+    expect(prompt).toContain("beforeTurnId");
+  });
+
+  it("emits the tool-only marker when assistant excerpt is empty", () => {
+    const prompt = buildAgentSystemPrompt(
+      readStudioAgentContext({
+        recentTurns: [
           {
             turnId: "t2",
             userPrompt: "what is focused?",
@@ -169,13 +187,6 @@ describe("buildAgentSystemPrompt", () => {
       }),
     );
 
-    expect(prompt).toContain("# Recent Conversation");
-    const idxTurn1 = prompt.indexOf("turn 1");
-    const idxTurn2 = prompt.indexOf("turn 2");
-    expect(idxTurn1).toBeGreaterThan(-1);
-    expect(idxTurn2).toBeGreaterThan(idxTurn1);
-    expect(prompt).toContain("user: why is this blocked?");
-    expect(prompt).toContain("you: clearDone is guarded.");
     expect(prompt).toContain("you: (tool-only turn)");
   });
 

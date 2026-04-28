@@ -477,7 +477,12 @@ export function AgentLens(): JSX.Element {
         );
         const agentContext = readStudioAgentContext({
           studioMelDigest: readStudioMelDigest(uiRef.current.core),
-          recentTurns: buildRecentTurnsFromMessages(agentMessages),
+          // Just-prior turn for deictic continuity. Older context the
+          // agent retrieves on demand via inspectConversation (the
+          // system prompt nudges this).
+          recentTurns: buildRecentTurnsFromMessages(agentMessages, {
+            limit: 1,
+          }),
           runtimeSignals: {
             selectedNodeChanged: !snap.agentFocusFresh,
             currentFocusedNodeId: snap.focusedNodeId,
