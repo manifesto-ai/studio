@@ -39,14 +39,23 @@ export type AnchorSummarizeArgs = {
   readonly signal?: AbortSignal;
 };
 
+export type AnchorSummary = {
+  /** One-line topic / heading the search index ranks against. */
+  readonly topic: string;
+  /** 2-4 sentence prose summary of the window. */
+  readonly summary: string;
+};
+
 export type AnchorSummarizer = {
-  readonly summarize: (args: AnchorSummarizeArgs) => Promise<string>;
+  readonly summarize: (args: AnchorSummarizeArgs) => Promise<AnchorSummary>;
 };
 
 export type AnchorDispatcher = {
   readonly anchorWindow: (
+    anchorId: string,
     fromWorldId: string,
     toWorldId: string,
+    topic: string,
     summary: string,
   ) => Promise<boolean>;
   /**
@@ -72,8 +81,10 @@ export type AnchorPolicy = {
 export type AnchorHandlers = {
   readonly onAnchorStart?: (args: { readonly turnCount: number }) => void;
   readonly onAnchorSettled?: (args: {
+    readonly anchorId: string;
     readonly fromWorldId: string;
     readonly toWorldId: string;
+    readonly topic: string;
     readonly summary: string;
   }) => void;
   readonly onAnchorFailed?: (err: unknown) => void;
@@ -85,6 +96,8 @@ export type CreateAnchorEffectArgs = {
   readonly conversation: () => ConversationProjection;
   /** Returns the current head world id from lineage, or null if not available. */
   readonly getLatestWorldId: () => string | null;
+  /** Generate a stable id for a new anchor record. Defaults to crypto.randomUUID. */
+  readonly generateAnchorId?: () => string;
   readonly dispatcher: AnchorDispatcher;
   readonly summarizer: AnchorSummarizer;
   readonly policy: AnchorPolicy;
@@ -98,7 +111,16 @@ export type AgentSessionAnchorEffect = {
 export function createAgentSessionAnchorEffect(
   args: CreateAnchorEffectArgs,
 ): AgentSessionAnchorEffect {
-  const { runtime, conversation, getLatestWorldId, dispatcher, summarizer, policy, handlers = {} } = args;
+  const {
+    runtime,
+    conversation,
+    getLatestWorldId,
+    generateAnchorId = defaultGenerateAnchorId,
+    dispatcher,
+    summarizer,
+    policy,
+    handlers = {},
+  } = args;
 
   let inFlight = false;
   let stopped = false;
@@ -132,17 +154,26 @@ export function createAgentSessionAnchorEffect(
 
       handlers.onAnchorStart?.({ turnCount: currentTurnCount });
 
-      const summary = await summarizer.summarize({
+      const result = await summarizer.summarize({
         turns: turnsToAnchor,
         priorAnchor: snap.lastAnchorSummary,
       });
 
-      if (stopped || summary.trim() === "") return;
+      if (
+        stopped ||
+        result.summary.trim() === "" ||
+        result.topic.trim() === ""
+      ) {
+        return;
+      }
 
+      const anchorId = generateAnchorId();
       const ok = await dispatcher.anchorWindow(
+        anchorId,
         fromWorldId,
         toWorldId,
-        summary,
+        result.topic.trim(),
+        result.summary.trim(),
       );
       if (!ok) {
         handlers.onAnchorFailed?.(
@@ -160,7 +191,13 @@ export function createAgentSessionAnchorEffect(
         void dispatcher.recordBudget(policy.costMc);
       }
       lastAnchoredTurnCount = currentTurnCount;
-      handlers.onAnchorSettled?.({ fromWorldId, toWorldId, summary });
+      handlers.onAnchorSettled?.({
+        anchorId,
+        fromWorldId,
+        toWorldId,
+        topic: result.topic.trim(),
+        summary: result.summary.trim(),
+      });
     } catch (err) {
       handlers.onAnchorFailed?.(err);
     } finally {
@@ -223,4 +260,11 @@ function oneLine(s: string): string {
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 3)}...` : s;
+}
+
+function defaultGenerateAnchorId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `anchor-${crypto.randomUUID()}`;
+  }
+  return `anchor-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 11)}`;
 }

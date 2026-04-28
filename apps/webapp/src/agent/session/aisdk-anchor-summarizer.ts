@@ -19,6 +19,7 @@ import type { ChatTransport, UIMessage } from "ai";
 import {
   buildAnchorSummaryPrompt,
   type AnchorSummarizer,
+  type AnchorSummary,
 } from "./agent-session-anchor.js";
 
 export type AiSdkAnchorSummarizerDeps = {
@@ -73,29 +74,72 @@ export function createAiSdkAnchorSummarizer(
       } finally {
         reader.releaseLock();
       }
-      return accumulated.trim();
+      return parseAnchorResponse(accumulated.trim());
     },
   };
 }
 
-export const ANCHOR_SUMMARIZATION_SYSTEM_PROMPT = `
-You are a conversation summarizer for an agent's long-term memory.
+/**
+ * Parse the model's structured response. Expected shape (per the
+ * system prompt): two sections separated by labels —
+ *   TOPIC: <one-line headline>
+ *   SUMMARY: <2-4 sentences>
+ *
+ * Models occasionally drift (extra preamble, reordered labels,
+ * markdown). The parser is lenient: it pulls labelled lines first,
+ * falling back to "first line is topic, rest is summary" if labels
+ * are missing.
+ */
+export function parseAnchorResponse(raw: string): AnchorSummary {
+  const text = raw.trim();
+  if (text === "") return { topic: "", summary: "" };
 
-Your job: produce ONE concise paragraph (2-4 sentences) capturing the
-SUBSTANCE of the conversation window provided. Focus on:
-- Main topics or goals the user is exploring
-- Decisions reached, actions taken, or tools the agent used to meaningful effect
-- Open threads, unresolved questions, or recurring themes
+  const topicMatch = /^\s*TOPIC\s*:\s*(.+?)\s*$/im.exec(text);
+  const summaryMatch = /^\s*SUMMARY\s*:\s*([\s\S]+?)\s*$/im.exec(text);
+
+  if (topicMatch !== null && summaryMatch !== null) {
+    return {
+      topic: topicMatch[1]!.trim(),
+      summary: summaryMatch[1]!.trim(),
+    };
+  }
+
+  // Fallback: first non-empty line as topic, remainder as summary.
+  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return { topic: "", summary: "" };
+  if (lines.length === 1) {
+    // Truncate as topic; reuse same text as summary so the agent has
+    // something to read either way.
+    const topic = lines[0]!.slice(0, 80);
+    return { topic, summary: lines[0]! };
+  }
+  return {
+    topic: lines[0]!.slice(0, 80),
+    summary: lines.slice(1).join(" ").trim(),
+  };
+}
+
+export const ANCHOR_SUMMARIZATION_SYSTEM_PROMPT = `
+You are a memory-anchor builder for an agent's long-term recall.
+
+Your job: produce a navigable index entry for a window of past
+conversation turns. The output has TWO labelled sections.
+
+Output format (LITERAL — return only these two lines, no preamble):
+
+TOPIC: <one-line headline phrase, 3-8 words, captures the search
+keyword most likely to retrieve this anchor later>
+SUMMARY: <2-4 sentences capturing the substance — main topics or
+goals, decisions reached, tools used, open threads — written so
+the agent can read it later and decide whether the topic is
+relevant to a new query>
 
 Style:
-- Plain prose, no bullet points, no preamble.
+- Plain prose, no bullet points.
 - Refer to the user as "the user" and the agent in third person.
-- Preserve names of MEL entities (actions, fields, computed) verbatim
-  when they appear, since the agent's later turns will recognise them.
+- Preserve names of MEL entities (actions, fields, computed) verbatim.
 
-If a "prior anchor" section is provided, INCORPORATE its content into
-your summary so the new summary supersedes the old one (rather than
-listing both). The output must be self-contained.
-
-Return ONLY the summary text. No headings, no labels.
+If a "prior anchor" section is provided, INCORPORATE its content
+into the new summary so the new anchor supersedes the old one
+rather than fragmenting memory. The output must be self-contained.
 `.trim();

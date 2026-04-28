@@ -98,12 +98,25 @@ domain AgentSession {
     budgetCeilingMc: number = 0
 
     // ── Anchoring (sliding-window summarization) ───────────────────
+    // Anchors are navigable waypoints into past lineage, not
+    // automatic prompt context. The agent searches across them via
+    // searchAnchors, drills down via recallAnchor / inspectAnchorLineage.
+    // The fields here are SKELETON — full summaries and topics live
+    // in the host AnchorStore keyed by anchorId; the snapshot just
+    // remembers the latest one for the system prompt's hint section
+    // ("N anchors available, latest topic: X").
+    @meta("comment:grounding", "Host-generated id of the most recent anchor.")
+    lastAnchorId: string | null = null
     @meta("comment:grounding", "World id at the older end of the most recent anchor window.")
     lastAnchorFromWorldId: string | null = null
     @meta("comment:grounding", "World id at the newer end of the most recent anchor window.")
     lastAnchorToWorldId: string | null = null
-    @meta("comment:grounding", "Summary text produced by the most recent anchorWindow dispatch. Read by agent prompt for compressed long-term memory.")
+    @meta("comment:grounding", "One-line topic / heading of the most recent anchor. Used in the system prompt hint, not as full context.")
+    lastAnchorTopic: string | null = null
+    @meta("comment:grounding", "Summary text of the most recent anchor. Skeleton for inspection — agent should call recallAnchor / searchAnchors for full memory access.")
     lastAnchorSummary: string | null = null
+    @meta("comment:grounding", "Total anchors recorded in this session. Surfaced to the prompt so the agent knows there is past memory to query.")
+    anchorCount: number = 0
 
     // ── Counters (scalar — pure increment, never arrays) ───────────
     @meta("comment:grounding", "Number of user turns settled in this session.")
@@ -145,9 +158,12 @@ domain AgentSession {
       patch lastResponseFinal = null
       patch lastModelError = null
       patch budgetUsedMc = 0
+      patch lastAnchorId = null
       patch lastAnchorFromWorldId = null
       patch lastAnchorToWorldId = null
+      patch lastAnchorTopic = null
       patch lastAnchorSummary = null
+      patch anchorCount = 0
       patch turnCount = 0
       patch toolCallCount = 0
       patch modelInvocationCount = 0
@@ -265,13 +281,16 @@ domain AgentSession {
     }
   }
 
-  @meta("comment:grounding", "Record a sliding-window anchor produced by a small-model summarization effect over worlds [fromWorldId, toWorldId].")
-  @meta("agent:invariant", "Anchors themselves are worlds. Future system prompts can include the latest anchor instead of replaying every world in the window.")
-  action anchorWindow(fromWorldId: string, toWorldId: string, summary: string) {
+  @meta("comment:grounding", "Record a sliding-window anchor over worlds [fromWorldId, toWorldId]. anchorId is host-generated; topic and summary are produced by a small-model summarization effect.")
+  @meta("agent:invariant", "Anchors are navigable waypoints into past lineage, not prompt context. The agent retrieves them on demand via searchAnchors / recallAnchor / inspectAnchorLineage.")
+  action anchorWindow(anchorId: string, fromWorldId: string, toWorldId: string, topic: string, summary: string) {
     onceIntent {
+      patch lastAnchorId = anchorId
       patch lastAnchorFromWorldId = fromWorldId
       patch lastAnchorToWorldId = toWorldId
+      patch lastAnchorTopic = topic
       patch lastAnchorSummary = summary
+      patch anchorCount = anchorCount + 1
     }
   }
 }

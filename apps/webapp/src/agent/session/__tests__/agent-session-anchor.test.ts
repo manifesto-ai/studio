@@ -73,10 +73,13 @@ function readSnapshot(core: StudioCore): AgentSessionSnapshot {
     lastModelError: (data.lastModelError as string | null) ?? null,
     budgetUsedMc: (data.budgetUsedMc as number) ?? 0,
     budgetCeilingMc: (data.budgetCeilingMc as number) ?? 0,
+    lastAnchorId: (data.lastAnchorId as string | null) ?? null,
     lastAnchorFromWorldId:
       (data.lastAnchorFromWorldId as string | null) ?? null,
     lastAnchorToWorldId: (data.lastAnchorToWorldId as string | null) ?? null,
+    lastAnchorTopic: (data.lastAnchorTopic as string | null) ?? null,
     lastAnchorSummary: (data.lastAnchorSummary as string | null) ?? null,
+    anchorCount: (data.anchorCount as number) ?? 0,
     turnCount: (data.turnCount as number) ?? 0,
     toolCallCount: (data.toolCallCount as number) ?? 0,
     modelInvocationCount: (data.modelInvocationCount as number) ?? 0,
@@ -126,11 +129,13 @@ function makeShadowRuntime(core: StudioCore) {
 
 function makeAnchorDispatcher(core: StudioCore): AnchorDispatcher {
   return {
-    anchorWindow: async (fromWorldId, toWorldId, summary) => {
+    anchorWindow: async (anchorId, fromWorldId, toWorldId, topic, summary) => {
       const intent = core.createIntent(
         "anchorWindow",
+        anchorId,
         fromWorldId,
         toWorldId,
+        topic,
         summary,
       );
       const result = (await core.dispatchAsync(
@@ -170,7 +175,10 @@ describe("createAgentSessionAnchorEffect — trigger policy", () => {
     const shadow = createAgentSessionShadow(makeShadowRuntime(core), {
       generateId,
     });
-    const summarize = vi.fn(async () => "should not be called");
+    const summarize = vi.fn(async () => ({
+      topic: "should not be called",
+      summary: "should not be called",
+    }));
     const dispatcher = makeAnchorDispatcher(core);
     const effect = createAgentSessionAnchorEffect({
       runtime: makeRuntime(core),
@@ -200,9 +208,10 @@ describe("createAgentSessionAnchorEffect — trigger policy", () => {
     const shadow = createAgentSessionShadow(makeShadowRuntime(core), {
       generateId,
     });
-    const summarize = vi.fn(
-      async (_args: AnchorSummarizeArgs) => "session summary one",
-    );
+    const summarize = vi.fn(async (_args: AnchorSummarizeArgs) => ({
+      topic: "first session topic",
+      summary: "session summary one",
+    }));
     const onAnchorSettled = vi.fn();
     const effect = createAgentSessionAnchorEffect({
       runtime: makeRuntime(core),
@@ -229,13 +238,20 @@ describe("createAgentSessionAnchorEffect — trigger policy", () => {
 
       const snap = readSnapshot(core);
       expect(snap.lastAnchorSummary).toBe("session summary one");
+      expect(snap.lastAnchorTopic).toBe("first session topic");
       expect(snap.lastAnchorFromWorldId).toBe("session-start");
       expect(snap.lastAnchorToWorldId).toBe("world-end-of-window-1");
-      expect(onAnchorSettled).toHaveBeenCalledWith({
-        fromWorldId: "session-start",
-        toWorldId: "world-end-of-window-1",
-        summary: "session summary one",
-      });
+      expect(snap.anchorCount).toBe(1);
+      expect(onAnchorSettled).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fromWorldId: "session-start",
+          toWorldId: "world-end-of-window-1",
+          topic: "first session topic",
+          summary: "session summary one",
+        }),
+      );
+      // anchorId is host-generated; just assert non-empty.
+      expect(snap.lastAnchorId).not.toBe(null);
     } finally {
       effect.stop();
     }
@@ -246,7 +262,10 @@ describe("createAgentSessionAnchorEffect — trigger policy", () => {
     const shadow = createAgentSessionShadow(makeShadowRuntime(core), {
       generateId,
     });
-    const summarizeReturns = ["first anchor", "second anchor"];
+    const summarizeReturns: { topic: string; summary: string }[] = [
+      { topic: "first topic", summary: "first anchor" },
+      { topic: "second topic", summary: "second anchor" },
+    ];
     let toIdReturn = "world-A";
     const summarize = vi.fn(
       async (_args: AnchorSummarizeArgs) => summarizeReturns.shift()!,
@@ -296,7 +315,7 @@ describe("createAgentSessionAnchorEffect — trigger policy", () => {
     const shadow = createAgentSessionShadow(makeShadowRuntime(core), {
       generateId,
     });
-    const summarize = vi.fn(async () => "x");
+    const summarize = vi.fn(async () => ({ topic: "t", summary: "x" }));
     const effect = createAgentSessionAnchorEffect({
       runtime: makeRuntime(core),
       conversation: () => shadow.getConversation(),
@@ -332,7 +351,10 @@ describe("createAgentSessionAnchorEffect — robustness", () => {
       .mockImplementationOnce(async () => {
         throw new Error("first try fails");
       })
-      .mockImplementationOnce(async () => "second try works");
+      .mockImplementationOnce(async () => ({
+        topic: "second topic",
+        summary: "second try works",
+      }));
     const onAnchorFailed = vi.fn();
     const effect = createAgentSessionAnchorEffect({
       runtime: makeRuntime(core),
@@ -372,7 +394,7 @@ describe("createAgentSessionAnchorEffect — robustness", () => {
     const shadow = createAgentSessionShadow(makeShadowRuntime(core), {
       generateId,
     });
-    const summarize = vi.fn(async () => "   ");
+    const summarize = vi.fn(async () => ({ topic: "  ", summary: "   " }));
     const effect = createAgentSessionAnchorEffect({
       runtime: makeRuntime(core),
       conversation: () => shadow.getConversation(),
@@ -399,7 +421,10 @@ describe("createAgentSessionAnchorEffect — robustness", () => {
     const shadow = createAgentSessionShadow(makeShadowRuntime(core), {
       generateId,
     });
-    const summarize = vi.fn(async () => "won't matter");
+    const summarize = vi.fn(async () => ({
+      topic: "x",
+      summary: "won't matter",
+    }));
     const effect = createAgentSessionAnchorEffect({
       runtime: makeRuntime(core),
       conversation: () => shadow.getConversation(),

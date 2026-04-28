@@ -45,6 +45,11 @@ const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
   seedMock: "action",
   dispatch: "action",
   studioDispatch: "action",
+  // Anchor memory tools
+  searchAnchors: "computed",
+  recallAnchor: "read",
+  inspectAnchorLineage: "read",
+  inspectSearchHistory: "read",
 };
 
 const CATEGORY_TONE: Record<ToolCategory, ChipTone> = {
@@ -68,6 +73,10 @@ const CATEGORY_LABEL: Record<string, string> = {
   seedMock: "seed",
   dispatch: "dispatch",
   studioDispatch: "studio",
+  searchAnchors: "search",
+  recallAnchor: "recall",
+  inspectAnchorLineage: "anchor",
+  inspectSearchHistory: "history",
 };
 
 /**
@@ -915,6 +924,30 @@ function describeToolSummary(
       const attempted = numOrZero(body.attempted);
       return `${action} · ${completed}/${attempted} seeded`;
     }
+    case "searchAnchors": {
+      const query = strOrNull(body.query) ?? strOrNull(asRecord(input)?.query) ?? "?";
+      const results = Array.isArray(body.results) ? body.results.length : 0;
+      const total = numOrNull(body.totalScored);
+      const more = body.hasMore === true;
+      const totalLabel = total !== null ? `/${total}` : "";
+      return `"${truncateInline(query, 36)}" · ${results}${totalLabel}${more ? " · more" : ""}`;
+    }
+    case "recallAnchor": {
+      const topic = strOrNull(body.topic);
+      const id = strOrNull(body.anchorId) ?? strOrNull(asRecord(input)?.anchorId) ?? "?";
+      return topic !== null ? `${id} · "${truncateInline(topic, 40)}"` : id;
+    }
+    case "inspectAnchorLineage": {
+      const id = strOrNull(body.anchorId) ?? strOrNull(asRecord(input)?.anchorId) ?? "?";
+      const entries = Array.isArray(body.entries) ? body.entries.length : 0;
+      const total = numOrNull(body.totalInWindow);
+      return total !== null ? `${id} · ${entries}/${total} worlds` : `${id} · ${entries} worlds`;
+    }
+    case "inspectSearchHistory": {
+      const entries = Array.isArray(body.entries) ? body.entries.length : 0;
+      const total = numOrNull(body.totalSearches);
+      return total !== null ? `${entries}/${total} searches` : `${entries} searches`;
+    }
     case "dispatch":
     case "studioDispatch": {
       const action = strOrNull(body.action) ?? "?";
@@ -947,6 +980,10 @@ function asRecord(v: unknown): Record<string, unknown> | null {
   return v !== null && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
     : null;
+}
+
+function truncateInline(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 3)}...` : s;
 }
 
 function strOrNull(v: unknown): string | null {

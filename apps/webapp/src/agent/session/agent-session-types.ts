@@ -100,10 +100,13 @@ export type AgentSessionSnapshot = {
   // Budget
   readonly budgetUsedMc: number;
   readonly budgetCeilingMc: number;
-  // Anchor
+  // Anchor — skeleton only; full summaries live in host AnchorStore.
+  readonly lastAnchorId: string | null;
   readonly lastAnchorFromWorldId: string | null;
   readonly lastAnchorToWorldId: string | null;
+  readonly lastAnchorTopic: string | null;
   readonly lastAnchorSummary: string | null;
+  readonly anchorCount: number;
   // Counters
   readonly turnCount: number;
   readonly toolCallCount: number;

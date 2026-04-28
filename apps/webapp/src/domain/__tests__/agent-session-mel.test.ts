@@ -425,20 +425,46 @@ describe("agent-session.mel — recordModelInvocationFailed", () => {
 });
 
 describe("agent-session.mel — anchoring", () => {
-  it("anchorWindow records the latest summary triple without touching phase", async () => {
+  it("anchorWindow records the latest anchor metadata without touching phase", async () => {
     const core = await bootAgentSessionRuntime();
     await dispatch(core, "recordUserTurn", "t-1", "x");
     await dispatch(core, "recordModelInvocation", "inv-1", "large");
     await dispatch(core, "recordAssistantSettled", "ok");
     expect(
-      (await dispatch(core, "anchorWindow", "world-1", "world-9", "summary"))
-        .kind,
+      (
+        await dispatch(
+          core,
+          "anchorWindow",
+          "a-1",
+          "world-1",
+          "world-9",
+          "agent architecture redesign",
+          "Discussed lineage as history, anchor as compression.",
+        )
+      ).kind,
     ).toBe("completed");
     expect(readState(core)).toMatchObject({
       phase: "settled",
+      lastAnchorId: "a-1",
       lastAnchorFromWorldId: "world-1",
       lastAnchorToWorldId: "world-9",
-      lastAnchorSummary: "summary",
+      lastAnchorTopic: "agent architecture redesign",
+      lastAnchorSummary: "Discussed lineage as history, anchor as compression.",
+      anchorCount: 1,
+    });
+  });
+
+  it("anchorWindow accumulates anchorCount across multiple dispatches", async () => {
+    const core = await bootAgentSessionRuntime();
+    await dispatch(core, "recordUserTurn", "t-1", "x");
+    await dispatch(core, "recordModelInvocation", "inv-1", "large");
+    await dispatch(core, "recordAssistantSettled", "ok");
+    await dispatch(core, "anchorWindow", "a-1", "w-1", "w-3", "topic 1", "s 1");
+    await dispatch(core, "anchorWindow", "a-2", "w-3", "w-6", "topic 2", "s 2");
+    expect(readState(core)).toMatchObject({
+      lastAnchorId: "a-2",
+      lastAnchorTopic: "topic 2",
+      anchorCount: 2,
     });
   });
 });

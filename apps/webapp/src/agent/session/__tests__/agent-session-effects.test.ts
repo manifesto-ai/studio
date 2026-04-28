@@ -81,10 +81,13 @@ function readSnapshot(core: StudioCore): AgentSessionSnapshot {
     lastModelError: (data.lastModelError as string | null) ?? null,
     budgetUsedMc: (data.budgetUsedMc as number) ?? 0,
     budgetCeilingMc: (data.budgetCeilingMc as number) ?? 0,
+    lastAnchorId: (data.lastAnchorId as string | null) ?? null,
     lastAnchorFromWorldId:
       (data.lastAnchorFromWorldId as string | null) ?? null,
     lastAnchorToWorldId: (data.lastAnchorToWorldId as string | null) ?? null,
+    lastAnchorTopic: (data.lastAnchorTopic as string | null) ?? null,
     lastAnchorSummary: (data.lastAnchorSummary as string | null) ?? null,
+    anchorCount: (data.anchorCount as number) ?? 0,
     turnCount: (data.turnCount as number) ?? 0,
     toolCallCount: (data.toolCallCount as number) ?? 0,
     modelInvocationCount: (data.modelInvocationCount as number) ?? 0,

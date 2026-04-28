@@ -50,6 +50,28 @@ import {
   ANCHOR_SUMMARIZATION_SYSTEM_PROMPT,
   createAiSdkAnchorSummarizer,
 } from "../session/aisdk-anchor-summarizer.js";
+import { createAnchorStore } from "../session/agent-session-anchor-store.js";
+import { createSearchHistoryStore } from "../session/agent-session-search-history.js";
+import {
+  ANCHOR_SCORING_SYSTEM_PROMPT,
+  createAiSdkAnchorScorer,
+} from "../session/aisdk-anchor-scorer.js";
+import {
+  createSearchAnchorsTool,
+  type SearchAnchorsContext,
+} from "../tools/search-anchors.js";
+import {
+  createRecallAnchorTool,
+  type RecallAnchorContext,
+} from "../tools/recall-anchor.js";
+import {
+  createInspectAnchorLineageTool,
+  type InspectAnchorLineageContext,
+} from "../tools/inspect-anchor-lineage.js";
+import {
+  createInspectSearchHistoryTool,
+  type InspectSearchHistoryContext,
+} from "../tools/inspect-search-history.js";
 import {
   buildUiMessagesForTransport,
   conversationToAgentMessages,
@@ -198,6 +220,59 @@ export function AgentLens(): JSX.Element {
   const conversationRef = useRef(conversation);
   conversationRef.current = conversation;
 
+  // Anchor memory infrastructure — host stores for anchor records and
+  // search history (memory tooling reads from these). Created once
+  // per AgentLens mount; live for the session.
+  const anchorStoreRef = useRef(createAnchorStore());
+  const searchHistoryRef = useRef(createSearchHistoryStore());
+  // Sliding window of recently-recalled anchor ids. searchAnchors
+  // sums pheromone weights from these candidates' edges to recently-
+  // recalled to bias the ranking. Capped at 8 to avoid runaway.
+  const recentRecalledRef = useRef<string[]>([]);
+  const noteAnchorRecall = useCallback((anchorId: string) => {
+    const buffer = recentRecalledRef.current;
+    // Deposit pheromone on edge from previous recall to this one.
+    if (buffer.length > 0) {
+      const prev = buffer[buffer.length - 1]!;
+      anchorStoreRef.current.recordRecallSequence([prev, anchorId]);
+    }
+    buffer.push(anchorId);
+    if (buffer.length > 8) buffer.shift();
+  }, []);
+
+  // The anchor scorer transport is created lazily so it's available
+  // when toolImplementations builds searchAnchors. Same /api/agent/chat
+  // endpoint as the model adapter, configured with no-tools and a
+  // scoring-specific system prompt.
+  const anchorScorerTransportRef = useRef<DefaultChatTransport<UIMessage> | null>(
+    null,
+  );
+  if (anchorScorerTransportRef.current === null) {
+    anchorScorerTransportRef.current = new DefaultChatTransport<UIMessage>({
+      api: "/api/agent/chat",
+      prepareSendMessagesRequest: async ({ messages, id }) => ({
+        body: {
+          id,
+          messages,
+          system: ANCHOR_SCORING_SYSTEM_PROMPT,
+          tools: {},
+          temperature: 0,
+        },
+      }),
+    });
+  }
+  const anchorScorerRef = useRef<ReturnType<typeof createAiSdkAnchorScorer> | null>(
+    null,
+  );
+  if (
+    anchorScorerRef.current === null &&
+    anchorScorerTransportRef.current !== null
+  ) {
+    anchorScorerRef.current = createAiSdkAnchorScorer({
+      transport: anchorScorerTransportRef.current,
+    });
+  }
+
   const toolImplementations = useMemo<readonly ToolImplementation[]>(() => {
     const userCtx = buildUserToolContext(core);
     const inspectFocusCtx: InspectFocusContext = {
@@ -336,9 +411,43 @@ export function AgentLens(): JSX.Element {
         tool: bindTool(createDispatchTool(), userCtx),
         admissionAction: "admitDispatch",
       },
+      // Anchor memory tools — host stores back the substantive data,
+      // MEL only carries lifecycle skeleton.
+      {
+        tool: bindTool(createSearchAnchorsTool(), {
+          anchorStore: anchorStoreRef.current,
+          scorer: anchorScorerRef.current!,
+          recentlyRecalledIds: () => [...recentRecalledRef.current],
+          noteSearch: (query, resultIds) => {
+            searchHistoryRef.current.append(query, resultIds);
+          },
+        } satisfies SearchAnchorsContext),
+        admissionAction: "admitSearchAnchors",
+      },
+      {
+        tool: bindTool(createRecallAnchorTool(), {
+          anchorStore: anchorStoreRef.current,
+          noteRecall: noteAnchorRecall,
+        } satisfies RecallAnchorContext),
+        admissionAction: "admitRecallAnchor",
+      },
+      {
+        tool: bindTool(createInspectAnchorLineageTool(), {
+          anchorStore: anchorStoreRef.current,
+          getLineage: () => readLineageEntries(core),
+          noteRecall: noteAnchorRecall,
+        } satisfies InspectAnchorLineageContext),
+        admissionAction: "admitInspectAnchorLineage",
+      },
+      {
+        tool: bindTool(createInspectSearchHistoryTool(), {
+          searchHistory: searchHistoryRef.current,
+        } satisfies InspectSearchHistoryContext),
+        admissionAction: "admitInspectSearchHistory",
+      },
     ];
     return tools;
-  }, [core, ui.core]);
+  }, [core, ui.core, noteAnchorRecall]);
 
   // Transport built once and reused across model invocations.
   // prepareSendMessagesRequest still owns body composition (system
@@ -379,17 +488,23 @@ export function AgentLens(): JSX.Element {
             : null,
         });
         const baseSystem = buildAgentSystemPrompt(agentContext);
-        // Inject the latest anchor summary if present. The anchor is
-        // a compressed memory of older turns produced by the anchor
-        // effect — older settled turns aren't re-sent in messages, so
-        // this is how they survive in the agent's working context.
-        const anchor = readAgentSessionSnapshot(
+        // Active retrieval design: do NOT inject the latest anchor's
+        // full summary into the prompt. Just hint that anchors are
+        // available so the agent knows to call searchAnchors when a
+        // query references past context. This keeps prompt size
+        // bounded as the session grows.
+        const sessionSnap = readAgentSessionSnapshot(
           agentSessionRef.current.core,
-        ).lastAnchorSummary;
-        const system =
-          anchor !== null && anchor.trim() !== ""
-            ? `${baseSystem}\n\n## Past session summary\n\nOlder turns have been compressed into the following summary. Treat it as authoritative context for anything not in the recent-turn tail:\n\n${anchor.trim()}`
-            : baseSystem;
+        );
+        const anchorTotal = anchorStoreRef.current.anchorCount();
+        const lastTopic = sessionSnap.lastAnchorTopic;
+        const memoryHint =
+          anchorTotal > 0
+            ? `\n\n## Past session memory\n\n${anchorTotal} anchor${anchorTotal === 1 ? "" : "s"} available covering earlier turns${
+                lastTopic !== null ? ` (latest topic: "${lastTopic}")` : ""
+              }. When the user references something from earlier or asks about past work:\n- Call \`searchAnchors\` with a natural-language query to find relevant anchors. Iterate with \`excludeIds\` to page through more results.\n- Call \`recallAnchor\` on a promising id for the full topic+summary.\n- Call \`inspectAnchorLineage\` if you need the actual lineage worlds inside an anchor's window.\n- Call \`inspectSearchHistory\` to see what you've already searched for in this session.`
+            : "";
+        const system = `${baseSystem}${memoryHint}`;
         return {
           body: {
             id,
@@ -545,12 +660,14 @@ export function AgentLens(): JSX.Element {
           return head !== null ? String(head.worldId) : null;
         },
         dispatcher: {
-          anchorWindow: async (fromWorldId, toWorldId, summary) => {
+          anchorWindow: async (anchorId, fromWorldId, toWorldId, topic, summary) => {
             try {
               const intent = agentSessionRef.current.createIntent(
                 "anchorWindow",
+                anchorId,
                 fromWorldId,
                 toWorldId,
+                topic,
                 summary,
               );
               const result =
@@ -566,6 +683,24 @@ export function AgentLens(): JSX.Element {
         summarizer,
         policy: { turnsBetweenAnchors: 5, costMc: 20 },
         handlers: {
+          onAnchorSettled: (info) => {
+            // Persist the full anchor body in the host store so
+            // searchAnchors / recallAnchor / inspectAnchorLineage
+            // can find it. MEL only carries lifecycle skeleton.
+            const snap = readAgentSessionSnapshot(
+              agentSessionRef.current.core,
+            );
+            anchorStoreRef.current.putAnchor({
+              anchorId: info.anchorId,
+              fromWorldId: info.fromWorldId,
+              toWorldId: info.toWorldId,
+              topic: info.topic,
+              summary: info.summary,
+              recordedAt: Date.now(),
+              turnRangeStart: Math.max(0, snap.turnCount - 5),
+              turnRangeEnd: snap.turnCount,
+            });
+          },
           onAnchorFailed: (err) => {
             console.warn("[AgentLens] anchor summarization failed:", err);
           },
@@ -573,9 +708,17 @@ export function AgentLens(): JSX.Element {
       });
     }
 
+    // Periodic pheromone evaporation — every 60s in this session,
+    // multiply trail weights by 0.9 so unused trails fade gracefully.
+    // Edges that drop below the store's evaporationFloor get pruned.
+    const evaporationTimer = setInterval(() => {
+      anchorStoreRef.current.evaporateAll(0.9);
+    }, 60_000);
+
     return () => {
       driver.stop();
       anchorEffect?.stop();
+      clearInterval(evaporationTimer);
     };
   }, [agentSession.ready, agentSession.core, core, shadow, toolImplementations]);
 

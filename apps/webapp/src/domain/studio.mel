@@ -410,4 +410,44 @@ domain Studio {
       patch agentLastAdmittedToolName = "dispatch"
     }
   }
+
+  // ── Anchor memory tools ────────────────────────────────────────────
+  // The anchor index is the agent's long-term memory: prior
+  // conversation windows compressed into searchable topic+summary
+  // records. The agent navigates by searching, recalling specific
+  // anchors, and (when needed) drilling into the raw lineage worlds
+  // each anchor covers. Always available — anchors persist regardless
+  // of user-domain readiness.
+
+  @meta("comment:grounding", "Admit the searchAnchors tool. It returns paginated, ranked anchor topics for a natural-language query, blending LLM relevance with ACO pheromone trails from past recalls.")
+  @meta("agent:example", "If the user references something from earlier (e.g., 'the design we discussed'), call searchAnchors before guessing.")
+  action admitSearchAnchors() {
+    onceIntent {
+      patch agentLastAdmittedToolName = "searchAnchors"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the recallAnchor tool. It fetches the full topic+summary of one anchor by id.")
+  @meta("agent:example", "After searchAnchors returns a promising id and snippet, call recallAnchor for the complete summary.")
+  action admitRecallAnchor() {
+    onceIntent {
+      patch agentLastAdmittedToolName = "recallAnchor"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the inspectAnchorLineage tool. It exposes the raw lineage worlds inside an anchor's window for fine-grained recovery.")
+  @meta("agent:example", "Use after recallAnchor when the summary is almost-but-not-quite the detail you need; this drills to actual worldIds and intent types in that window.")
+  action admitInspectAnchorLineage() {
+    onceIntent {
+      patch agentLastAdmittedToolName = "inspectAnchorLineage"
+    }
+  }
+
+  @meta("comment:grounding", "Admit the inspectSearchHistory tool. It surfaces the agent's prior searchAnchors queries as episodic memory.")
+  @meta("agent:example", "When facing a query you suspect you've researched before, call inspectSearchHistory to recognise loops and reuse prior result ids.")
+  action admitInspectSearchHistory() {
+    onceIntent {
+      patch agentLastAdmittedToolName = "inspectSearchHistory"
+    }
+  }
 }
