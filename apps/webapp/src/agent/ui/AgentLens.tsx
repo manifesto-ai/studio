@@ -7,7 +7,14 @@
  *   3. Execute model-selected tools after the same guard recheck.
  *   4. Let the AI SDK handle tool-result continuation.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
@@ -21,6 +28,16 @@ import {
   useStudioUi,
   type StudioUiSnapshot,
 } from "@/domain/StudioUiRuntime";
+import {
+  useAgentSession,
+  type AgentSessionSnapshot,
+} from "@/domain/AgentSessionRuntime";
+import {
+  classifyToolOutcome,
+  createAgentSessionShadow,
+  type AgentSessionShadow,
+  type AgentSessionShadowRuntime,
+} from "../session/agent-session-shadow.js";
 import {
   bindTool,
   createToolRegistry,
@@ -105,7 +122,12 @@ import {
   executeToolLocally,
 } from "../adapters/ai-sdk-tools.js";
 import { MarkdownBody } from "./MarkdownBody.js";
-import { ToolActivityRow, isToolPart } from "./ToolActivity.js";
+import { ToolActivityRow } from "./ToolActivity.js";
+import type {
+  ConversationProjection,
+  TurnEntry,
+  TurnStep,
+} from "@/agent/session/agent-session-types";
 import {
   projectAction,
   projectEntity,
@@ -116,6 +138,7 @@ import {
 export function AgentLens(): JSX.Element {
   const { core } = useStudio();
   const ui = useStudioUi();
+  const agentSession = useAgentSession();
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -124,6 +147,36 @@ export function AgentLens(): JSX.Element {
 
   const uiRef = useRef(ui);
   uiRef.current = ui;
+
+  // Shadow recorder mirrors the AI SDK chat lifecycle into the
+  // AgentSession Manifesto runtime in parallel. AgentLens still owns
+  // the chat via useChat for now; the shadow is here to validate the
+  // schema with real conversations before we cut over (step 4).
+  const agentSessionRef = useRef(agentSession);
+  agentSessionRef.current = agentSession;
+  const shadow = useMemo<AgentSessionShadow>(() => {
+    const runtime: AgentSessionShadowRuntime = {
+      get ready() {
+        return agentSessionRef.current.ready;
+      },
+      get snapshot() {
+        return agentSessionRef.current.snapshot;
+      },
+      createIntent: (action, ...args) =>
+        agentSessionRef.current.createIntent(action, ...args),
+      dispatchAsync: (intent) =>
+        agentSessionRef.current.dispatchAsync(intent),
+    };
+    return createAgentSessionShadow(runtime);
+  }, []);
+
+  // Subscribe React to the shadow's conversation projection. Identity-
+  // stable on no-op renders so the MessageList memoization holds.
+  const conversation = useSyncExternalStore(
+    shadow.subscribe,
+    shadow.getConversation,
+    shadow.getConversation,
+  );
 
   const messagesRef = useRef<readonly UIMessage[]>([]);
 
@@ -282,6 +335,10 @@ export function AgentLens(): JSX.Element {
           uiCore: uiRef.current.core,
           uiSnapshot: snap,
         });
+        // Shadow: each model HTTP request is one invocation (one
+        // step in AI SDK terms). Awaited so AgentSession reaches
+        // `streaming` before the request leaves.
+        await shadow.onModelInvocation("large");
         const admissionRuntime = buildToolAdmissionRuntime(uiRef.current.core);
         const availableRegistry = createAdmittedToolRegistry(
           toolImplementations,
@@ -315,6 +372,13 @@ export function AgentLens(): JSX.Element {
     }),
     onToolCall: async ({ toolCall }) => {
       setNotice(null);
+      // Shadow: record the tool call BEFORE execution so AgentSession
+      // is in `awaitingTool` while the host runs the tool.
+      await shadow.onToolCall(
+        toolCall.toolCallId,
+        toolCall.toolName,
+        toolCall.input,
+      );
       await syncAgentToolContext({
         core,
         uiCore: uiRef.current.core,
@@ -355,6 +419,15 @@ export function AgentLens(): JSX.Element {
       if (toolCall.toolName === "inspectFocus" && result.ok) {
         await markAgentFocusObserved(uiRef.current.core, result.output);
       }
+      // Shadow: settle the tool call BEFORE addToolResult so the
+      // SDK's auto-resend (which fires another prepareSendMessages
+      // → recordModelInvocation) sees AgentSession back in
+      // `awaitingModel` rather than still in `awaitingTool`.
+      await shadow.onToolResult(
+        toolCall.toolCallId,
+        classifyToolOutcome(result),
+        result,
+      );
       chat.addToolResult({
         tool: toolCall.toolName,
         toolCallId: toolCall.toolCallId,
@@ -384,6 +457,11 @@ export function AgentLens(): JSX.Element {
           uiCore: ui.core,
           uiSnapshot: uiSnapshotRef.current,
         });
+        // Shadow: settle the user turn BEFORE sendMessage so
+        // AgentSession reaches `awaitingModel` before the SDK fires
+        // prepareSendMessagesRequest (which records the model
+        // invocation).
+        await shadow.onUserTurn(prompt);
         await chat.sendMessage({ text: prompt });
       } catch (err) {
         setDraft(prompt);
@@ -394,11 +472,32 @@ export function AgentLens(): JSX.Element {
         );
       }
     })();
-  }, [chat, core, draft, ui.core]);
+  }, [chat, core, draft, shadow, ui.core]);
 
   const onStop = useCallback(() => {
+    // Shadow: record the stop before tearing down the SDK stream.
+    void shadow.onSessionStop();
     void chat.stop();
-  }, [chat]);
+  }, [chat, shadow]);
+
+  // Shadow: detect a settled assistant response by watching for
+  // chat.status streaming → ready transition where the trailing
+  // message is an assistant turn with non-empty text. Guarded by
+  // last-fired message id so retries / re-renders don't double-fire.
+  const lastSettledMessageIdRef = useRef<string | null>(null);
+  const prevChatStatusRef = useRef(chat.status);
+  useEffect(() => {
+    const prev = prevChatStatusRef.current;
+    prevChatStatusRef.current = chat.status;
+    if (prev !== "streaming" || chat.status !== "ready") return;
+    const lastMessage = chat.messages[chat.messages.length - 1];
+    if (lastMessage === undefined || lastMessage.role !== "assistant") return;
+    if (lastSettledMessageIdRef.current === lastMessage.id) return;
+    const finalText = extractUserText(lastMessage);
+    if (finalText === "") return;
+    lastSettledMessageIdRef.current = lastMessage.id;
+    void shadow.onAssistantSettled(finalText);
+  }, [chat.status, chat.messages, shadow]);
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const handleSelectStarter = useCallback((text: string) => {
@@ -423,14 +522,20 @@ export function AgentLens(): JSX.Element {
         <StatusBar
           status={chat.status}
           error={chat.error}
-          canClear={chat.messages.length > 0 && !sending}
-          onClear={() => chat.setMessages([])}
+          canClear={conversation.turns.length > 0 && !sending}
+          onClear={() => {
+            chat.setMessages([]);
+            shadow.clearConversation();
+          }}
+          shadowSnapshot={agentSession.snapshot}
+          shadowReady={agentSession.ready}
         />
         <AnimatePresence initial={false}>
           {notice !== null ? <Notice key="notice" message={notice} /> : null}
         </AnimatePresence>
         <MessageList
-          messages={chat.messages}
+          conversation={conversation}
+          streamingText={extractInflightAssistantText(chat.messages)}
           onSelectStarter={handleSelectStarter}
         />
         <Composer
@@ -451,11 +556,15 @@ function StatusBar({
   error,
   canClear,
   onClear,
+  shadowSnapshot,
+  shadowReady,
 }: {
   readonly status: string;
   readonly error: Error | undefined;
   readonly canClear: boolean;
   readonly onClear: () => void;
+  readonly shadowSnapshot: AgentSessionSnapshot;
+  readonly shadowReady: boolean;
 }): JSX.Element {
   const label =
     error !== undefined
@@ -469,6 +578,7 @@ function StatusBar({
     <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-rule)] text-[10.5px] font-mono">
       <span className="text-[var(--color-ink-dim)]">agent</span>
       <span className="text-[var(--color-ink-mute)]">/ {label}</span>
+      {shadowReady ? <ShadowChip snapshot={shadowSnapshot} /> : null}
       <button
         type="button"
         onClick={onClear}
@@ -478,6 +588,35 @@ function StatusBar({
         clear
       </button>
     </div>
+  );
+}
+
+function ShadowChip({
+  snapshot,
+}: {
+  readonly snapshot: AgentSessionSnapshot;
+}): JSX.Element {
+  return (
+    <span
+      className="ml-2 inline-flex items-center gap-1.5 text-[10px] text-[var(--color-ink-mute)]"
+      title="AgentSession shadow runtime — phase / turn / model invocations / tool calls"
+    >
+      <span
+        className="h-1 w-1 rounded-full"
+        style={{
+          background: "var(--color-sig-state)",
+          boxShadow: "0 0 4px var(--color-sig-state)",
+        }}
+        aria-hidden="true"
+      />
+      <span style={{ color: "var(--color-sig-state)" }}>
+        shadow {snapshot.phase}
+      </span>
+      <span>·</span>
+      <span>t{snapshot.turnCount}</span>
+      <span>m{snapshot.modelInvocationCount}</span>
+      <span>c{snapshot.toolCallCount}</span>
+    </span>
   );
 }
 
@@ -496,43 +635,52 @@ function Notice({ message }: { readonly message: string }): JSX.Element {
 }
 
 function MessageList({
-  messages,
+  conversation,
+  streamingText,
   onSelectStarter,
 }: {
-  readonly messages: readonly UIMessage[];
+  readonly conversation: ConversationProjection;
+  /**
+   * Live assistant text from chat.messages for the in-flight turn.
+   * Empty string when nothing is streaming. The projection's
+   * settledText replaces this once recordAssistantSettled fires.
+   */
+  readonly streamingText: string;
   readonly onSelectStarter: (text: string) => void;
 }): JSX.Element {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = scrollerRef.current;
     if (el !== null) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  }, [conversation, streamingText]);
 
+  const turns = conversation.turns;
   return (
     <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-5">
-      {messages.length === 0 ? (
+      {turns.length === 0 ? (
         <EmptyState onSelectStarter={onSelectStarter} />
       ) : (
         <ol className="flex flex-col gap-4">
           <AnimatePresence initial={false} mode="popLayout">
-            {messages.map((message) => {
-              const rendered =
-                message.role === "user" ? (
-                  <UserMessage text={extractUserText(message)} />
-                ) : message.role === "assistant" ? (
-                  <AssistantMessage message={message} />
-                ) : null;
-              return rendered === null ? null : (
+            {turns.map((turn, i) => {
+              const isLast = i === turns.length - 1;
+              const finalText =
+                turn.settledText ?? (isLast ? streamingText : "");
+              return (
                 <motion.li
-                  key={message.id}
+                  key={turn.turnId}
                   layout="position"
                   initial={{ opacity: 0, y: 8, scale: 0.99 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -6, scale: 0.99 }}
                   transition={{ duration: 0.2, ease: "easeOut" }}
-                  className="list-none"
+                  className="list-none flex flex-col gap-3"
                 >
-                  {rendered}
+                  <UserMessage text={turn.userText} />
+                  <AssistantTurn
+                    turn={turn}
+                    finalText={finalText}
+                  />
                 </motion.li>
               );
             })}
@@ -558,31 +706,19 @@ function UserMessage({ text }: { readonly text: string }): JSX.Element {
   );
 }
 
-function AssistantMessage({
-  message,
+function AssistantTurn({
+  turn,
+  finalText,
 }: {
-  readonly message: UIMessage;
+  readonly turn: TurnEntry;
+  readonly finalText: string;
 }): JSX.Element | null {
-  const renderedParts = message.parts
-    .map((part, index) => {
-      if (part.type === "text") {
-        return (
-          <div
-            key={index}
-            className="text-[13px] leading-relaxed text-[var(--color-ink)] break-words"
-          >
-            <MarkdownBody>{part.text}</MarkdownBody>
-          </div>
-        );
-      }
-      if (part.type === "reasoning") return null;
-      if (isToolPart(part)) {
-        return <ToolActivityRow key={index} part={part} />;
-      }
-      return null;
-    })
-    .filter((part): part is JSX.Element => part !== null);
-  if (renderedParts.length === 0) return null;
+  const toolSteps = turn.steps.filter(
+    (step): step is Extract<TurnStep, { kind: "tool-call" }> =>
+      step.kind === "tool-call",
+  );
+  const hasContent = toolSteps.length > 0 || finalText !== "" || turn.stopped;
+  if (!hasContent) return null;
   return (
     <div className="flex gap-3">
       <motion.div
@@ -592,7 +728,25 @@ function AssistantMessage({
         className="w-[2px] self-stretch rounded-full bg-[var(--color-violet-hot)] origin-top"
       />
       <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-        {renderedParts}
+        {toolSteps.map((step) => (
+          <ToolActivityRow
+            key={step.callId}
+            toolName={step.toolName}
+            input={step.input}
+            output={step.output}
+            outcome={step.outcome}
+          />
+        ))}
+        {finalText !== "" ? (
+          <div className="text-[13px] leading-relaxed text-[var(--color-ink)] break-words">
+            <MarkdownBody>{finalText}</MarkdownBody>
+          </div>
+        ) : null}
+        {turn.stopped ? (
+          <div className="text-[10.5px] uppercase tracking-wider text-[var(--color-sig-effect)]">
+            stopped
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -792,6 +946,19 @@ function StarterChip({
       {children}
     </motion.button>
   );
+}
+
+/**
+ * The trailing assistant message's live text. The MessageList overlays
+ * this on the in-flight turn while recordAssistantSettled hasn't fired
+ * yet. Empty string when the last message isn't an assistant turn.
+ */
+function extractInflightAssistantText(
+  messages: readonly UIMessage[],
+): string {
+  const last = messages[messages.length - 1];
+  if (last === undefined || last.role !== "assistant") return "";
+  return extractUserText(last);
 }
 
 export function extractUserText(message: UIMessage): string {
