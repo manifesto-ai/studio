@@ -16,7 +16,7 @@
  */
 import { useState, type JSX } from "react";
 import { motion } from "motion/react";
-import type { UIDataTypes, UIMessagePart, UITools } from "ai";
+import type { ToolOutcome } from "@/agent/session/agent-session-types";
 import {
   ChipCluster,
   DiffRow,
@@ -27,11 +27,6 @@ import {
   type ChipTone,
   type TimelineEntry,
 } from "./tool-primitives.js";
-
-type ToolPart = Extract<
-  UIMessagePart<UIDataTypes, UITools>,
-  { readonly type: `tool-${string}` }
->;
 
 type ToolCategory = "read" | "computed" | "action";
 
@@ -50,6 +45,11 @@ const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
   seedMock: "action",
   dispatch: "action",
   studioDispatch: "action",
+  // Anchor memory tools
+  searchAnchors: "computed",
+  recallAnchor: "read",
+  inspectAnchorLineage: "read",
+  inspectSearchHistory: "read",
 };
 
 const CATEGORY_TONE: Record<ToolCategory, ChipTone> = {
@@ -73,33 +73,42 @@ const CATEGORY_LABEL: Record<string, string> = {
   seedMock: "seed",
   dispatch: "dispatch",
   studioDispatch: "studio",
+  searchAnchors: "search",
+  recallAnchor: "recall",
+  inspectAnchorLineage: "anchor",
+  inspectSearchHistory: "history",
 };
 
-export function isToolPart(
-  part: UIMessagePart<UIDataTypes, UITools>,
-): part is ToolPart {
-  return typeof part.type === "string" && part.type.startsWith("tool-");
-}
-
+/**
+ * Renders a single tool call.
+ *
+ * Inputs come from the AgentSession ConversationProjection (TurnStep
+ * with kind="tool-call") — the host captures the raw input/output
+ * objects at record time so the renderer never has to reconstruct
+ * them from MEL state strings.
+ *
+ * `outcome === null` means the tool call is still in flight (between
+ * recordToolCall and recordToolResult).
+ */
 export function ToolActivityRow({
-  part,
+  toolName,
+  input,
+  output,
+  outcome,
 }: {
-  readonly part: ToolPart;
+  readonly toolName: string;
+  readonly input: unknown;
+  readonly output: unknown | null;
+  readonly outcome: ToolOutcome | null;
 }): JSX.Element {
-  const toolName = part.type.slice("tool-".length);
-  const state = (part as { readonly state: string }).state;
-  const input = (part as { readonly input?: unknown }).input;
-  const output = (part as { readonly output?: unknown }).output;
-  const errorText = (part as { readonly errorText?: string }).errorText;
-
-  const failed = state === "output-error" || isToolOutputFailure(output);
-  const done = state === "output-available" || state === "output-error";
-  const running = !done && !failed;
+  const failed = outcome === "blocked" || outcome === "error";
+  const done = outcome !== null;
+  const running = !done;
 
   const category = CATEGORY_BY_TOOL[toolName] ?? "read";
   const tone: ChipTone = failed ? "effect" : CATEGORY_TONE[category];
   const label = CATEGORY_LABEL[toolName] ?? toolName;
-  const summary = describeToolSummary(toolName, input, output, errorText);
+  const summary = describeToolSummary(toolName, input, output);
 
   return (
     <motion.details
@@ -123,7 +132,7 @@ export function ToolActivityRow({
         </span>
         {failed ? (
           <span className="ml-auto text-[10.5px] text-[var(--color-sig-effect)] uppercase tracking-wider">
-            blocked
+            {outcome ?? "error"}
           </span>
         ) : running ? (
           <span className="ml-auto text-[10.5px] text-[var(--color-ink-mute)]">
@@ -136,11 +145,10 @@ export function ToolActivityRow({
           toolName={toolName}
           input={input}
           output={output}
-          errorText={errorText}
           failed={failed}
           done={done}
         />
-        <RawToggle input={input} output={output} errorText={errorText} />
+        <RawToggle input={input} output={output} />
       </div>
     </motion.details>
   );
@@ -178,14 +186,12 @@ function ToolBody({
   toolName,
   input,
   output,
-  errorText,
   failed,
   done,
 }: {
   readonly toolName: string;
   readonly input: unknown;
   readonly output: unknown;
-  readonly errorText: string | undefined;
   readonly failed: boolean;
   readonly done: boolean;
 }): JSX.Element {
@@ -199,12 +205,7 @@ function ToolBody({
   const rawBody = unwrap(output);
   if (failed) {
     return (
-      <FailureView
-        toolName={toolName}
-        body={rawBody}
-        output={output}
-        errorText={errorText}
-      />
+      <FailureView toolName={toolName} body={rawBody} output={output} />
     );
   }
   const body: Record<string, unknown> = rawBody ?? {};
@@ -742,16 +743,13 @@ function FailureView({
   toolName,
   body,
   output,
-  errorText,
 }: {
   readonly toolName: string;
   readonly body: Record<string, unknown> | null;
   readonly output: unknown;
-  readonly errorText: string | undefined;
 }) {
   const top = asRecord(output);
   const message =
-    errorText ??
     strOrNull(top?.message) ??
     strOrNull(body?.summary) ??
     strOrNull(body?.error) ??
@@ -801,11 +799,9 @@ function Section({
 function RawToggle({
   input,
   output,
-  errorText,
 }: {
   readonly input: unknown;
   readonly output: unknown;
-  readonly errorText: string | undefined;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   return (
@@ -819,7 +815,7 @@ function RawToggle({
       </button>
       {open ? (
         <pre className="mt-1.5 px-2 py-2 border-l border-[var(--color-rule)] text-[10.5px] text-[var(--color-ink-mute)] whitespace-pre-wrap break-all">
-          {formatToolData(input, output, errorText)}
+          {formatToolData(input, output)}
         </pre>
       ) : null}
     </div>
@@ -832,9 +828,7 @@ function describeToolSummary(
   toolName: string,
   input: unknown,
   output: unknown,
-  errorText: string | undefined,
 ): string {
-  if (errorText !== undefined && errorText !== "") return errorText;
   const top = asRecord(output);
   const body = unwrap(output);
   if (body === null) return "(no output)";
@@ -930,6 +924,30 @@ function describeToolSummary(
       const attempted = numOrZero(body.attempted);
       return `${action} · ${completed}/${attempted} seeded`;
     }
+    case "searchAnchors": {
+      const query = strOrNull(body.query) ?? strOrNull(asRecord(input)?.query) ?? "?";
+      const results = Array.isArray(body.results) ? body.results.length : 0;
+      const total = numOrNull(body.totalScored);
+      const more = body.hasMore === true;
+      const totalLabel = total !== null ? `/${total}` : "";
+      return `"${truncateInline(query, 36)}" · ${results}${totalLabel}${more ? " · more" : ""}`;
+    }
+    case "recallAnchor": {
+      const topic = strOrNull(body.topic);
+      const id = strOrNull(body.anchorId) ?? strOrNull(asRecord(input)?.anchorId) ?? "?";
+      return topic !== null ? `${id} · "${truncateInline(topic, 40)}"` : id;
+    }
+    case "inspectAnchorLineage": {
+      const id = strOrNull(body.anchorId) ?? strOrNull(asRecord(input)?.anchorId) ?? "?";
+      const entries = Array.isArray(body.entries) ? body.entries.length : 0;
+      const total = numOrNull(body.totalInWindow);
+      return total !== null ? `${id} · ${entries}/${total} worlds` : `${id} · ${entries} worlds`;
+    }
+    case "inspectSearchHistory": {
+      const entries = Array.isArray(body.entries) ? body.entries.length : 0;
+      const total = numOrNull(body.totalSearches);
+      return total !== null ? `${entries}/${total} searches` : `${entries} searches`;
+    }
     case "dispatch":
     case "studioDispatch": {
       const action = strOrNull(body.action) ?? "?";
@@ -962,6 +980,10 @@ function asRecord(v: unknown): Record<string, unknown> | null {
   return v !== null && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
     : null;
+}
+
+function truncateInline(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 3)}...` : s;
 }
 
 function strOrNull(v: unknown): string | null {
@@ -1034,16 +1056,10 @@ function isToolOutputFailure(output: unknown): boolean {
   );
 }
 
-function formatToolData(
-  input: unknown,
-  output: unknown,
-  errorText: string | undefined,
-): string {
+function formatToolData(input: unknown, output: unknown): string {
   const chunks: string[] = [];
   if (input !== undefined) chunks.push(`input\n${stringifySafe(input)}`);
-  if (errorText !== undefined && errorText !== "") {
-    chunks.push(`error\n${errorText}`);
-  } else if (output !== undefined) {
+  if (output !== undefined && output !== null) {
     chunks.push(`output\n${stringifySafe(output)}`);
   }
   return chunks.join("\n\n") || "(no data)";

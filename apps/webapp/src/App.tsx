@@ -24,6 +24,7 @@ import {
 } from "@manifesto-ai/studio-react";
 import { Analytics } from "@vercel/analytics/react";
 import { StudioUiProvider, useStudioUi } from "@/domain/StudioUiRuntime";
+import { AgentSessionProvider } from "@/domain/AgentSessionRuntime";
 
 import { TopBar } from "@/components/chrome/TopBar";
 import { NowLine } from "@/components/chrome/NowLine";
@@ -241,6 +242,7 @@ function AppShell(): JSX.Element {
        * ownership has moved out of that component; it now expects
        * `uiViewMode` and dispatch callbacks from whoever hosts it. */}
       <StudioUiProvider>
+        <AgentSessionProvider>
         <ProjectRuntimeSync />
         <StudioProviderHost core={core} adapter={adapter}>
           <>
@@ -297,6 +299,7 @@ function AppShell(): JSX.Element {
             </ViewportProvider>
           </>
         </StudioProviderHost>
+        </AgentSessionProvider>
       </StudioUiProvider>
     </div>
   );

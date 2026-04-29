@@ -105,14 +105,30 @@ export function buildAgentSystemPrompt(ctx: StudioAgentContext): string {
   }
 
   if (ctx.recentTurns.length > 0) {
-    lines.push("", "# Recent Conversation");
-    ctx.recentTurns.forEach((turn, index) => {
+    // Continuity hint only — keep the immediately-prior turn (or two)
+    // for cheap deictic resolution ("그거", "2번 방향", "above"). For
+    // anything older than this, the agent should call
+    // `inspectConversation` with a query / cursor. This keeps the
+    // prompt bounded as the session grows and forces the agent to
+    // *retrieve* rather than rely on a passively-stuffed transcript.
+    lines.push("", "# Conversation continuity");
+    lines.push(
+      "Most recent settled turn (for deictic context — older context via `inspectConversation`):",
+    );
+    ctx.recentTurns.forEach((turn) => {
       lines.push(
-        `turn ${index + 1} (newest-first id=${turn.turnId}, tools=${turn.toolCount})`,
-        `user: ${turn.userPrompt}`,
-        `you: ${turn.assistantExcerpt.trim() === "" ? "(tool-only turn)" : turn.assistantExcerpt}`,
+        `- id=${turn.turnId} (tools=${turn.toolCount})`,
+        `  user: ${turn.userPrompt}`,
+        `  you: ${turn.assistantExcerpt.trim() === "" ? "(tool-only turn)" : turn.assistantExcerpt}`,
       );
     });
+    lines.push(
+      "",
+      "To read older turns or search by keyword, call `inspectConversation`:",
+      "- `inspectConversation()` — most recent N",
+      "- `inspectConversation({ query: '...' })` — keyword filter",
+      "- `inspectConversation({ beforeTurnId: '...' })` — page older",
+    );
   }
 
   return lines.join("\n");

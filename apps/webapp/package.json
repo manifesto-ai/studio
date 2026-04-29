@@ -14,7 +14,6 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.41",
-    "@ai-sdk/react": "^3.0.170",
     "@manifesto-ai/agent-ai-sdk": "workspace:*",
     "@manifesto-ai/agent-core": "workspace:*",
     "@manifesto-ai/compiler": "^3.9.0",

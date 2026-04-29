@@ -525,6 +525,69 @@ describe("inspectConversation", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.kind).toBe("invalid_input");
   });
+
+  it("filters by query keyword across user prompt and assistant excerpt", async () => {
+    const { createInspectConversationTool } = await import("../inspect-conversation.js");
+    const tool = createInspectConversationTool();
+    const result = await tool.run(
+      { query: "second" },
+      { getMessages: () => messages },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output.turns.map((t) => t.turnId)).toEqual(["u2"]);
+    expect(result.output.totalMatched).toBe(1);
+  });
+
+  it("requires ALL query tokens (case-insensitive)", async () => {
+    const { createInspectConversationTool } = await import("../inspect-conversation.js");
+    const tool = createInspectConversationTool();
+    const richer = [
+      userMessage("u1", "How does focus work?"),
+      assistantMessage("a1", "Focus tracks the selected MEL node."),
+      userMessage("u2", "What about lineage replay?"),
+      assistantMessage("a2", "Lineage replays settled worlds."),
+    ];
+    const result = await tool.run(
+      { query: "focus MEL" },
+      { getMessages: () => richer },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output.turns.map((t) => t.turnId)).toEqual(["u1"]);
+  });
+
+  it("query combines with containsTool filter", async () => {
+    const { createInspectConversationTool } = await import("../inspect-conversation.js");
+    const tool = createInspectConversationTool();
+    // u1/a1 has tools AND mentions "first"; u2/a2 has no tools but
+    // also mentions only "second"; only u1 should match both filters.
+    const result = await tool.run(
+      { query: "first", containsTool: true },
+      { getMessages: () => messages },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output.turns.map((t) => t.turnId)).toEqual(["u1"]);
+  });
+
+  it("returns empty when query matches nothing", async () => {
+    const { createInspectConversationTool } = await import("../inspect-conversation.js");
+    const tool = createInspectConversationTool();
+    const result = await tool.run(
+      { query: "totally-unrelated-keyword" },
+      { getMessages: () => messages },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output.turns).toEqual([]);
+    expect(result.output.totalMatched).toBe(0);
+    expect(result.output.totalTurns).toBe(3);
+  });
 });
 
 describe("seedMock", () => {

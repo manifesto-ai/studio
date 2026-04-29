@@ -1,0 +1,296 @@
+// agent-session.mel — Agent conversation runtime.
+//
+// Third Manifesto runtime alongside the user's domain and `studio.mel`.
+// Models the agent's conversation lifecycle as state + lineage so the
+// UI and the LLM agent both ground onto the same MEL substrate. Every
+// meaningful transition (user message, model invocation, tool call /
+// result, settled response, error, stop, anchor) is a dispatch and
+// a world.
+//
+// Discipline applied:
+//
+//   - SINGLE-ENTRY scalar state. No accumulator arrays — accumulation
+//     lives in lineage, recovered through `inspectLineage` filters.
+//   - Substantive content (user text, settled response, last tool
+//     outcome, anchor summary, budget) lives in MEL state because
+//     both UI rendering and agent prompt building read from it.
+//   - HEAVY tool I/O bodies (potentially-large JSON inputs / outputs)
+//     do NOT live in MEL — only callId references. Bodies live in a
+//     host-side projection keyed by callId. This avoids ballooning
+//     snapshot weight per world without giving up dual grounding.
+//   - Streaming token chunks never enter MEL. The host's effect
+//     handler accumulates chunks in a UI-only buffer; only the
+//     settled final text is recorded via recordAssistantSettled.
+
+@meta("comment:grounding", "Agent conversation runtime. UI and agent prompt both ground onto this MEL state.")
+@meta("agent:invariant", "Single-entry scalar state. Accumulation = lineage. Heavy tool I/O bodies live in host projection keyed by callId.")
+domain AgentSession {
+  // ── Phase machine ────────────────────────────────────────────────
+  // Admission gates on every transition keep the sequence honest:
+  //   idle / settled / stopped ──recordUserTurn──> awaitingModel
+  //   awaitingModel ──recordModelInvocation──> streaming
+  //   streaming ──recordToolCall──> awaitingTool
+  //   awaitingTool ──recordToolResult──> awaitingModel
+  //   streaming ──recordAssistantSettled──> settled
+  //   streaming ──recordModelInvocationFailed──> settled (with error)
+  //   * ──recordSessionStop──> stopped
+  @meta("comment:grounding", "Discriminator for what the agent runtime is currently waiting on.")
+  type SessionPhase = "idle" | "awaitingModel" | "streaming" | "awaitingTool" | "settled" | "stopped"
+
+  @meta("comment:grounding", "Inference tier requested for a model invocation. Effect handler routes by tier.")
+  type ModelTier = "tiny" | "small" | "mid" | "large"
+
+  @meta("comment:grounding", "Outcome of the most recent tool execution.")
+  type ToolOutcome = "ok" | "blocked" | "error"
+
+  state {
+    // ── Phase ──────────────────────────────────────────────────────
+    @meta("comment:grounding", "Current phase of the agent runtime.")
+    phase: SessionPhase = "idle"
+
+    // ── Current turn identity ──────────────────────────────────────
+    // Host-generated UUID set on recordUserTurn. The snapshot at any
+    // world during turn X has currentTurnId == X, so lineage walks
+    // can group steps per turn and the UI can scope rendering.
+    @meta("comment:grounding", "Host-generated id for the active or most-recently-completed turn.")
+    currentTurnId: string | null = null
+
+    // ── User side ──────────────────────────────────────────────────
+    @meta("comment:grounding", "Most recent user prompt that was settled into the runtime.")
+    lastUserText: string | null = null
+
+    // ── Tool side (in-flight call) ─────────────────────────────────
+    // Tool input/output BODIES live in the host projection keyed by
+    // these callIds — they could be large JSON and don't belong in
+    // every world's snapshot. Skeleton (id, name, outcome) stays
+    // here because both UI and agent prompt reference it directly.
+    @meta("comment:grounding", "Tool-call id assigned by the model for the active call. Non-null only while phase is awaitingTool.")
+    pendingToolCallId: string | null = null
+    @meta("comment:grounding", "Tool name for the active call. Body lives in host projection keyed by pendingToolCallId.")
+    pendingToolName: string | null = null
+
+    // ── Most recent tool result (settled) ──────────────────────────
+    @meta("comment:grounding", "Tool-call id of the most recently settled tool call.")
+    lastToolCallId: string | null = null
+    @meta("comment:grounding", "Tool name of the most recently settled tool call.")
+    lastToolName: string | null = null
+    @meta("comment:grounding", "Outcome of the most recently settled tool call.")
+    lastToolOutcome: ToolOutcome | null = null
+
+    // ── Settled assistant response ─────────────────────────────────
+    @meta("comment:grounding", "Final assistant text from the most recently settled response. Read by both UI and agent prompt.")
+    lastResponseFinal: string | null = null
+    // Distinguished from a stopped phase so the UI can tell the user
+    // "the model errored" vs "you (or the budget) stopped this".
+    @meta("comment:grounding", "Reason string from the most recent recordModelInvocationFailed dispatch. Cleared by the next recordUserTurn.")
+    lastModelError: string | null = null
+
+    // ── Budget ─────────────────────────────────────────────────────
+    // Millicents (1/1000th of a USD cent) so integer arithmetic
+    // covers reasonable session costs without floats.
+    @meta("comment:grounding", "Total inference cost spent in this session, in millicents.")
+    budgetUsedMc: number = 0
+    // 0 means no ceiling. Sentinel-as-disabled is used here because
+    // the MEL type system does not narrow `T | null` across `!= null`
+    // checks; using a pure `number` keeps arithmetic + comparison
+    // operators happy without ad-hoc match() ceremony.
+    @meta("comment:grounding", "Cost ceiling for the session. Zero means no ceiling. When positive, model invocations are blocked once budgetUsedMc reaches this value.")
+    budgetCeilingMc: number = 0
+
+    // ── Anchoring (sliding-window summarization) ───────────────────
+    // Anchors are navigable waypoints into past lineage, not
+    // automatic prompt context. The agent searches across them via
+    // searchAnchors, drills down via recallAnchor / inspectAnchorLineage.
+    // The fields here are SKELETON — full summaries and topics live
+    // in the host AnchorStore keyed by anchorId; the snapshot just
+    // remembers the latest one for the system prompt's hint section
+    // ("N anchors available, latest topic: X").
+    @meta("comment:grounding", "Host-generated id of the most recent anchor.")
+    lastAnchorId: string | null = null
+    @meta("comment:grounding", "World id at the older end of the most recent anchor window.")
+    lastAnchorFromWorldId: string | null = null
+    @meta("comment:grounding", "World id at the newer end of the most recent anchor window.")
+    lastAnchorToWorldId: string | null = null
+    @meta("comment:grounding", "One-line topic / heading of the most recent anchor. Used in the system prompt hint, not as full context.")
+    lastAnchorTopic: string | null = null
+    @meta("comment:grounding", "Summary text of the most recent anchor. Skeleton for inspection — agent should call recallAnchor / searchAnchors for full memory access.")
+    lastAnchorSummary: string | null = null
+    @meta("comment:grounding", "Total anchors recorded in this session. Surfaced to the prompt so the agent knows there is past memory to query.")
+    anchorCount: number = 0
+
+    // ── Counters (scalar — pure increment, never arrays) ───────────
+    @meta("comment:grounding", "Number of user turns settled in this session.")
+    turnCount: number = 0
+    @meta("comment:grounding", "Number of tool calls settled in this session.")
+    toolCallCount: number = 0
+    @meta("comment:grounding", "Number of model invocations dispatched in this session.")
+    modelInvocationCount: number = 0
+  }
+
+  // ── Computed projections ───────────────────────────────────────────
+  @meta("comment:grounding", "True when no turn is in flight.")
+  computed idle = phase == "idle" || phase == "settled" || phase == "stopped"
+  @meta("comment:grounding", "True when the runtime expects the user to speak next.")
+  computed awaitingUser = phase == "settled" || phase == "stopped"
+  @meta("comment:grounding", "True when a new user turn can be started.")
+  computed canStartTurn = phase == "idle" || phase == "settled" || phase == "stopped"
+  @meta("comment:grounding", "True while a model invocation or tool call is being processed.")
+  computed isProcessing = phase == "awaitingModel" || phase == "streaming" || phase == "awaitingTool"
+  @meta("comment:grounding", "True when the budget ceiling has been reached. Blocks new model invocations.")
+  computed budgetExhausted = budgetCeilingMc > 0 && budgetUsedMc >= budgetCeilingMc
+  @meta("comment:grounding", "True when a model invocation is allowed: no budget ceiling hit.")
+  @meta("agent:invariant", "recordModelInvocation requires this.")
+  computed canInvokeModel = !budgetExhausted
+
+  // ── Session lifecycle ──────────────────────────────────────────────
+
+  @meta("comment:grounding", "Reset every conversational field to defaults. Budget ceiling is preserved.")
+  action resetSession() {
+    onceIntent {
+      patch phase = "idle"
+      patch currentTurnId = null
+      patch lastUserText = null
+      patch pendingToolCallId = null
+      patch pendingToolName = null
+      patch lastToolCallId = null
+      patch lastToolName = null
+      patch lastToolOutcome = null
+      patch lastResponseFinal = null
+      patch lastModelError = null
+      patch budgetUsedMc = 0
+      patch lastAnchorId = null
+      patch lastAnchorFromWorldId = null
+      patch lastAnchorToWorldId = null
+      patch lastAnchorTopic = null
+      patch lastAnchorSummary = null
+      patch anchorCount = 0
+      patch turnCount = 0
+      patch toolCallCount = 0
+      patch modelInvocationCount = 0
+    }
+  }
+
+  @meta("comment:grounding", "Set the per-session inference budget ceiling in millicents. Pass 0 to clear.")
+  action setBudgetCeiling(ceilingMc: number) {
+    onceIntent {
+      patch budgetCeilingMc = ceilingMc
+    }
+  }
+
+  // ── Phase transitions ──────────────────────────────────────────────
+
+  @meta("comment:grounding", "Record a settled user prompt. Begins a new turn.")
+  @meta("agent:invariant", "Cannot start a turn while one is already in flight; idle / settled / stopped only.")
+  action recordUserTurn(turnId: string, text: string)
+    dispatchable when phase == "idle" || phase == "settled" || phase == "stopped"
+  {
+    onceIntent {
+      patch currentTurnId = turnId
+      patch lastUserText = text
+      patch phase = "awaitingModel"
+      patch turnCount = turnCount + 1
+      // Clear the previous turn's settled fields so scrub at any
+      // point shows only the active turn's pending state.
+      patch lastResponseFinal = null
+      patch pendingToolCallId = null
+      patch pendingToolName = null
+      patch lastToolCallId = null
+      patch lastToolName = null
+      patch lastToolOutcome = null
+      patch lastModelError = null
+    }
+  }
+
+  @meta("comment:grounding", "Record that an effect handler is now invoking a model at the given tier.")
+  @meta("agent:invariant", "Only valid from awaitingModel and only when canInvokeModel is true.")
+  action recordModelInvocation(invocationId: string, tier: ModelTier)
+    dispatchable when phase == "awaitingModel" && (budgetCeilingMc == 0 || budgetUsedMc < budgetCeilingMc)
+  {
+    onceIntent {
+      patch phase = "streaming"
+      patch modelInvocationCount = modelInvocationCount + 1
+    }
+  }
+
+  @meta("comment:grounding", "Record that the model decided to call a tool. Streaming pauses; effect handler will execute the tool. Input body lives in host projection keyed by callId.")
+  @meta("agent:invariant", "Only valid from streaming.")
+  action recordToolCall(callId: string, toolName: string)
+    dispatchable when phase == "streaming"
+  {
+    onceIntent {
+      patch pendingToolCallId = callId
+      patch pendingToolName = toolName
+      patch phase = "awaitingTool"
+    }
+  }
+
+  @meta("comment:grounding", "Settle the in-flight tool call. Output body lives in host projection. Returns the runtime to awaitingModel so the effect handler can re-invoke.")
+  @meta("agent:invariant", "Only valid from awaitingTool, and the callId must match the pending one.")
+  action recordToolResult(callId: string, outcome: ToolOutcome)
+    dispatchable when phase == "awaitingTool" && pendingToolCallId == callId
+  {
+    onceIntent {
+      patch lastToolCallId = callId
+      patch lastToolName = pendingToolName
+      patch lastToolOutcome = outcome
+      patch pendingToolCallId = null
+      patch pendingToolName = null
+      patch phase = "awaitingModel"
+      patch toolCallCount = toolCallCount + 1
+    }
+  }
+
+  @meta("comment:grounding", "Settle the active assistant response. Final text is committed; runtime moves to settled and waits for next user turn.")
+  @meta("agent:invariant", "Only valid from streaming. After this, canStartTurn is true again.")
+  action recordAssistantSettled(finalText: string)
+    dispatchable when phase == "streaming"
+  {
+    onceIntent {
+      patch lastResponseFinal = finalText
+      patch phase = "settled"
+    }
+  }
+
+  @meta("comment:grounding", "Record that the active model invocation failed (network, API error, etc.). Distinguished from recordSessionStop, which is intentional user/budget cancellation.")
+  @meta("agent:invariant", "Only valid from streaming. Settles the turn with an error marker so the user can submit again.")
+  action recordModelInvocationFailed(reason: string)
+    dispatchable when phase == "streaming"
+  {
+    onceIntent {
+      patch lastModelError = reason
+      patch phase = "settled"
+    }
+  }
+
+  @meta("comment:grounding", "Record that the user (or budget enforcement) requested the session stop. Effect handlers should observe phase=stopped and abort the in-flight stream.")
+  @meta("agent:invariant", "Always dispatchable; the runtime is permitted to be cancelled from any phase.")
+  action recordSessionStop() {
+    onceIntent {
+      patch phase = "stopped"
+      patch pendingToolCallId = null
+      patch pendingToolName = null
+    }
+  }
+
+  // ── Budget & anchoring ─────────────────────────────────────────────
+
+  @meta("comment:grounding", "Record an inference cost delta in millicents. Effect handlers dispatch this after each model invocation settles.")
+  action recordBudget(deltaMc: number) {
+    onceIntent {
+      patch budgetUsedMc = budgetUsedMc + deltaMc
+    }
+  }
+
+  @meta("comment:grounding", "Record a sliding-window anchor over worlds [fromWorldId, toWorldId]. anchorId is host-generated; topic and summary are produced by a small-model summarization effect.")
+  @meta("agent:invariant", "Anchors are navigable waypoints into past lineage, not prompt context. The agent retrieves them on demand via searchAnchors / recallAnchor / inspectAnchorLineage.")
+  action anchorWindow(anchorId: string, fromWorldId: string, toWorldId: string, topic: string, summary: string) {
+    onceIntent {
+      patch lastAnchorId = anchorId
+      patch lastAnchorFromWorldId = fromWorldId
+      patch lastAnchorToWorldId = toWorldId
+      patch lastAnchorTopic = topic
+      patch lastAnchorSummary = summary
+      patch anchorCount = anchorCount + 1
+    }
+  }
+}

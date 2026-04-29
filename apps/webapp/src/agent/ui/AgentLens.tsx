@@ -1,17 +1,28 @@
 /**
- * AgentLens - live Manifesto agent surface.
+ * AgentLens — live Manifesto agent surface.
  *
- * This lens is intentionally thin:
- *   1. Build a static identity prompt.
- *   2. Expose only currently-admitted runtime tools.
- *   3. Execute model-selected tools after the same guard recheck.
- *   4. Let the AI SDK handle tool-result continuation.
+ * Step 5b cutover: the AI SDK's `useChat` is gone. AgentSession owns
+ * the turn lifecycle through `createAgentSessionDriver`, which calls
+ * the model via `createAiSdkModelAdapter` (still using the same
+ * server route under `/api/agent/chat`) and runs tools through
+ * `createDefaultToolExecutor`. This lens is now thin in earnest:
+ *   1. Compose tool implementations and inject them into the driver's
+ *      executor.
+ *   2. Subscribe React to the AgentSession projection so the
+ *      MessageList renders from MEL lineage.
+ *   3. On send / stop, dispatch into AgentSession and let the driver
+ *      orchestrate model + tool effects.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useChat } from "@ai-sdk/react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   DefaultChatTransport,
-  lastAssistantMessageIsCompleteWithToolCalls,
   type UIMessage,
 } from "ai";
 import { AnimatePresence, motion } from "motion/react";
@@ -22,14 +33,53 @@ import {
   type StudioUiSnapshot,
 } from "@/domain/StudioUiRuntime";
 import {
-  bindTool,
-  createToolRegistry,
-} from "../tools/types.js";
+  useAgentSession,
+  readAgentSessionSnapshot,
+  type AgentSessionSnapshot,
+} from "@/domain/AgentSessionRuntime";
 import {
-  admitToolCall,
+  createAgentSessionShadow,
+  type AgentSessionShadow,
+  type AgentSessionShadowRuntime,
+} from "../session/agent-session-shadow.js";
+import { createAgentSessionDriver } from "../session/agent-session-effects.js";
+import { createAiSdkModelAdapter } from "../session/aisdk-model-adapter.js";
+import { createDefaultToolExecutor } from "../session/agent-session-tool-executor.js";
+import { createAgentSessionAnchorEffect } from "../session/agent-session-anchor.js";
+import {
+  ANCHOR_SUMMARIZATION_SYSTEM_PROMPT,
+  createAiSdkAnchorSummarizer,
+} from "../session/aisdk-anchor-summarizer.js";
+import { createAnchorStore } from "../session/agent-session-anchor-store.js";
+import { createSearchHistoryStore } from "../session/agent-session-search-history.js";
+import {
+  ANCHOR_SCORING_SYSTEM_PROMPT,
+  createAiSdkAnchorScorer,
+} from "../session/aisdk-anchor-scorer.js";
+import {
+  createSearchAnchorsTool,
+  type SearchAnchorsContext,
+} from "../tools/search-anchors.js";
+import {
+  createRecallAnchorTool,
+  type RecallAnchorContext,
+} from "../tools/recall-anchor.js";
+import {
+  createInspectAnchorLineageTool,
+  type InspectAnchorLineageContext,
+} from "../tools/inspect-anchor-lineage.js";
+import {
+  createInspectSearchHistoryTool,
+  type InspectSearchHistoryContext,
+} from "../tools/inspect-search-history.js";
+import {
+  buildUiMessagesForTransport,
+  conversationToAgentMessages,
+} from "../session/conversation-to-messages.js";
+import { bindTool } from "../tools/types.js";
+import {
   createAdmittedToolRegistry,
   createInspectToolAffordancesTool,
-  rejectUnavailableTool,
   type ToolAdmissionRuntime,
   type ToolImplementation,
 } from "../tools/affordances.js";
@@ -100,12 +150,14 @@ import {
 } from "../digest/manifesto-digest.js";
 import { buildActiveTurnMessages } from "../session/active-turn-messages.js";
 import { buildRecentTurnsFromMessages } from "../session/recent-turns.js";
-import {
-  buildToolSchemaMap,
-  executeToolLocally,
-} from "../adapters/ai-sdk-tools.js";
+import { buildToolSchemaMap } from "../adapters/ai-sdk-tools.js";
 import { MarkdownBody } from "./MarkdownBody.js";
-import { ToolActivityRow, isToolPart } from "./ToolActivity.js";
+import { ToolActivityRow } from "./ToolActivity.js";
+import type {
+  ConversationProjection,
+  TurnEntry,
+  TurnStep,
+} from "@/agent/session/agent-session-types";
 import {
   projectAction,
   projectEntity,
@@ -116,8 +168,14 @@ import {
 export function AgentLens(): JSX.Element {
   const { core } = useStudio();
   const ui = useStudioUi();
+  const agentSession = useAgentSession();
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  // Streaming text overlay for the in-flight assistant turn. Driven
+  // by the model adapter's text-delta events and cleared on each new
+  // model invocation. Lives in React state, not MEL — per the
+  // step 5a streaming-text decision.
+  const [streamingText, setStreamingText] = useState("");
 
   const uiSnapshotRef = useRef(ui.snapshot);
   uiSnapshotRef.current = ui.snapshot;
@@ -125,7 +183,95 @@ export function AgentLens(): JSX.Element {
   const uiRef = useRef(ui);
   uiRef.current = ui;
 
-  const messagesRef = useRef<readonly UIMessage[]>([]);
+  // Shadow now serves two roles:
+  //   1. dispatcher for the AgentSessionDriver's turn lifecycle
+  //   2. host-side conversation projection for rendering
+  // It no longer mirrors the AI SDK — there is no AI SDK left. The
+  // driver dispatches THROUGH the shadow so projection stays in sync.
+  const agentSessionRef = useRef(agentSession);
+  agentSessionRef.current = agentSession;
+  const shadow = useMemo<AgentSessionShadow>(() => {
+    const runtime: AgentSessionShadowRuntime = {
+      get ready() {
+        return agentSessionRef.current.ready;
+      },
+      // Read direct from core to bypass React-state staleness inside
+      // subscribeAfterDispatch listeners. agentSession.snapshot only
+      // updates on the next render, which races with the dispatch
+      // notifications the driver is responding to.
+      get snapshot() {
+        return readAgentSessionSnapshot(agentSessionRef.current.core);
+      },
+      createIntent: (action, ...args) =>
+        agentSessionRef.current.createIntent(action, ...args),
+      dispatchAsync: (intent) =>
+        agentSessionRef.current.dispatchAsync(intent),
+    };
+    return createAgentSessionShadow(runtime);
+  }, []);
+
+  // Subscribe React to the shadow's conversation projection. Identity-
+  // stable on no-op renders so the MessageList memoization holds.
+  const conversation = useSyncExternalStore(
+    shadow.subscribe,
+    shadow.getConversation,
+    shadow.getConversation,
+  );
+  const conversationRef = useRef(conversation);
+  conversationRef.current = conversation;
+
+  // Anchor memory infrastructure — host stores for anchor records and
+  // search history (memory tooling reads from these). Created once
+  // per AgentLens mount; live for the session.
+  const anchorStoreRef = useRef(createAnchorStore());
+  const searchHistoryRef = useRef(createSearchHistoryStore());
+  // Sliding window of recently-recalled anchor ids. searchAnchors
+  // sums pheromone weights from these candidates' edges to recently-
+  // recalled to bias the ranking. Capped at 8 to avoid runaway.
+  const recentRecalledRef = useRef<string[]>([]);
+  const noteAnchorRecall = useCallback((anchorId: string) => {
+    const buffer = recentRecalledRef.current;
+    // Deposit pheromone on edge from previous recall to this one.
+    if (buffer.length > 0) {
+      const prev = buffer[buffer.length - 1]!;
+      anchorStoreRef.current.recordRecallSequence([prev, anchorId]);
+    }
+    buffer.push(anchorId);
+    if (buffer.length > 8) buffer.shift();
+  }, []);
+
+  // The anchor scorer transport is created lazily so it's available
+  // when toolImplementations builds searchAnchors. Same /api/agent/chat
+  // endpoint as the model adapter, configured with no-tools and a
+  // scoring-specific system prompt.
+  const anchorScorerTransportRef = useRef<DefaultChatTransport<UIMessage> | null>(
+    null,
+  );
+  if (anchorScorerTransportRef.current === null) {
+    anchorScorerTransportRef.current = new DefaultChatTransport<UIMessage>({
+      api: "/api/agent/chat",
+      prepareSendMessagesRequest: async ({ messages, id }) => ({
+        body: {
+          id,
+          messages,
+          system: ANCHOR_SCORING_SYSTEM_PROMPT,
+          tools: {},
+          temperature: 0,
+        },
+      }),
+    });
+  }
+  const anchorScorerRef = useRef<ReturnType<typeof createAiSdkAnchorScorer> | null>(
+    null,
+  );
+  if (
+    anchorScorerRef.current === null &&
+    anchorScorerTransportRef.current !== null
+  ) {
+    anchorScorerRef.current = createAiSdkAnchorScorer({
+      transport: anchorScorerTransportRef.current,
+    });
+  }
 
   const toolImplementations = useMemo<readonly ToolImplementation[]>(() => {
     const userCtx = buildUserToolContext(core);
@@ -157,7 +303,7 @@ export function AgentLens(): JSX.Element {
       getLineage: () => readLineageEntries(core),
     };
     const inspectConversationCtx: InspectConversationContext = {
-      getMessages: () => messagesRef.current,
+      getMessages: () => conversationToAgentMessages(conversationRef.current),
     };
     const inspectAvailabilityCtx: InspectAvailabilityContext = {
       listActionNames: () => listActionNames(core),
@@ -265,17 +411,55 @@ export function AgentLens(): JSX.Element {
         tool: bindTool(createDispatchTool(), userCtx),
         admissionAction: "admitDispatch",
       },
+      // Anchor memory tools — host stores back the substantive data,
+      // MEL only carries lifecycle skeleton.
+      {
+        tool: bindTool(createSearchAnchorsTool(), {
+          anchorStore: anchorStoreRef.current,
+          scorer: anchorScorerRef.current!,
+          recentlyRecalledIds: () => [...recentRecalledRef.current],
+          noteSearch: (query, resultIds) => {
+            searchHistoryRef.current.append(query, resultIds);
+          },
+        } satisfies SearchAnchorsContext),
+        admissionAction: "admitSearchAnchors",
+      },
+      {
+        tool: bindTool(createRecallAnchorTool(), {
+          anchorStore: anchorStoreRef.current,
+          noteRecall: noteAnchorRecall,
+        } satisfies RecallAnchorContext),
+        admissionAction: "admitRecallAnchor",
+      },
+      {
+        tool: bindTool(createInspectAnchorLineageTool(), {
+          anchorStore: anchorStoreRef.current,
+          getLineage: () => readLineageEntries(core),
+          noteRecall: noteAnchorRecall,
+        } satisfies InspectAnchorLineageContext),
+        admissionAction: "admitInspectAnchorLineage",
+      },
+      {
+        tool: bindTool(createInspectSearchHistoryTool(), {
+          searchHistory: searchHistoryRef.current,
+        } satisfies InspectSearchHistoryContext),
+        admissionAction: "admitInspectSearchHistory",
+      },
     ];
     return tools;
-  }, [core, ui.core]);
+  }, [core, ui.core, noteAnchorRecall]);
 
-  const chat = useChat({
-    id: "manifesto-agent",
-    transport: new DefaultChatTransport({
+  // Transport built once and reused across model invocations.
+  // prepareSendMessagesRequest still owns body composition (system
+  // prompt, tools schema, transport message trimming) — same logic
+  // as before, but it now reads recent turns from the AgentSession
+  // projection rather than a useChat-managed message ref.
+  const transportRef = useRef<DefaultChatTransport<UIMessage> | null>(null);
+  if (transportRef.current === null) {
+    transportRef.current = new DefaultChatTransport<UIMessage>({
       api: "/api/agent/chat",
       prepareSendMessagesRequest: async ({ messages, id }) => {
         const fullMessages = messages as UIMessage[];
-        messagesRef.current = fullMessages;
         const snap = uiSnapshotRef.current;
         await syncAgentToolContext({
           core,
@@ -288,9 +472,17 @@ export function AgentLens(): JSX.Element {
           admissionRuntime,
         );
         const transportMessages = buildActiveTurnMessages(fullMessages);
+        const agentMessages = conversationToAgentMessages(
+          conversationRef.current,
+        );
         const agentContext = readStudioAgentContext({
           studioMelDigest: readStudioMelDigest(uiRef.current.core),
-          recentTurns: buildRecentTurnsFromMessages(fullMessages),
+          // Just-prior turn for deictic continuity. Older context the
+          // agent retrieves on demand via inspectConversation (the
+          // system prompt nudges this).
+          recentTurns: buildRecentTurnsFromMessages(agentMessages, {
+            limit: 1,
+          }),
           runtimeSignals: {
             selectedNodeChanged: !snap.agentFocusFresh,
             currentFocusedNodeId: snap.focusedNodeId,
@@ -300,7 +492,24 @@ export function AgentLens(): JSX.Element {
             ? readTurnStartSnapshot(core, snap)
             : null,
         });
-        const system = buildAgentSystemPrompt(agentContext);
+        const baseSystem = buildAgentSystemPrompt(agentContext);
+        // Active retrieval design: do NOT inject the latest anchor's
+        // full summary into the prompt. Just hint that anchors are
+        // available so the agent knows to call searchAnchors when a
+        // query references past context. This keeps prompt size
+        // bounded as the session grows.
+        const sessionSnap = readAgentSessionSnapshot(
+          agentSessionRef.current.core,
+        );
+        const anchorTotal = anchorStoreRef.current.anchorCount();
+        const lastTopic = sessionSnap.lastAnchorTopic;
+        const memoryHint =
+          anchorTotal > 0
+            ? `\n\n## Past session memory\n\n${anchorTotal} anchor${anchorTotal === 1 ? "" : "s"} available covering earlier turns${
+                lastTopic !== null ? ` (latest topic: "${lastTopic}")` : ""
+              }. When the user references something from earlier or asks about past work:\n- Call \`searchAnchors\` with a natural-language query to find relevant anchors. Iterate with \`excludeIds\` to page through more results.\n- Call \`recallAnchor\` on a promising id for the full topic+summary.\n- Call \`inspectAnchorLineage\` if you need the actual lineage worlds inside an anchor's window.\n- Call \`inspectSearchHistory\` to see what you've already searched for in this session.`
+            : "";
+        const system = `${baseSystem}${memoryHint}`;
         return {
           body: {
             id,
@@ -312,61 +521,213 @@ export function AgentLens(): JSX.Element {
           },
         };
       },
-    }),
-    onToolCall: async ({ toolCall }) => {
-      setNotice(null);
-      await syncAgentToolContext({
-        core,
-        uiCore: uiRef.current.core,
-        uiSnapshot: uiSnapshotRef.current,
-      });
-      const admissionRuntime = buildToolAdmissionRuntime(uiRef.current.core);
-      const toolImplementation = toolImplementations.find(
-        (entry) => entry.tool.name === toolCall.toolName,
-      );
-      const admissionResult =
-        toolImplementation === undefined
-          ? rejectUnavailableTool(
-              toolImplementations,
-              toolCall.toolName,
-              admissionRuntime,
-              { domainActionNames: listActionNames(core) },
-            )
-          : await admitToolCall(
-              toolImplementation,
-              admissionRuntime,
-              toolCall.input,
-            );
-      const result =
-        !admissionResult.ok || toolImplementation === undefined
-          ? admissionResult
-          : await executeToolLocally(
-              createToolRegistry([toolImplementation.tool]),
-              toolCall.toolName,
-              toolCall.input,
-            );
-      if (
-        (toolCall.toolName === "inspectSchema" ||
-          toolCall.toolName === "explainLegality") &&
-        result.ok
-      ) {
-        await markAgentSchemaObserved(uiRef.current.core, result.output);
-      }
-      if (toolCall.toolName === "inspectFocus" && result.ok) {
-        await markAgentFocusObserved(uiRef.current.core, result.output);
-      }
-      chat.addToolResult({
-        tool: toolCall.toolName,
-        toolCallId: toolCall.toolCallId,
-        output: result as never,
-      });
-    },
-    sendAutomaticallyWhen: ({ messages }) =>
-      lastAssistantMessageIsCompleteWithToolCalls({ messages }),
-  });
-  messagesRef.current = chat.messages;
+    });
+  }
 
-  const sending = chat.status === "streaming" || chat.status === "submitted";
+  // Separate transport for anchor summarization. Same /api/agent/chat
+  // endpoint, but the body excludes tool schemas and uses a
+  // summarization-focused system prompt — the anchor effect wants a
+  // one-shot text completion, not an agent turn.
+  const anchorTransportRef = useRef<DefaultChatTransport<UIMessage> | null>(
+    null,
+  );
+  if (anchorTransportRef.current === null) {
+    anchorTransportRef.current = new DefaultChatTransport<UIMessage>({
+      api: "/api/agent/chat",
+      prepareSendMessagesRequest: async ({ messages, id }) => ({
+        body: {
+          id,
+          messages,
+          system: ANCHOR_SUMMARIZATION_SYSTEM_PROMPT,
+          tools: {},
+          temperature: 0.3,
+        },
+      }),
+    });
+  }
+
+  // Mount the AgentSessionDriver. It subscribes to phase transitions
+  // on the AgentSession runtime: `awaitingModel` triggers a model
+  // call via the AI SDK transport; `awaitingTool` runs the
+  // executor. The driver dispatches recordToolCall /
+  // recordToolResult / recordAssistantSettled /
+  // recordModelInvocationFailed through the shadow so the
+  // conversation projection updates atomically with MEL state.
+  useEffect(() => {
+    if (!agentSession.ready || agentSession.core === null) return;
+    const transport = transportRef.current;
+    if (transport === null) return;
+
+    const modelAdapter = createAiSdkModelAdapter({
+      transport,
+      buildMessages: () => buildUiMessagesForTransport(conversationRef.current),
+    });
+
+    const toolExecutor = createDefaultToolExecutor({
+      toolImplementations,
+      buildAdmissionRuntime: () => buildToolAdmissionRuntime(uiRef.current.core),
+      listDomainActionNames: () => listActionNames(core),
+      syncContext: () =>
+        syncAgentToolContext({
+          core,
+          uiCore: uiRef.current.core,
+          uiSnapshot: uiSnapshotRef.current,
+        }),
+      markObserved: async (toolName, output) => {
+        if (
+          toolName === "inspectSchema" ||
+          toolName === "explainLegality"
+        ) {
+          await markAgentSchemaObserved(uiRef.current.core, output);
+        } else if (toolName === "inspectFocus") {
+          await markAgentFocusObserved(uiRef.current.core, output);
+        }
+      },
+    });
+
+    const driver = createAgentSessionDriver({
+      runtime: {
+        get ready() {
+          return agentSessionRef.current.ready;
+        },
+        // Direct core read — listener callbacks fire synchronously
+        // after MEL state settles, before React re-renders, so we
+        // can't trust the React-state-mediated snapshot.
+        get snapshot() {
+          return readAgentSessionSnapshot(agentSessionRef.current.core);
+        },
+        createIntent: (action, ...args) =>
+          agentSessionRef.current.createIntent(action, ...args),
+        dispatchAsync: (intent) =>
+          agentSessionRef.current.dispatchAsync(intent),
+        subscribeAfterDispatch: (listener) => {
+          const sessionCore = agentSessionRef.current.core;
+          if (sessionCore === null) return () => {};
+          return sessionCore.subscribeAfterDispatch(listener);
+        },
+      },
+      dispatcher: {
+        recordModelInvocation: (tier) => shadow.onModelInvocation(tier),
+        recordToolCall: (callId, toolName, input) =>
+          shadow.onToolCall(callId, toolName, input),
+        recordToolResult: (callId, outcome, output) =>
+          shadow.onToolResult(callId, outcome, output),
+        recordAssistantSettled: (text) => shadow.onAssistantSettled(text),
+        recordModelInvocationFailed: (reason) =>
+          shadow.onModelInvocationFailed(reason),
+        recordBudget: (deltaMc) => shadow.recordBudget(deltaMc),
+        getToolInput: (callId) => shadow.getToolInput(callId),
+      },
+      modelAdapter,
+      toolExecutor,
+      handlers: {
+        onTextDelta: (delta) => setStreamingText((prev) => prev + delta),
+        onInvocationStart: () => setStreamingText(""),
+        onUnexpectedError: (err) => {
+          console.error("[AgentLens] driver error:", err);
+        },
+      },
+    });
+
+    // Anchor effect: every N settled turns, summarize the window
+    // through the small-model effect handler and dispatch
+    // anchorWindow. The dispatched summary lands in MEL state and
+    // gets injected into subsequent agent system prompts.
+    const anchorTransport = anchorTransportRef.current;
+    let anchorEffect: ReturnType<typeof createAgentSessionAnchorEffect> | null = null;
+    if (anchorTransport !== null) {
+      const summarizer = createAiSdkAnchorSummarizer({
+        transport: anchorTransport,
+      });
+      anchorEffect = createAgentSessionAnchorEffect({
+        runtime: {
+          get ready() {
+            return agentSessionRef.current.ready;
+          },
+          get snapshot() {
+            return readAgentSessionSnapshot(agentSessionRef.current.core);
+          },
+          createIntent: (action, ...args) =>
+            agentSessionRef.current.createIntent(action, ...args),
+          dispatchAsync: (intent) =>
+            agentSessionRef.current.dispatchAsync(intent),
+          subscribeAfterDispatch: (listener) => {
+            const sessionCore = agentSessionRef.current.core;
+            if (sessionCore === null) return () => {};
+            return sessionCore.subscribeAfterDispatch(listener);
+          },
+        },
+        conversation: () => shadow.getConversation(),
+        getLatestWorldId: () => {
+          const sessionCore = agentSessionRef.current.core;
+          if (sessionCore === null) return null;
+          const head = sessionCore.getLineage().head;
+          return head !== null ? String(head.worldId) : null;
+        },
+        dispatcher: {
+          anchorWindow: async (anchorId, fromWorldId, toWorldId, topic, summary) => {
+            try {
+              const intent = agentSessionRef.current.createIntent(
+                "anchorWindow",
+                anchorId,
+                fromWorldId,
+                toWorldId,
+                topic,
+                summary,
+              );
+              const result =
+                await agentSessionRef.current.dispatchAsync(intent);
+              return result.kind === "completed";
+            } catch (err) {
+              console.warn("[AgentLens] anchorWindow dispatch threw:", err);
+              return false;
+            }
+          },
+          recordBudget: (deltaMc) => shadow.recordBudget(deltaMc),
+        },
+        summarizer,
+        policy: { turnsBetweenAnchors: 5, costMc: 20 },
+        handlers: {
+          onAnchorSettled: (info) => {
+            // Persist the full anchor body in the host store so
+            // searchAnchors / recallAnchor / inspectAnchorLineage
+            // can find it. MEL only carries lifecycle skeleton.
+            const snap = readAgentSessionSnapshot(
+              agentSessionRef.current.core,
+            );
+            anchorStoreRef.current.putAnchor({
+              anchorId: info.anchorId,
+              fromWorldId: info.fromWorldId,
+              toWorldId: info.toWorldId,
+              topic: info.topic,
+              summary: info.summary,
+              recordedAt: Date.now(),
+              turnRangeStart: Math.max(0, snap.turnCount - 5),
+              turnRangeEnd: snap.turnCount,
+            });
+          },
+          onAnchorFailed: (err) => {
+            console.warn("[AgentLens] anchor summarization failed:", err);
+          },
+        },
+      });
+    }
+
+    // Periodic pheromone evaporation — every 60s in this session,
+    // multiply trail weights by 0.9 so unused trails fade gracefully.
+    // Edges that drop below the store's evaporationFloor get pruned.
+    const evaporationTimer = setInterval(() => {
+      anchorStoreRef.current.evaporateAll(0.9);
+    }, 60_000);
+
+    return () => {
+      driver.stop();
+      anchorEffect?.stop();
+      clearInterval(evaporationTimer);
+    };
+  }, [agentSession.ready, agentSession.core, core, shadow, toolImplementations]);
+
+  const sending = agentSession.snapshot.isProcessing;
 
   const onSend = useCallback(() => {
     const prompt = draft.trim();
@@ -375,8 +736,13 @@ export function AgentLens(): JSX.Element {
       setNotice("Studio runtime is still starting. Try again shortly.");
       return;
     }
+    if (!agentSession.ready) {
+      setNotice("Agent runtime is still starting. Try again shortly.");
+      return;
+    }
     setNotice(null);
     setDraft("");
+    setStreamingText("");
     void (async () => {
       try {
         await syncAgentToolContext({
@@ -384,7 +750,16 @@ export function AgentLens(): JSX.Element {
           uiCore: ui.core,
           uiSnapshot: uiSnapshotRef.current,
         });
-        await chat.sendMessage({ text: prompt });
+        // The driver subscribes to phase transitions; once
+        // recordUserTurn lands, AgentSession is in awaitingModel and
+        // the driver picks up automatically.
+        const turnId = await shadow.onUserTurn(prompt);
+        if (turnId === null) {
+          setDraft(prompt);
+          setNotice(
+            "Could not start a turn — runtime is still busy with the previous one.",
+          );
+        }
       } catch (err) {
         setDraft(prompt);
         setNotice(
@@ -394,11 +769,11 @@ export function AgentLens(): JSX.Element {
         );
       }
     })();
-  }, [chat, core, draft, ui.core]);
+  }, [agentSession.ready, core, draft, shadow, ui.core]);
 
   const onStop = useCallback(() => {
-    void chat.stop();
-  }, [chat]);
+    void shadow.onSessionStop();
+  }, [shadow]);
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const handleSelectStarter = useCallback((text: string) => {
@@ -421,16 +796,17 @@ export function AgentLens(): JSX.Element {
       <div className="agent-ambient" aria-hidden="true" />
       <div className="relative z-10 flex flex-col flex-1 min-h-0">
         <StatusBar
-          status={chat.status}
-          error={chat.error}
-          canClear={chat.messages.length > 0 && !sending}
-          onClear={() => chat.setMessages([])}
+          phase={agentSession.snapshot.phase}
+          lastModelError={agentSession.snapshot.lastModelError}
+          canClear={conversation.turns.length > 0 && !sending}
+          onClear={() => shadow.clearConversation()}
         />
         <AnimatePresence initial={false}>
           {notice !== null ? <Notice key="notice" message={notice} /> : null}
         </AnimatePresence>
         <MessageList
-          messages={chat.messages}
+          conversation={conversation}
+          streamingText={streamingText}
           onSelectStarter={handleSelectStarter}
         />
         <Composer
@@ -447,28 +823,32 @@ export function AgentLens(): JSX.Element {
 }
 
 function StatusBar({
-  status,
-  error,
+  phase,
+  lastModelError,
   canClear,
   onClear,
 }: {
-  readonly status: string;
-  readonly error: Error | undefined;
+  readonly phase: AgentSessionSnapshot["phase"];
+  readonly lastModelError: string | null;
   readonly canClear: boolean;
   readonly onClear: () => void;
 }): JSX.Element {
   const label =
-    error !== undefined
-      ? `error: ${error.message}`
-      : status === "streaming"
+    lastModelError !== null
+      ? `error: ${lastModelError}`
+      : phase === "streaming"
         ? "streaming"
-        : status === "submitted"
-          ? "thinking"
-          : "ready";
+        : phase === "awaitingTool"
+          ? "tool"
+          : phase === "awaitingModel"
+            ? "thinking"
+            : phase === "stopped"
+              ? "stopped"
+              : "ready";
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-rule)] text-[10.5px] font-mono">
       <span className="text-[var(--color-ink-dim)]">agent</span>
-      <span className="text-[var(--color-ink-mute)]">/ {label}</span>
+      <span className="text-[var(--color-ink-mute)] truncate">/ {label}</span>
       <button
         type="button"
         onClick={onClear}
@@ -496,43 +876,52 @@ function Notice({ message }: { readonly message: string }): JSX.Element {
 }
 
 function MessageList({
-  messages,
+  conversation,
+  streamingText,
   onSelectStarter,
 }: {
-  readonly messages: readonly UIMessage[];
+  readonly conversation: ConversationProjection;
+  /**
+   * Live assistant text from the model adapter's text-delta events for the in-flight turn.
+   * Empty string when nothing is streaming. The projection's
+   * settledText replaces this once recordAssistantSettled fires.
+   */
+  readonly streamingText: string;
   readonly onSelectStarter: (text: string) => void;
 }): JSX.Element {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = scrollerRef.current;
     if (el !== null) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  }, [conversation, streamingText]);
 
+  const turns = conversation.turns;
   return (
     <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-5">
-      {messages.length === 0 ? (
+      {turns.length === 0 ? (
         <EmptyState onSelectStarter={onSelectStarter} />
       ) : (
         <ol className="flex flex-col gap-4">
           <AnimatePresence initial={false} mode="popLayout">
-            {messages.map((message) => {
-              const rendered =
-                message.role === "user" ? (
-                  <UserMessage text={extractUserText(message)} />
-                ) : message.role === "assistant" ? (
-                  <AssistantMessage message={message} />
-                ) : null;
-              return rendered === null ? null : (
+            {turns.map((turn, i) => {
+              const isLast = i === turns.length - 1;
+              const finalText =
+                turn.settledText ?? (isLast ? streamingText : "");
+              return (
                 <motion.li
-                  key={message.id}
+                  key={turn.turnId}
                   layout="position"
                   initial={{ opacity: 0, y: 8, scale: 0.99 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -6, scale: 0.99 }}
                   transition={{ duration: 0.2, ease: "easeOut" }}
-                  className="list-none"
+                  className="list-none flex flex-col gap-3"
                 >
-                  {rendered}
+                  <UserMessage text={turn.userText} />
+                  <AssistantTurn
+                    turn={turn}
+                    finalText={finalText}
+                  />
                 </motion.li>
               );
             })}
@@ -558,31 +947,19 @@ function UserMessage({ text }: { readonly text: string }): JSX.Element {
   );
 }
 
-function AssistantMessage({
-  message,
+function AssistantTurn({
+  turn,
+  finalText,
 }: {
-  readonly message: UIMessage;
+  readonly turn: TurnEntry;
+  readonly finalText: string;
 }): JSX.Element | null {
-  const renderedParts = message.parts
-    .map((part, index) => {
-      if (part.type === "text") {
-        return (
-          <div
-            key={index}
-            className="text-[13px] leading-relaxed text-[var(--color-ink)] break-words"
-          >
-            <MarkdownBody>{part.text}</MarkdownBody>
-          </div>
-        );
-      }
-      if (part.type === "reasoning") return null;
-      if (isToolPart(part)) {
-        return <ToolActivityRow key={index} part={part} />;
-      }
-      return null;
-    })
-    .filter((part): part is JSX.Element => part !== null);
-  if (renderedParts.length === 0) return null;
+  const toolSteps = turn.steps.filter(
+    (step): step is Extract<TurnStep, { kind: "tool-call" }> =>
+      step.kind === "tool-call",
+  );
+  const hasContent = toolSteps.length > 0 || finalText !== "" || turn.stopped;
+  if (!hasContent) return null;
   return (
     <div className="flex gap-3">
       <motion.div
@@ -592,7 +969,25 @@ function AssistantMessage({
         className="w-[2px] self-stretch rounded-full bg-[var(--color-violet-hot)] origin-top"
       />
       <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-        {renderedParts}
+        {toolSteps.map((step) => (
+          <ToolActivityRow
+            key={step.callId}
+            toolName={step.toolName}
+            input={step.input}
+            output={step.output}
+            outcome={step.outcome}
+          />
+        ))}
+        {finalText !== "" ? (
+          <div className="text-[13px] leading-relaxed text-[var(--color-ink)] break-words">
+            <MarkdownBody>{finalText}</MarkdownBody>
+          </div>
+        ) : null}
+        {turn.stopped ? (
+          <div className="text-[10.5px] uppercase tracking-wider text-[var(--color-sig-effect)]">
+            stopped
+          </div>
+        ) : null}
       </div>
     </div>
   );

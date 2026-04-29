@@ -27,6 +27,13 @@ export type InspectConversationInput = {
   readonly containsTool?: boolean;
   readonly includeToolNames?: boolean;
   readonly excerptCap?: number;
+  /**
+   * Case-insensitive substring filter. Keeps turns where the user
+   * prompt OR the assistant excerpt contains every whitespace-
+   * separated token in the query. Pair with `limit` to page through
+   * results when the agent is searching for something specific.
+   */
+  readonly query?: string;
 };
 
 export type InspectConversationOutput = {
@@ -51,9 +58,10 @@ export function createInspectConversationTool(): AgentTool<
     description:
       "Read compact prior conversation turns, newest first. Use this " +
       "when the user asks what was said earlier, refers to an earlier " +
-      "chat turn, or needs recovery from prior tool behavior. Default " +
-      "limit 5, max 20. Use beforeTurnId to page older. Set " +
-      "includeToolNames only when tool provenance matters.",
+      "chat turn, or needs recovery from prior tool behavior. Pass " +
+      "`query` to filter turns whose user prompt or assistant " +
+      "excerpt contain a keyword (case-insensitive substring match). " +
+      "Default limit 5, max 20. Use beforeTurnId to page older.",
     jsonSchema: {
       type: "object",
       additionalProperties: false,
@@ -85,6 +93,11 @@ export function createInspectConversationTool(): AgentTool<
           maximum: MAX_EXCERPT_CAP,
           description: `Maximum assistant excerpt chars per turn. Default ${DEFAULT_EXCERPT_CAP}, max ${MAX_EXCERPT_CAP}.`,
         },
+        query: {
+          type: "string",
+          description:
+            "Case-insensitive keyword filter. Whitespace-separated tokens; only turns whose user prompt or assistant excerpt contain ALL tokens are kept.",
+        },
       },
     },
     run: async (input, ctx) => {
@@ -102,14 +115,20 @@ export function createInspectConversationTool(): AgentTool<
           excerptCap,
           includeToolNames,
         );
-        const matched =
-          input?.containsTool === undefined
-            ? allTurns
-            : allTurns.filter((turn) =>
-                input.containsTool === true
-                  ? turn.toolCount > 0
-                  : turn.toolCount === 0,
-              );
+        const queryTokens = tokenizeQuery(input?.query);
+        const matched = allTurns.filter((turn) => {
+          if (input?.containsTool !== undefined) {
+            const hasTools = turn.toolCount > 0;
+            if (input.containsTool !== hasTools) return false;
+          }
+          if (queryTokens.length > 0) {
+            const haystack = `${turn.userPrompt}\n${turn.assistantExcerpt}`.toLowerCase();
+            for (const token of queryTokens) {
+              if (!haystack.includes(token)) return false;
+            }
+          }
+          return true;
+        });
 
         let cursor = 0;
         if (input?.beforeTurnId !== undefined) {
@@ -199,6 +218,15 @@ function capExcerpt(value: string, cap: number): string {
   if (cap <= 0) return "";
   if (cap <= 3) return ".".repeat(cap);
   return collapsed.slice(0, cap - 3) + "...";
+}
+
+function tokenizeQuery(query: string | undefined): readonly string[] {
+  if (typeof query !== "string") return [];
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
 }
 
 function clampInt(
